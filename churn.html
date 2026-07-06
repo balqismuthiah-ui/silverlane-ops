@@ -3323,8 +3323,8 @@ function syncFromGAS(opts){
   if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
   toast('Menghubungi Google Sheets… harap tunggu hingga 90 detik',4000);
 
-  var url=GAS_URL;
-  if(syncMonthFilter)url+='?month='+encodeURIComponent(syncMonthFilter);
+  var url=GAS_URL+'?action=data&token='+encodeURIComponent(Auth.getToken()||'');
+  if(syncMonthFilter)url+='&month='+encodeURIComponent(syncMonthFilter);
 
   var controller=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=controller?setTimeout(function(){controller.abort();},90000):null;
@@ -3339,6 +3339,7 @@ function syncFromGAS(opts){
       return res.json();
     })
     .then(function(json){
+      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
       var rows=json.data||[];
       if(!rows.length){toast('Tidak ada data dari sheet (total: '+( json.total||0)+')');return;}
       var d=Store.get();
