@@ -3314,6 +3314,10 @@ function mapPaymentStatus(raw){
   return null;
 }
 
+function currentMonthAbbr(){
+  return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][new Date().getMonth()];
+}
+
 function syncFromGAS(opts){
   opts=opts||{};
   if(syncInProgress)return;
@@ -3323,8 +3327,11 @@ function syncFromGAS(opts){
   if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
   toast('Menghubungi Google Sheets… harap tunggu hingga 90 detik',4000);
 
+  // Auto-sync (trigger login) di-scope ke bulan berjalan -- unscoped 'data' narik 36rb+ baris
+  // sekaligus (~40s), sering kena 503 dari GAS. Manual sync tetap bisa pilih "Semua Bulan" dari dropdown.
+  var monthParam=syncMonthFilter||(opts.auto?currentMonthAbbr():'');
   var url=GAS_URL+'?action=data&token='+encodeURIComponent(Auth.getToken()||'');
-  if(syncMonthFilter)url+='&month='+encodeURIComponent(syncMonthFilter);
+  if(monthParam)url+='&month='+encodeURIComponent(monthParam);
 
   var controller=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=controller?setTimeout(function(){controller.abort();},90000):null;
@@ -3405,11 +3412,11 @@ function syncFromGAS(opts){
       });
       Store.set(d);
       setLastSyncAt(Date.now());
-      var lbl=syncMonthFilter?syncMonthFilter+' 26':'semua bulan';
+      var lbl=monthParam?monthParam+' 26':'semua bulan';
       toast('Sync '+lbl+': '+imported+' baru, '+updated+' update — '+d.records.length+' total records. Mengambil data agen...',5000);
       renderTab(currentTab);
       // Auto-sync agent assignments for the same month right after data sync
-      setTimeout(function(){syncAssignOnly(syncMonthFilter);},500);
+      setTimeout(function(){syncAssignOnly(monthParam);},500);
     })
     .catch(function(err){
       if(timer)clearTimeout(timer);
