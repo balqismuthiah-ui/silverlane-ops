@@ -924,18 +924,67 @@ function migrateUpsell(d){
   });
   return d;
 }
+// ── IndexedDB-backed persistence (localStorage ~5MB nggak cukup buat >4 bulan data ~700B/record) ──
+// Interface Store.get()/set()/reset() TETAP SYNCHRONOUS (baca/tulis in-memory cache) biar 60+ call
+// site yang udah ada di seluruh app nggak perlu diubah jadi async. IndexedDB cuma persist di
+// background. Data lama di localStorage di-migrasi sekali pas app pertama kali load di IndexedDB.
+var _storeCache=null;
+var _idbUsable=typeof indexedDB!=='undefined';
+function _idbOpen(){
+  return new Promise(function(resolve,reject){
+    var req=indexedDB.open('klopos_idb_v1',1);
+    req.onupgradeneeded=function(){req.result.createObjectStore('kv');};
+    req.onsuccess=function(){resolve(req.result);};
+    req.onerror=function(){reject(req.error);};
+  });
+}
+function _idbGet(key){
+  return _idbOpen().then(function(db){
+    return new Promise(function(resolve,reject){
+      var req=db.transaction('kv','readonly').objectStore('kv').get(key);
+      req.onsuccess=function(){resolve(req.result);};
+      req.onerror=function(){reject(req.error);};
+    });
+  });
+}
+function _idbSet(key,val){
+  return _idbOpen().then(function(db){
+    return new Promise(function(resolve,reject){
+      var tx=db.transaction('kv','readwrite');
+      tx.objectStore('kv').put(val,key);
+      tx.oncomplete=function(){resolve();};
+      tx.onerror=function(){reject(tx.error);};
+    });
+  });
+}
+// Resolve setelah _storeCache siap: baca IndexedDB, atau migrasi 1x dari localStorage lama kalau ada.
+var _storeReady=!_idbUsable?Promise.resolve():_idbGet(STORE_KEY).then(function(val){
+  if(val){_storeCache=migrateUpsell(val);return;}
+  var legacy=null;
+  try{legacy=JSON.parse(localStorage.getItem(STORE_KEY)||'null');}catch(e){}
+  _storeCache=migrateUpsell(legacy||initData());
+  return _idbSet(STORE_KEY,_storeCache).catch(function(){});
+}).catch(function(){_idbUsable=false;});
+
 var Store={
-  get:function(){try{return migrateUpsell(JSON.parse(localStorage.getItem(STORE_KEY)||'null')||initData());}catch(e){return initData();}},
+  get:function(){
+    if(_idbUsable)return _storeCache||initData();
+    // Fallback (browser tanpa IndexedDB -- sangat jarang): jalur lama localStorage sync.
+    try{return migrateUpsell(JSON.parse(localStorage.getItem(STORE_KEY)||'null')||initData());}catch(e){return initData();}
+  },
   set:function(d){
+    if(_idbUsable){
+      _storeCache=d;
+      _idbSet(STORE_KEY,d).catch(function(){toast('⚠ Gagal simpan ke penyimpanan browser — coba lagi',4000);});
+      return;
+    }
+    // Fallback localStorage lama + adaptive-shrink kalau kena quota (75%/60%/45%/30%/15% bertahap).
     try{
       localStorage.setItem(STORE_KEY,JSON.stringify(d));
       return;
     }catch(e){
       if(e.name!=='QuotaExceededError'&&e.code!==22&&e.code!==1014)return;
     }
-    // Storage penuh -- angka tetap (dulu 8000) ternyata masih ketebakan kegedean utk quota browser
-    // asli (~5MB, ~700B/record -> muat ~6500-7000an). Sekarang coba beneran ngecilin bertahap
-    // (75%/60%/45%/30%/15%) sampe salah satu muat, drop bulan terlama duluan.
     toast('⚠ Storage penuh — mengurangi data lama untuk buat ruang...',4000);
     var MORD=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     var base=JSON.parse(JSON.stringify(d));
@@ -951,7 +1000,11 @@ var Store={
     }
     toast('Storage tetap penuh walau udah dikecilin drastis. Hapus data lama via Reset dulu.',5000);
   },
-  reset:function(){localStorage.removeItem(STORE_KEY);}
+  reset:function(){
+    _storeCache=initData();
+    if(_idbUsable)_idbSet(STORE_KEY,_storeCache).catch(function(){});
+    localStorage.removeItem(STORE_KEY);
+  }
 };
 
 // ── AGENTS CONFIG STORE (CLM-06: sumber tunggal identitas — login, assignment, Overview, target, template) ──
@@ -4130,7 +4183,7 @@ function initAuth(){
           return;
         }
         Auth.setSession({token:j.token,name:j.name,role:j.role,email:pendingEmail});
-        startApp();
+        _storeReady.then(startApp);
       }).catch(function(){showAuthError('Gagal verifikasi, coba lagi');})
       .then(function(){btn.disabled=false;btn.textContent='Masuk';});
   });
@@ -4153,7 +4206,7 @@ function initAuth(){
 // ── INIT ───────────────────────────────────────────────────────────────────
 refreshUserLists(); // CLM-06: baca AGENTS/SUPERIOR/ALL_USERS dari AgentsConfig (dipake dropdown lain, BUKAN login lagi)
 initAuth();
-if(Auth.isLoggedIn())startApp();
+if(Auth.isLoggedIn())_storeReady.then(startApp);
 </script>
 </body>
 </html>
