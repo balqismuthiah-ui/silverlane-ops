@@ -4307,11 +4307,27 @@ function startApp(){
   // Kirim ulang antrean write-back respons yang sempat gagal (offline queue)
   setTimeout(wbFlush,2500);
   // CLM-08: auto-poll respons agen lain -- on-load (staggered dikit dari freshness biar nggak
-  // barengan) + tiap 5 menit selama halaman kebuka. Guard _respPollStarted: startApp() bisa kepanggil
-  // lagi (re-login) tapi interval lama harus di-clear dulu biar nggak dobel jalan selamanya.
+  // barengan) + tiap 5 menit selama halaman kebuka (visibility-gated -- lihat startRespPolling).
   setTimeout(pollResponsesDelta,1800);
+  startRespPolling();
+  if(!window._respVisibilityWired){
+    window._respVisibilityWired=true;
+    document.addEventListener('visibilitychange',function(){
+      if(document.hidden){stopRespPolling();}
+      else{pollResponsesDelta();startRespPolling();} // refocus: poll-sekali + resume interval
+    });
+  }
+}
+
+// CLM-08: visibility-gated -- pause polling pas tab hidden/background (nganggur di tab lain nggak
+// perlu polling tiap 5 menit selamanya, hemat kuota GAS). Named function (bukan inline) biar bisa
+// di-start/stop ulang dari visibilitychange handler tanpa duplikasi logic guard interval.
+function startRespPolling(){
   if(window._respPollIntervalId)clearInterval(window._respPollIntervalId);
   window._respPollIntervalId=setInterval(pollResponsesDelta,5*60*1000);
+}
+function stopRespPolling(){
+  if(window._respPollIntervalId){clearInterval(window._respPollIntervalId);window._respPollIntervalId=null;}
 }
 
 // CLM-07: login 2-langkah (email -> OTP), ganti total flow PIN. requestOtp/verifyOtp = action
