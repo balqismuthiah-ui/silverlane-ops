@@ -3887,12 +3887,12 @@ function mergeResponseFromRemote(local,remoteRow){
   if(local&&remoteLastEdit&&localLastEdit&&remoteLastEdit<=localLastEdit)return local;
   var sum=String(remoteRow['Summary']||'').trim();
   return{
-    category:mapSummaryToCategory(sum)||(local?local.category:null),
-    detail:String(remoteRow['Keterangan']||'').trim()||(local?local.detail:null),
-    note:String(remoteRow['Note']||'').trim()||(local?local.note:null),
-    evidenceLink:String(remoteRow['Link Evidence']||'').trim()||(local?local.evidenceLink:null),
-    updatedPhone:local?local.updatedPhone:null,
-    waStatus:local?(local.waStatus||'unchecked'):'unchecked',
+    category:mapSummaryToCategory(sum)||(local&&local.category)||null,
+    detail:String(remoteRow['Keterangan']||'').trim()||(local&&local.detail)||null,
+    note:String(remoteRow['Note']||'').trim()||(local&&local.note)||null,
+    evidenceLink:String(remoteRow['Link Evidence']||'').trim()||(local&&local.evidenceLink)||null,
+    updatedPhone:(local&&local.updatedPhone)||null,
+    waStatus:(local&&local.waStatus)||'unchecked',
     updatedAt:remoteRow['Last Edit At']||'',
     updatedBy:remoteRow['Last Edit By']||''
   };
