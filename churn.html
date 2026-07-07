@@ -1229,6 +1229,10 @@ var wsAgentFilter='';
 var mSearch='',mAgent='',mBlast='',mResp='';
 var blastHidePaid=true;
 var respSearch='',respCatFilter='',respAgentFilter='';
+// Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
+// record (baru kebukti sejak migrasi IndexedDB ngilangin plafon localStorage lama).
+var PAGE_SIZE=300;
+var mPage=0,wsPage=0,respPage=0;
 var wlSearch='';
 var mLifecycle='';
 var mBulan='';
@@ -1883,6 +1887,16 @@ function renderOverview(){
     +agentSection;
 }
 
+// Baris pager reusable -- ditaruh sbg <tr> terakhir (colspan penuh) biar valid di dalam <tbody>.
+function pagerRow(colspan,page,totalPages,total,prevId,nextId){
+  if(totalPages<=1)return'';
+  return'<tr><td colspan="'+colspan+'" style="text-align:center;padding:10px;background:var(--sur2)">'
+    +'<button class="btn btn-sec" id="'+prevId+'" style="padding:4px 10px;font-size:12px" '+(page<=0?'disabled':'')+'>‹ Sebelumnya</button>'
+    +' <span style="font-size:12px;color:var(--tx3);margin:0 10px">Halaman '+(page+1)+'/'+totalPages+' ('+total+' total)</span> '
+    +'<button class="btn btn-sec" id="'+nextId+'" style="padding:4px 10px;font-size:12px" '+(page>=totalPages-1?'disabled':'')+'>Berikutnya ›</button>'
+    +'</td></tr>';
+}
+
 // ── TAB: MASTER ────────────────────────────────────────────────────────────
 function masterRows(d){
   var me=Auth.getActive(),isSup=Auth.isSuperior(); // dihitung sekali, bukan per-row (mahal di 35k+ record)
@@ -1903,7 +1917,10 @@ function masterRows(d){
   var cnt=document.getElementById('master-count');
   if(cnt)cnt.textContent='Menampilkan '+filtered.length+' dari '+d.records.length+' data';
   if(!filtered.length)return'<tr><td colspan="10" class="empty">Tidak ada data yang cocok</td></tr>';
-  return filtered.map(function(r){
+  var totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
+  mPage=Math.min(mPage,totalPages-1);
+  var paged=filtered.slice(mPage*PAGE_SIZE,(mPage+1)*PAGE_SIZE);
+  return paged.map(function(r){
     var isGC=r.gcFlagged||watchPhones.has(r.phone);
     var isDummy=isDummyPhone(r.phone);
     var dispId=r.outletId||r.id;
@@ -1925,7 +1942,7 @@ function masterRows(d){
       +'<button class="action-btn ab-edit" data-act="assign" data-id="'+r.id+'">Assign</button>'
       +(isGC?'':'<button class="action-btn ab-wl" data-act="gc" data-id="'+r.id+'">GC</button>')
       +'</div></td></tr>';
-  }).join('');
+  }).join('')+pagerRow(10,mPage,totalPages,filtered.length,'master-prev-btn','master-next-btn');
 }
 
 function renderMaster(){
@@ -2007,7 +2024,10 @@ function wsFilteredRecs(d,me,isSup){
 function wsRows(d,me,isSup,watchPhones){
   var recs=wsFilteredRecs(d,me,isSup);
   if(!recs.length)return'<tr><td colspan="11" class="empty">Tidak ada data</td></tr>';
-  return recs.map(function(r){
+  var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
+  wsPage=Math.min(wsPage,totalPages-1);
+  var paged=recs.slice(wsPage*PAGE_SIZE,(wsPage+1)*PAGE_SIZE);
+  return paged.map(function(r){
     var canSeePhone=(Auth.getActive()===r.assignedAgent)||isSup;
     var isGC=r.gcFlagged||watchPhones.has(r.phone);
     var isDummy=isDummyPhone(r.phone);
@@ -2033,7 +2053,7 @@ function wsRows(d,me,isSup,watchPhones){
       +'<button class="action-btn ab-edit" data-act="resp" data-id="'+r.id+'">Respon</button>'
       +(isGC?'':'<button class="action-btn ab-wl" data-act="gc" data-id="'+r.id+'">GC</button>')
       +'</div></td></tr>';
-  }).join('');
+  }).join('')+pagerRow(11,wsPage,totalPages,recs.length,'ws-prev-btn','ws-next-btn');
 }
 
 function renderWorksheet(){
@@ -2085,7 +2105,10 @@ function renderResponseResults(){
     if(respAgentFilter&&r.assignedAgent!==respAgentFilter)return false;
     return true;
   });
-  var cards=filtered.map(function(r){
+  var respTotalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
+  respPage=Math.min(respPage,respTotalPages-1);
+  var respPaged=filtered.slice(respPage*PAGE_SIZE,(respPage+1)*PAGE_SIZE);
+  var cards=respPaged.map(function(r){
     var resp=r.response||{};
     var hasResp=!!resp.category;
     var respColor=hasResp?(RESP_CATS[resp.category]?RESP_CATS[resp.category].color:'gray'):'gray';
@@ -2115,9 +2138,15 @@ function renderResponseResults(){
       +gcBtn
       +'</div></div>';
   }).join('');
+  var respPagerHtml=respTotalPages<=1?'':'<div style="text-align:center;padding:10px">'
+    +'<button class="btn btn-sec" id="resp-prev-btn" style="padding:4px 10px;font-size:12px" '+(respPage<=0?'disabled':'')+'>‹ Sebelumnya</button>'
+    +' <span style="font-size:12px;color:var(--tx3);margin:0 10px">Halaman '+(respPage+1)+'/'+respTotalPages+' ('+filtered.length+' cocok)</span> '
+    +'<button class="btn btn-sec" id="resp-next-btn" style="padding:4px 10px;font-size:12px" '+(respPage>=respTotalPages-1?'disabled':'')+'>Berikutnya ›</button>'
+    +'</div>';
   el.innerHTML='<div style="margin-bottom:10px;font-size:12px;color:var(--tx3)">'+filtered.length+' dari '+pool.length+' outlet</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;align-items:start">'
-    +(cards||'<div class="empty">Tidak ada outlet yang cocok</div>')+'</div>';
+    +(cards||'<div class="empty">Tidak ada outlet yang cocok</div>')+'</div>'
+    +respPagerHtml;
 }
 
 function renderResponse(){
@@ -3981,23 +4010,34 @@ tabContent.addEventListener('change',function(e){
     });
     updateWsBulkBar();
   }
-  if(tgt.id==='ws-agent-filter'){wsAgentFilter=tgt.value;renderWorksheet();}
-  if(tgt.id==='m-agent'){mAgent=tgt.value;var tb=document.getElementById('master-tbody');if(tb)tb.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-blast'){mBlast=tgt.value;var tb2=document.getElementById('master-tbody');if(tb2)tb2.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-resp'){mResp=tgt.value;var tb3=document.getElementById('master-tbody');if(tb3)tb3.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-lifecycle'){mLifecycle=tgt.value;var tb4=document.getElementById('master-tbody');if(tb4)tb4.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-bulan'){mBulan=tgt.value;var tb5=document.getElementById('master-tbody');if(tb5)tb5.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='ws-agent-filter'){wsAgentFilter=tgt.value;wsPage=0;renderWorksheet();}
+  if(tgt.id==='m-agent'){mAgent=tgt.value;mPage=0;var tb=document.getElementById('master-tbody');if(tb)tb.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='m-blast'){mBlast=tgt.value;mPage=0;var tb2=document.getElementById('master-tbody');if(tb2)tb2.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='m-resp'){mResp=tgt.value;mPage=0;var tb3=document.getElementById('master-tbody');if(tb3)tb3.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='m-lifecycle'){mLifecycle=tgt.value;mPage=0;var tb4=document.getElementById('master-tbody');if(tb4)tb4.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='m-bulan'){mBulan=tgt.value;mPage=0;var tb5=document.getElementById('master-tbody');if(tb5)tb5.innerHTML=masterRows(Store.get());}
   if(tgt.id==='sync-month-sel'){syncMonthFilter=tgt.value;}
-  if(tgt.id==='resp-cat-filter'){respCatFilter=tgt.value;renderResponseResults();}
-  if(tgt.id==='resp-agent-filter'){respAgentFilter=tgt.value;renderResponseResults();}
+  if(tgt.id==='resp-cat-filter'){respCatFilter=tgt.value;respPage=0;renderResponseResults();}
+  if(tgt.id==='resp-agent-filter'){respAgentFilter=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='csv-import'){var file=tgt.files[0];if(file)handleCsvImport(file);}
+  // Pagination -- prev/next buttons (masterRows/wsRows dipanggil ulang, pagerRow otomatis clamp halaman)
+  if(tgt.id==='master-prev-btn'){mPage=Math.max(0,mPage-1);var tbp=document.getElementById('master-tbody');if(tbp)tbp.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='master-next-btn'){mPage++;var tbn=document.getElementById('master-tbody');if(tbn)tbn.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='ws-prev-btn'||tgt.id==='ws-next-btn'){
+    wsPage=tgt.id==='ws-prev-btn'?Math.max(0,wsPage-1):wsPage+1;
+    var dw=Store.get(),mew=Auth.getActive(),isSupw=Auth.isSuperior();
+    var wpw=new Set(dw.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
+    var tbw=document.getElementById('ws-tbody');if(tbw)tbw.innerHTML=wsRows(dw,mew,isSupw,wpw);
+  }
+  if(tgt.id==='resp-prev-btn'){respPage=Math.max(0,respPage-1);renderResponseResults();}
+  if(tgt.id==='resp-next-btn'){respPage++;renderResponseResults();}
 });
 
 tabContent.addEventListener('input',function(e){
   var tgt=e.target;
-  if(tgt.id==='ws-search'){wsSearch=tgt.value;var d=Store.get();var me=Auth.getActive();var isSup=Auth.isSuperior();var wp=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));var tb=document.getElementById('ws-tbody');if(tb)tb.innerHTML=wsRows(d,me,isSup,wp);}
-  if(tgt.id==='m-search'){mSearch=tgt.value;var tb2=document.getElementById('master-tbody');if(tb2)tb2.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='resp-search'){respSearch=tgt.value;renderResponseResults();}
+  if(tgt.id==='ws-search'){wsSearch=tgt.value;wsPage=0;var d=Store.get();var me=Auth.getActive();var isSup=Auth.isSuperior();var wp=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));var tb=document.getElementById('ws-tbody');if(tb)tb.innerHTML=wsRows(d,me,isSup,wp);}
+  if(tgt.id==='m-search'){mSearch=tgt.value;mPage=0;var tb2=document.getElementById('master-tbody');if(tb2)tb2.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='resp-search'){respSearch=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='wl-search'){wlSearch=tgt.value;renderWatchlistTable();}
   if(tgt.id==='wl-new-phone'){
     var phoneQ=tgt.value.trim();
