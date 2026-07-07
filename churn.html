@@ -1915,7 +1915,7 @@ function renderMaster(){
     +'<button class="btn btn-blu" id="sync-blastlog-btn" style="padding:5px 12px;font-size:12px" title="Import bukti kirim WABA aktual dari BROADCASTLOG CLARA, cocokkan ke checkpoint H-3/H+2/H+8">📥 Sync Blast Log</button>'
     +'<button class="btn btn-blu" id="sync-financials-btn" style="padding:5px 12px;font-size:12px" title="Import Revenue/MRR/ARPU/Upsell dari RENEWAL & UPSELL 2026 (sesuai bulan sync)">📥 Sync Financials</button>'
     +'<button class="btn btn-blu" id="sync-grossnet-btn" style="padding:5px 12px;font-size:12px" title="Import Gross-vs-Net dari Data Invoice CX (team-level, sesuai bulan sync)">📥 Sync Gross-Net</button>'
-    +'<button class="btn btn-sec" id="sync-3m-btn" style="padding:5px 12px;font-size:12px" title="Sync semua bulan Jan–Des sekaligus">📅 Sync Semua Bulan</button>'
+    +'<button class="btn btn-sec" id="sync-3m-btn" style="padding:5px 12px;font-size:12px" title="Sync 2 bulan ke belakang s/d Desember (bukan Jan-Des penuh -- storage browser nggak muat 1 tahun)">📅 Sync Semua Bulan</button>'
     +syncInfo+lastSyncInfo
     +'<label class="btn btn-sec" style="cursor:pointer">📁 Import CSV<input type="file" id="csv-import" accept=".csv" style="display:none"></label>'
     +'<button class="btn btn-sec" id="export-csv-btn">⬇ Export CSV</button>'
@@ -3214,11 +3214,14 @@ function handleExportCsv(){
 
 // ── SYNC FROM GOOGLE APPS SCRIPT ───────────────────────────────────────────
 
-// Sync prev + current + next month sequentially (3-month rolling window)
+// Sync window: 2 bulan ke belakang (kebutuhan histori pendek) s/d Desember (kebutuhan follow-up ke depan
+// -- dicek jauh lebih sering). Nggak narik Jan-Des penuh krn localStorage nggak muat 1 tahun penuh (~36rb baris).
 function syncThreeMonths(){
   if(!manualSyncAllowed())return;
   var MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  var queue=MONTHS.slice();
+  var curIdx=new Date().getMonth();
+  var startIdx=Math.max(0,curIdx-2);
+  var queue=MONTHS.slice(startIdx);
   var btn=document.getElementById('sync-3m-btn');
   if(btn)btn.disabled=true;
 
@@ -3226,14 +3229,14 @@ function syncThreeMonths(){
     if(idx>=queue.length){
       if(btn){btn.disabled=false;btn.textContent='📅 Sync Semua Bulan';}
       setLastSyncAt(Date.now());
-      toast('✅ Selesai sync semua bulan. Mengambil agen…',5000);
+      toast('✅ Selesai sync '+queue[0]+'–'+queue[queue.length-1]+'. Mengambil agen…',5000);
       renderTab(currentTab);
       setTimeout(function(){syncAssignOnly('');},400);
       return;
     }
     var mon=queue[idx];
-    if(btn)btn.textContent='⏳ ('+(idx+1)+'/12) '+mon+'…';
-    toast('Mengambil data '+mon+'… ('+(idx+1)+'/12)',3000);
+    if(btn)btn.textContent='⏳ ('+(idx+1)+'/'+queue.length+') '+mon+'…';
+    toast('Mengambil data '+mon+'… ('+(idx+1)+'/'+queue.length+')',3000);
     var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
     var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
     fetch(GAS_URL+'?action=data&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||''),ctrl?{signal:ctrl.signal}:{})
