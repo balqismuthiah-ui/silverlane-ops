@@ -1904,7 +1904,10 @@ function masterRows(d){
   var s=mSearch.toLowerCase();
   var filtered=d.records.filter(function(r){
     if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
-    if(mAgent&&r.assignedAgent!==mAgent)return false;
+    if(mAgent){
+      if(mAgent==='__unassigned__'){if(r.assignedAgent)return false;}
+      else if(r.assignedAgent!==mAgent)return false;
+    }
     if(mBlast&&r.blastStatus!==mBlast)return false;
     if(mLifecycle&&(r.lifecycleStatus||'')!==mLifecycle)return false;
     if(mBulan){var _cm=(r.cohortMonths||r.bulan||'').split(',');if(_cm.indexOf(mBulan)<0)return false;}
@@ -1952,7 +1955,8 @@ function renderMaster(){
     document.getElementById('tab-content').innerHTML='<div class="empty">Tab ini hanya bisa diakses oleh Team Lead (Sekar).</div>';
     return;
   }
-  var agentOpts='<option value="">Semua Agen</option>'+allUsersInclInactive().map(function(a){return'<option value="'+a+'"'+(mAgent===a?' selected':'')+'>'+a+'</option>';}).join('');
+  var agentOpts='<option value="">Semua Agen</option>'+allUsersInclInactive().map(function(a){return'<option value="'+a+'"'+(mAgent===a?' selected':'')+'>'+a+'</option>';}).join('')
+    +'<option value="__unassigned__"'+(mAgent==='__unassigned__'?' selected':'')+'>Unassigned</option>';
   var blastOpts='<option value="">Semua Status Blast</option><option value="pending"'+(mBlast==='pending'?' selected':'')+'>Pending</option><option value="blasted"'+(mBlast==='blasted'?' selected':'')+'>Blasted</option><option value="skip"'+(mBlast==='skip'?' selected':'')+'>Skip</option>';
   var respOpts='<option value="">Semua Respon</option>'+Object.keys(RESP_CATS).map(function(c){return'<option value="'+c+'"'+(mResp===c?' selected':'')+'>'+c+'</option>';}).join('')+'<option value="__none__"'+(mResp==='__none__'?' selected':'')+'>Belum Dikategorikan</option>';
   var lcOpts='<option value="">Semua Status Lifecycle</option>'
@@ -2783,8 +2787,17 @@ function openResp(id){
     var opts=RESP_DETAILS[resp.category];
     detailOpts+=(Array.isArray(opts)?opts:[]).map(function(o){return'<option value="'+o+'"'+(resp.detail===o?' selected':'')+'>'+o+'</option>';}).join('');
   }
+  // Dropdown dulu cuma daftar AGENTS -- kalau r.assignedAgent kosong (Unassigned) atau nilai khusus dari
+  // sheet (mis. "Akun Internal"/"Bukan renewal", nggak ada di AGENTS), select nggak punya opsi yang match
+  // -> browser default ke opsi pertama (Erizka), lalu ke-save diam-diam sebagai reassignment nyata.
+  var curAgentVal=r.assignedAgent||'';
+  var specialAgentOpt=(curAgentVal&&AGENTS.indexOf(curAgentVal)<0)?'<option value="'+curAgentVal+'" selected>'+curAgentVal+' (dari sheet)</option>':'';
   var agentField=isSup
-    ?'<label>Agen (Team Lead bisa ganti)</label><select id="resp-agent">'+AGENTS.map(function(a){return'<option value="'+a+'"'+(r.assignedAgent===a?' selected':'')+'>'+a+'</option>';}).join('')+'</select>'
+    ?'<label>Agen (Team Lead bisa ganti)</label><select id="resp-agent">'
+      +'<option value=""'+(!curAgentVal?' selected':'')+'>— Unassigned —</option>'
+      +specialAgentOpt
+      +AGENTS.map(function(a){return'<option value="'+a+'"'+(curAgentVal===a?' selected':'')+'>'+a+'</option>';}).join('')
+      +'</select>'
     :'<div style="font-size:11px;color:var(--tx3);margin-bottom:10px">Agen: '+(r.assignedAgent||'—')+'</div>';
   // P1-1: render riwayat audit (siapa · dari → ke · kapan), terbaru dulu
   var auditHtml='';
@@ -2901,10 +2914,12 @@ function saveResp(){
   }
 
   // AC-C2/AC-F3: Sekar bisa ganti agen langsung dari modal respon, tercatat di audit
+  // "" (Unassigned) sekarang pilihan sah -- jangan pakai truthy check di value, itu yg bikin
+  // record unassigned/nilai khusus sheet ke-reassign diam-diam ke opsi pertama dropdown.
   var agentEl2=document.getElementById('resp-agent');
-  if(isSup&&agentEl2&&agentEl2.value&&agentEl2.value!==r.assignedAgent){
+  if(isSup&&agentEl2&&agentEl2.value!==(r.assignedAgent||'')){
     r.responseAudit=r.responseAudit||[];
-    r.responseAudit.push({by:me,at:new Date().toISOString(),field:'agen',from:r.assignedAgent||'—',to:agentEl2.value});
+    r.responseAudit.push({by:me,at:new Date().toISOString(),field:'agen',from:r.assignedAgent||'—',to:agentEl2.value||'—'});
     r.assignedAgent=agentEl2.value;
   }
 
