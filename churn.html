@@ -3364,7 +3364,7 @@ function syncThreeMonths(){
             email:String(row['Email Outlet']||row['Email User']||'').trim(),
             expiryDate:expiry,phone:phone,
             productPackage:String(row['Jenis Paket (yang dibayar)']||'').trim(),
-            paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
+            paymentStatus:resolvePaymentStatus(row),
             lifecycleStatus:String(row['Lifecycle Status']||'').trim(),
             gtvLast3M:gtv||null,
             idMerchant:String(row['ID Merchant']||'').trim()||null,
@@ -3420,6 +3420,16 @@ function mapPaymentStatus(raw){
   if(r.indexOf('invoice')>=0)return'invoice';
   if(r==='belum bayar'||r==='belum lunas'||r==='unpaid')return'invoice';
   return null;
+}
+
+// "Invoice Terkirim" dari teks bebas "Status Pembayaran" nggak reliable (rancu, banyak variasi frasa).
+// Indikator invoice yg beneran akurat = ada isi di No Invoice/VA Merchant/VA Outlet/VA CRM (kolom AH/AL/AM/AN).
+// "Lunas" tetap menang kalau Status Pembayaran udah confirm paid (invoice tetap ada tapi udah selesai).
+function resolvePaymentStatus(row){
+  var mapped=mapPaymentStatus(row['Status Pembayaran']);
+  if(mapped==='paid')return'paid';
+  var hasInvoiceCols=!!(String(row['No Invoice']||'').trim()||String(row['VA Merchant']||'').trim()||String(row['VA Outlet']||'').trim()||String(row['VA CRM']||'').trim());
+  return hasInvoiceCols?'invoice':mapped;
 }
 
 function currentMonthAbbr(){
@@ -3492,7 +3502,7 @@ function syncFromGAS(opts){
           phone:phone,
           phoneAlts:phoneAlts,
           productPackage:String(row['Jenis Paket (yang dibayar)']||'').trim(),
-          paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
+          paymentStatus:resolvePaymentStatus(row),
           lifecycleStatus:String(row['Lifecycle Status']||'').trim(),
           gtvLast3M:gtv||null,
           idMerchant:String(row['ID Merchant']||'').trim()||null,
