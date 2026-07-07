@@ -1262,6 +1262,13 @@ function setLastSyncAt(ts){localStorage.setItem(SYNC_TS_KEY,String(ts||Date.now(
 var DB_FRESHNESS_KEY='klopos_db_freshness_v1';
 function getKnownDbFreshness(){var v=localStorage.getItem(DB_FRESHNESS_KEY);return v?parseInt(v,10):0;}
 function setKnownDbFreshness(ts){localStorage.setItem(DB_FRESHNESS_KEY,String(ts));}
+
+// CLM-08: auto-poll editan respons agen lain (delta, BUKAN full ?action=responses ~22k baris --
+// concern kuota Muthia/Ubay). Marker "since" dianchor ke jam SERVER (serverNow dari GAS), bukan jam
+// klien, biar nggak ada gap/overlap gara-gara clock-skew antar device.
+var RESP_POLL_SINCE_KEY='klopos_resp_poll_since_v1';
+function getRespPollSince(){var v=localStorage.getItem(RESP_POLL_SINCE_KEY);return v?parseInt(v,10):0;}
+function setRespPollSince(ts){localStorage.setItem(RESP_POLL_SINCE_KEY,String(ts));}
 function fmtSyncTime(ts){
   if(!ts)return'belum pernah';
   var dt=new Date(ts);if(isNaN(dt.getTime()))return'—';
@@ -3855,6 +3862,76 @@ function syncBroadcastLogOnly(){
   });
 }
 
+// Map SUMMARY sheet -> taksonomi RESP_CATS: exact-match dulu, fuzzy cuma fallback.
+// Dipake syncResponsesOnly (full ?action=responses) DAN pollResponsesDelta (delta dash-block).
+function mapSummaryToCategory(sum){
+  if(!sum)return null;
+  if(RESP_CATS[sum])return sum;
+  var sl=sum.toLowerCase();
+  if(sl.indexOf('positif')>=0)return'RESPON POSITIF';
+  if(sl.indexOf('negatif')>=0)return'RESPON NEGATIF';
+  if(sl.indexOf('self onboard')>=0)return'Self Onboard';
+  if(sl.indexOf('bukan renewal')>=0)return'BUKAN RENEWAL';
+  if(sl.indexOf('nomor tidak valid')>=0)return'NOMOR TIDAK VALID';
+  if(sl.indexOf('no response')>=0)return'NO RESPONSE';
+  return null;
+}
+
+// CLM-08: merge 1 baris dash-block (delta-poll) ke response lokal -- pola sama kayak
+// mergeUpsellFromRemote: remote menang HANYA kalau lebih baru dari local (local blm ke-push /
+// memang local yg terbaru menang). Field local-only (updatedPhone, waStatus) nggak ada di
+// DASH_HEADERS -- selalu preserve punya local, jangan ditimpa kosong.
+function mergeResponseFromRemote(local,remoteRow){
+  var remoteLastEdit=String(remoteRow['Last Edit At']||'');
+  var localLastEdit=local?String(local.updatedAt||''):'';
+  if(local&&remoteLastEdit&&localLastEdit&&remoteLastEdit<=localLastEdit)return local;
+  var sum=String(remoteRow['Summary']||'').trim();
+  return{
+    category:mapSummaryToCategory(sum)||(local?local.category:null),
+    detail:String(remoteRow['Keterangan']||'').trim()||(local?local.detail:null),
+    note:String(remoteRow['Note']||'').trim()||(local?local.note:null),
+    evidenceLink:String(remoteRow['Link Evidence']||'').trim()||(local?local.evidenceLink:null),
+    updatedPhone:local?local.updatedPhone:null,
+    waStatus:local?(local.waStatus||'unchecked'):'unchecked',
+    updatedAt:remoteRow['Last Edit At']||'',
+    updatedBy:remoteRow['Last Edit By']||''
+  };
+}
+
+// CLM-08: auto-poll respons agen lain -- RINGAN (delta dash-block, bukan full 22k-row responses).
+// on-load + tiap 5 menit (dipanggil dari startApp). Diam2 kalau nggak ada perubahan; toast cuma
+// muncul kalau beneran ada respons baru dari agen lain. Aman terhadap concurrency CLM-02: guard
+// respOpenSnapshot dicek pas SAVE (bandingkan updatedAt), bukan pas merge -- jadi kalau delta-poll
+// update r.response.updatedAt jadi lebih baru sementara modal lagi kebuka, saveResp() otomatis
+// bakal ke-detect sebagai konflik & munculin confirm (behavior yg memang diinginkan).
+function pollResponsesDelta(){
+  if(!Auth.isLoggedIn())return;
+  var since=getRespPollSince();
+  fetch(GAS_URL+'?action=responsesDelta&since='+since+'&token='+encodeURIComponent(Auth.getToken()||''))
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(json){
+      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      var rows=json.data||[];
+      if(rows.length){
+        var d=Store.get();
+        var idx={};d.records.forEach(function(r){idx[r.id]=r;});
+        var n=0;
+        rows.forEach(function(row){
+          var jc=String(row['Join id outlet&exp date']||'').trim();if(!jc)return;
+          var rec=idx[jc];if(!rec)return;
+          var merged=mergeResponseFromRemote(rec.response,row);
+          if(merged!==rec.response){rec.response=merged;n++;}
+        });
+        if(n){
+          Store.set(d);renderTab(currentTab);
+          toast('🔄 '+n+' respons diperbarui agen lain',3500);
+        }
+      }
+      setRespPollSince(json.serverNow||Date.now());
+    })
+    .catch(function(){/* poll gagal -- diam2, bukan jalur kritis, coba lagi poll berikutnya */});
+}
+
 function syncResponsesOnly(){
   var btn=document.getElementById('sync-resp-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
@@ -3880,17 +3957,8 @@ function syncResponsesOnly(){
       var link=String(row['Link Evidence']||'').trim();
       if(ket)resp.detail=ket;
       if(sum)resp.summary=sum;
-      // map category: SUMMARY sheet = sumber asli taksonomi, exact-match dulu; fuzzy cuma fallback
-      if(RESP_CATS[sum])resp.category=sum;
-      else if(sum){
-        var sl=sum.toLowerCase();
-        if(sl.indexOf('positif')>=0)resp.category='RESPON POSITIF';
-        else if(sl.indexOf('negatif')>=0)resp.category='RESPON NEGATIF';
-        else if(sl.indexOf('self onboard')>=0)resp.category='Self Onboard';
-        else if(sl.indexOf('bukan renewal')>=0)resp.category='BUKAN RENEWAL';
-        else if(sl.indexOf('nomor tidak valid')>=0)resp.category='NOMOR TIDAK VALID';
-        else if(sl.indexOf('no response')>=0)resp.category='NO RESPONSE';
-      }
+      var mappedCat=mapSummaryToCategory(sum);
+      if(mappedCat)resp.category=mappedCat;
       if(note)resp.note=note;
       if(staff)resp.updatedBy=staff;
       if(link)resp.evidenceLink=link;
@@ -4238,6 +4306,12 @@ function startApp(){
   setTimeout(checkFreshnessAndAutoSync,1200);
   // Kirim ulang antrean write-back respons yang sempat gagal (offline queue)
   setTimeout(wbFlush,2500);
+  // CLM-08: auto-poll respons agen lain -- on-load (staggered dikit dari freshness biar nggak
+  // barengan) + tiap 5 menit selama halaman kebuka. Guard _respPollStarted: startApp() bisa kepanggil
+  // lagi (re-login) tapi interval lama harus di-clear dulu biar nggak dobel jalan selamanya.
+  setTimeout(pollResponsesDelta,1800);
+  if(window._respPollIntervalId)clearInterval(window._respPollIntervalId);
+  window._respPollIntervalId=setInterval(pollResponsesDelta,5*60*1000);
 }
 
 // CLM-07: login 2-langkah (email -> OTP), ganti total flow PIN. requestOtp/verifyOtp = action
