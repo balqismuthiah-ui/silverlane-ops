@@ -3280,12 +3280,13 @@ function syncThreeMonths(){
           }
         });
         Store.set(d);
-        doNext(idx+1);
+        // Jeda antar-bulan -- request beruntun tanpa jeda kena rate-limit GAS (503 borongan)
+        setTimeout(function(){doNext(idx+1);},1500);
       })
       .catch(function(err){
         if(timer)clearTimeout(timer);
         toast('Gagal sync '+mon+': '+(err.name==='AbortError'?'Timeout 90s':err.message),4000);
-        doNext(idx+1);
+        setTimeout(function(){doNext(idx+1);},1500);
       });
   }
   doNext(0);
