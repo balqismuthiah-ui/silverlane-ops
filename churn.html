@@ -4,12 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CLM Retention Team — Majoo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
   --bg:#f0fdf9;--sur:#fff;--sur2:#f5fffe;--bdr:#d1faf4;
   --tx:#0f2a24;--tx2:#2d5c52;--tx3:#6b9e94;
-  --pri:#0d9488;--prid:#0f766e;--pril:#ccfbf1;
+  --pri:#29B6B3;--prid:#1D8C8C;--pril:#E0F7F6;
+  --brand-hijau:#A1CF7E;--brand-gradient:linear-gradient(135deg,#A1CF7E 0%,#29B6B3 100%);
   --grn:#059669;--grnl:#d1fae5;
   --yel:#d97706;--yell:#fef3c7;
   --red:#dc2626;--redl:#fee2e2;
@@ -29,7 +32,7 @@
   --blu:#38bdf8;--blul:#0c4a6e;
   --org:#fb923c;--orgl:#431407
 }
-body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
+body{background:var(--bg);color:var(--tx);font-family:'Montserrat',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
 input,select,textarea,button{font-family:inherit;font-size:14px}
 button{cursor:pointer;border:none}
 
@@ -49,10 +52,10 @@ button{cursor:pointer;border:none}
 .auth-error{background:var(--redl);color:var(--red);padding:8px 12px;border-radius:var(--rs);font-size:12px;margin-bottom:12px;display:none}
 
 /* HEADER */
-.header{background:var(--sur);border-bottom:1px solid var(--bdr);padding:0 20px;display:flex;align-items:center;gap:16px;height:56px;box-shadow:var(--sh)}
-.header-logo{display:flex;align-items:center;gap:8px}
-.hbrand{font-size:15px;font-weight:700;color:var(--pri)}
-.hsubt{font-size:10px;color:var(--tx3)}
+.header{background:var(--brand-gradient);padding:0 20px;display:flex;align-items:center;gap:16px;height:56px;box-shadow:0 2px 16px rgba(41,182,179,.35)}
+.header-logo{display:flex;align-items:center;gap:0}
+.hbrand{display:none}
+.hsubt{font-size:10px;font-weight:700;color:#fff;letter-spacing:1.2px;text-transform:uppercase;margin-left:12px}
 .header-agent{margin-left:auto;display:flex;align-items:center;gap:10px}
 .agent-badge{background:var(--pril);color:var(--prid);padding:4px 10px;border-radius:99px;font-size:12px;font-weight:600}
 .superior-badge{background:var(--grnl);color:var(--grn);padding:4px 10px;border-radius:99px;font-size:12px;font-weight:600}
@@ -244,14 +247,9 @@ tr:hover td{background:var(--sur2)}
 <div id="app" style="display:none">
   <div class="header">
     <div class="header-logo">
-      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="14" cy="14" r="14" fill="#0d9488"/>
-        <path d="M14 6L16.8 11.5H22L17.5 14.8L19.5 20L14 16.8L8.5 20L10.5 14.8L6 11.5H11.2L14 6Z" fill="white"/>
-      </svg>
-      <div>
-        <div class="hbrand">majoo</div>
-        <div class="hsubt">CLM Retention Team</div>
-      </div>
+      <img src="data:image/png;base64,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"
+           alt="majoo" style="height:32px;display:block;filter:brightness(0) invert(1)">
+      <div class="hsubt">CLM</div>
     </div>
     <div class="header-agent">
       <span id="header-role-badge" class="agent-badge"></span>
@@ -1235,7 +1233,11 @@ var csvSelectedIds=new Set();
 var wsSelectedIds=new Set();
 var wsSearch='';
 var wsAgentFilter='';
+var wsPayment=''; // CLM-08: filter Status Pembayaran (item c brief)
+var wsCountText=''; // CLM-08: teks counter #ws-count, di-set wsRows() -- lihat catatan masterCountText
 var mSearch='',mAgent='',mBlast='',mResp='';
+var mPayment=''; // CLM-08: filter Status Pembayaran (item c brief)
+var masterCountText=''; // CLM-08: teks counter #master-count, di-set masterRows() sebelum span-nya ada di DOM
 var blastHidePaid=true;
 var respSearch='',respCatFilter='',respAgentFilter='';
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
@@ -1938,10 +1940,18 @@ function masterRows(d){
       if(mResp==='__none__'){if(r.response&&r.response.category)return false;}
       else if(!r.response||r.response.category!==mResp)return false;
     }
+    if(mPayment){
+      if(mPayment==='__none__'){if(r.paymentStatus)return false;}
+      else if(r.paymentStatus!==mPayment)return false;
+    }
     return true;
   });
+  // Simpan di var modul (bukan cuma tulis ke DOM) -- dipake renderMaster buat isi #master-count
+  // di render PERTAMA, sebelum span-nya sendiri ada di DOM (masterRows() dipanggil pas nyusun
+  // string innerHTML, jadi getElementById masih nemu DOM LAMA di render pertama).
+  masterCountText='Menampilkan '+filtered.length+' dari '+d.records.length+' data';
   var cnt=document.getElementById('master-count');
-  if(cnt)cnt.textContent='Menampilkan '+filtered.length+' dari '+d.records.length+' data';
+  if(cnt)cnt.textContent=masterCountText;
   if(!filtered.length)return'<tr><td colspan="10" class="empty">Tidak ada data yang cocok</td></tr>';
   var totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
   mPage=Math.min(mPage,totalPages-1);
@@ -1982,6 +1992,7 @@ function renderMaster(){
     +'<option value="__unassigned__"'+(mAgent==='__unassigned__'?' selected':'')+'>Unassigned</option>';
   var blastOpts='<option value="">Semua Status Blast</option><option value="pending"'+(mBlast==='pending'?' selected':'')+'>Pending</option><option value="blasted"'+(mBlast==='blasted'?' selected':'')+'>Blasted</option><option value="skip"'+(mBlast==='skip'?' selected':'')+'>Skip</option>';
   var respOpts='<option value="">Semua Respon</option>'+Object.keys(RESP_CATS).map(function(c){return'<option value="'+c+'"'+(mResp===c?' selected':'')+'>'+c+'</option>';}).join('')+'<option value="__none__"'+(mResp==='__none__'?' selected':'')+'>Belum Dikategorikan</option>';
+  var payOpts='<option value="">Semua Status Pembayaran</option>'+Object.keys(PAYMENT_STATUS).map(function(p){return'<option value="'+p+'"'+(mPayment===p?' selected':'')+'>'+PAYMENT_STATUS[p].label+'</option>';}).join('')+'<option value="__none__"'+(mPayment==='__none__'?' selected':'')+'>Belum Ada Status</option>';
   var lcOpts='<option value="">Semua Status Lifecycle</option>'
     +'<option value="Hot"'+(mLifecycle==='Hot'?' selected':'')+'>Hot</option>'
     +'<option value="Warm"'+(mLifecycle==='Warm'?' selected':'')+'>Warm</option>'
@@ -2004,6 +2015,9 @@ function renderMaster(){
   }).join('');
   var syncInfo=d.records.length>0?'<span style="font-size:11px;color:var(--tx3);margin-left:8px">'+d.records.length+' records tersimpan</span>':'';
   var lastSyncInfo='<span id="last-sync-info" style="font-size:11px;color:var(--tx3);margin-left:8px" title="Auto-sync jalan bila data >8 jam saat halaman dibuka">🕒 Terakhir sync: '+fmtSyncTime(getLastSyncAt())+'</span>';
+  // Hitung rows + counter DULU (sebelum susun string innerHTML) -- biar #master-count keisi
+  // benar di render PERTAMA, bukan cuma pas filter berikutnya (masterRows nulis ke masterCountText).
+  var masterRowsHtml=masterRows(d);
 
   document.getElementById('tab-content').innerHTML=
     '<div class="form-row" style="margin-bottom:10px;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -2032,17 +2046,29 @@ function renderMaster(){
     +'<select id="m-lifecycle">'+lcOpts+'</select>'
     +'<select id="m-blast">'+blastOpts+'</select>'
     +'<select id="m-resp">'+respOpts+'</select>'
-    +'<span id="master-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center"></span>'
+    +'<select id="m-payment">'+payOpts+'</select>'
+    +'<span id="master-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+masterCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
     +'<thead><tr><th>ID</th><th>Nama Outlet</th><th>Expired</th><th>Nomor HP</th><th>Agen</th><th>Lifecycle</th><th>Blast</th><th>Respon</th><th>Pembayaran</th><th>Aksi</th></tr></thead>'
-    +'<tbody id="master-tbody">'+masterRows(d)+'</tbody></table></div></div>';
+    +'<tbody id="master-tbody">'+masterRowsHtml+'</tbody></table></div></div>';
 }
 
 // ── TAB: WORKSHEET ─────────────────────────────────────────────────────────
-function wsFilteredRecs(d,me,isSup){
+// Scope agen/leader doang (sebelum search/payment) -- basis pembanding buat counter "X dari Y",
+// biar Y berarti "seluruh worksheet-ku" (bukan grand total lintas-agen yg nggak relevan buat agen biasa).
+function wsBasePool(d,me,isSup){
   var fa=isSup?wsAgentFilter:me;
-  var pool=fa?d.records.filter(function(r){return r.assignedAgent===fa;}):(isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;}));
+  return fa?d.records.filter(function(r){return r.assignedAgent===fa;}):(isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;}));
+}
+function wsFilteredRecs(d,me,isSup){
+  var pool=wsBasePool(d,me,isSup);
+  if(wsPayment){
+    pool=pool.filter(function(r){
+      if(wsPayment==='__none__')return!r.paymentStatus;
+      return r.paymentStatus===wsPayment;
+    });
+  }
   if(!wsSearch)return pool;
   var s=wsSearch.toLowerCase();
   return pool.filter(function(r){return r.id.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s)||(r.namaMerchant||'').toLowerCase().includes(s);});
@@ -2050,6 +2076,11 @@ function wsFilteredRecs(d,me,isSup){
 
 function wsRows(d,me,isSup,watchPhones){
   var recs=wsFilteredRecs(d,me,isSup);
+  // Simpan di var modul (sama pola kayak masterCountText) -- dipake renderWorksheet buat isi
+  // #ws-count di render PERTAMA, sebelum span-nya sendiri ada di DOM.
+  wsCountText='Menampilkan '+recs.length+' dari '+wsBasePool(d,me,isSup).length+' data';
+  var cnt=document.getElementById('ws-count');
+  if(cnt)cnt.textContent=wsCountText;
   if(!recs.length)return'<tr><td colspan="11" class="empty">Tidak ada data</td></tr>';
   var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
   wsPage=Math.min(wsPage,totalPages-1);
@@ -2096,15 +2127,25 @@ function renderWorksheet(){
       +allUsersInclInactive().map(function(a){return'<option value="'+a+'"'+(wsAgentFilter===a?' selected':'')+'>'+a+'</option>';}).join('')
       +'</select>';
   }
+  var payFilter='<select id="ws-payment">'
+    +'<option value="">Semua Status Pembayaran</option>'
+    +Object.keys(PAYMENT_STATUS).map(function(p){return'<option value="'+p+'"'+(wsPayment===p?' selected':'')+'>'+PAYMENT_STATUS[p].label+'</option>';}).join('')
+    +'<option value="__none__"'+(wsPayment==='__none__'?' selected':'')+'>Belum Ada Status</option>'
+    +'</select>';
+  // Hitung rows + counter DULU (sama pola kayak renderMaster) -- biar #ws-count keisi benar
+  // di render PERTAMA, bukan cuma pas filter berikutnya.
+  var wsRowsHtml=wsRows(d,me,isSup,watchPhones);
 
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
     +'<input class="fsearch" type="search" id="ws-search" placeholder="🔍 Cari nama / ID outlet..." value="'+wsSearch+'">'
     +(agentFilter||'')
+    +payFilter
+    +'<span id="ws-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+wsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
     +'<thead><tr><th><input type="checkbox" id="ws-chk-all"></th><th>ID</th><th>Nama Outlet</th><th>Expired</th><th>HP Utama</th><th>HP Update</th><th>Agen</th><th>Blast</th><th>Respon</th><th>WA</th><th>Aksi</th></tr></thead>'
-    +'<tbody id="ws-tbody">'+wsRows(d,me,isSup,watchPhones)+'</tbody>'
+    +'<tbody id="ws-tbody">'+wsRowsHtml+'</tbody>'
     +'</table></div></div>';
 
   updateWsBulkBar();
@@ -4187,6 +4228,8 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='m-resp'){mResp=tgt.value;mPage=0;var tb3=document.getElementById('master-tbody');if(tb3)tb3.innerHTML=masterRows(Store.get());}
   if(tgt.id==='m-lifecycle'){mLifecycle=tgt.value;mPage=0;var tb4=document.getElementById('master-tbody');if(tb4)tb4.innerHTML=masterRows(Store.get());}
   if(tgt.id==='m-bulan'){mBulan=tgt.value;mPage=0;var tb5=document.getElementById('master-tbody');if(tb5)tb5.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='m-payment'){mPayment=tgt.value;mPage=0;var tb6=document.getElementById('master-tbody');if(tb6)tb6.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='ws-payment'){wsPayment=tgt.value;wsPage=0;renderWorksheet();}
   if(tgt.id==='sync-month-sel'){syncMonthFilter=tgt.value;}
   if(tgt.id==='resp-cat-filter'){respCatFilter=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='resp-agent-filter'){respAgentFilter=tgt.value;respPage=0;renderResponseResults();}
