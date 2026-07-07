@@ -2025,7 +2025,7 @@ function wsFilteredRecs(d,me,isSup){
   var pool=fa?d.records.filter(function(r){return r.assignedAgent===fa;}):(isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;}));
   if(!wsSearch)return pool;
   var s=wsSearch.toLowerCase();
-  return pool.filter(function(r){return r.id.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s);});
+  return pool.filter(function(r){return r.id.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s)||(r.namaMerchant||'').toLowerCase().includes(s);});
 }
 
 function wsRows(d,me,isSup,watchPhones){
@@ -2104,7 +2104,7 @@ function renderResponseResults(){
   var watchPhones=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
   var s=respSearch.toLowerCase();
   var filtered=pool.filter(function(r){
-    if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s))return false;
+    if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
     if(respCatFilter){
       if(respCatFilter==='__none__'){if(r.response&&r.response.category)return false;}
       else if(!r.response||r.response.category!==respCatFilter)return false;
@@ -3363,7 +3363,7 @@ function syncThreeMonths(){
           var expiry=localDateStr(String(row['Expired Date Latest']||'').trim());
           var gtv=row['GTV Last 3 Month'];
           if(typeof gtv==='string')gtv=parseFloat(gtv.replace(/[^0-9.-]/g,''))||0;else gtv=Number(gtv)||0;
-          var nf={outletId:outletId,outletName:String(row['Nama Outlet']||'').trim(),
+          var nf=Object.assign({outletId:outletId,outletName:String(row['Nama Outlet']||'').trim(),
             email:String(row['Email Outlet']||row['Email User']||'').trim(),
             expiryDate:expiry,phone:phone,
             productPackage:String(row['Jenis Paket (yang dibayar)']||'').trim(),
@@ -3375,7 +3375,7 @@ function syncThreeMonths(){
             namaMerchant:String(row['Nama Merchant']||'').trim()||null,
             merchantKategori:String(row['Merchant Kategori']||'').trim()||null,
             outletKategori:String(row['Outlet Kategori']||'').trim()||null,
-            bulan:bulan||null};
+            bulan:bulan||null},invoiceFieldsFromRow(row));
           Object.keys(nf).forEach(function(k){if(nf[k]===null||nf[k]==='')delete nf[k];});
           var ex=d.records.find(function(r){return r.id===recId;});
           if(ex){
@@ -3433,6 +3433,21 @@ function mapPaymentStatus(raw){
 // bisa muncul bareng tanpa nutupin satu sama lain.
 function hasInvoiceSent(row){
   return!!(String(row['No Invoice']||'').trim()||String(row['VA Merchant']||'').trim()||String(row['VA Outlet']||'').trim()||String(row['VA CRM']||'').trim());
+}
+function parseRupiah(v){
+  if(typeof v==='string')v=parseFloat(v.replace(/[^0-9.-]/g,''))||0;
+  else v=Number(v)||0;
+  return v||null;
+}
+// No Invoice/Tanggal Penagihan/Tanggal Bayar/Total Tagihan udah ada di template Detail Outlet
+// (openDetail) dari awal, tapi nggak pernah ke-mapping pas sync -- makanya selalu tampil "—".
+function invoiceFieldsFromRow(row){
+  return{
+    noInvoice:String(row['No Invoice']||'').trim()||null,
+    tanggalPenagihan:row['Tanggal Penagihan']?localDateStr(String(row['Tanggal Penagihan']).trim()):null,
+    tanggalBayar:row['Tanggal Bayar']?localDateStr(String(row['Tanggal Bayar']).trim()):null,
+    totalTagihan:parseRupiah(row['Total Tagihan (yang dibayar)'])
+  };
 }
 
 function currentMonthAbbr(){
@@ -3497,7 +3512,7 @@ function syncFromGAS(opts){
         if(typeof gtv==='string')gtv=parseFloat(gtv.replace(/[^0-9.-]/g,''))||0;
         else gtv=Number(gtv)||0;
         // Simpan hanya field esensial untuk hemat storage
-        var newFields={
+        var newFields=Object.assign({
           outletId:outletId,
           outletName:String(row['Nama Outlet']||'').trim(),
           email:String(row['Email Outlet']||row['Email User']||'').trim(),
@@ -3514,7 +3529,7 @@ function syncFromGAS(opts){
           merchantKategori:String(row['Merchant Kategori']||'').trim()||null,
           outletKategori:String(row['Outlet Kategori']||'').trim()||null,
           bulan:bulan||null
-        };
+        },invoiceFieldsFromRow(row));
         // Hapus null agar hemat storage
         Object.keys(newFields).forEach(function(k){if(newFields[k]===null||newFields[k]==='')delete newFields[k];});
         var existing=d.records.find(function(r){return r.id===recId;});
