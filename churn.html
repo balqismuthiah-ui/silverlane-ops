@@ -3559,7 +3559,9 @@ function syncAssignOnly(monthParam){
         var outletPart=jc.length>5?jc.slice(0,-5):'';
         var rec=idx[jc]||outletIdx[jc]||(outletPart?outletIdx[outletPart]:null);
         if(!rec){nf++;return;}
-        var ag=_matchAgent(row['Assign Manual']);
+        // Kolom sheet sempat di-rename "Assign Manual"->"Assigned to" mulai tab bulan berjalan (Jul26+)
+        // -- tab bulan lama masih pakai nama lama. Terima dua-duanya biar nggak putus lagi kalau diganti lagi.
+        var ag=_matchAgent(row['Assign Manual']!==undefined?row['Assign Manual']:row['Assigned to']);
         if(ag){rec.assignedAgent=ag;n++;}
       });
       Store.set(d);renderTab(currentTab);
