@@ -1252,9 +1252,16 @@ var syncInProgress=false;
 // ── CLM-01 SYNC STATE (cadence + rate-limit) ────────────────────────────────
 var SYNC_TS_KEY='klopos_last_sync_at';
 var MANUAL_SYNC_COOLDOWN=5*60*1000;   // min 5 menit antar-sync manual
-var AUTO_SYNC_STALE=8*60*60*1000;     // auto-sync bila data >8 jam (≈3x/hari ikut DB)
 function getLastSyncAt(){var v=localStorage.getItem(SYNC_TS_KEY);return v?parseInt(v,10):0;}
 function setLastSyncAt(ts){localStorage.setItem(SYNC_TS_KEY,String(ts||Date.now()));}
+
+// CLM-08: freshness-gated auto-sync -- ganti heuristik lama "stale >8 jam" (bisa sync sia-sia kalau
+// DB belum berubah) dengan pengecekan RIIL ke server (?action=freshness, ringan). Marker ini nyimpen
+// timestamp DB TERAKHIR yg udah berhasil kita sync-in penuh -- beda dari SYNC_TS_KEY (kapan kita
+// TERAKHIR NYOBA sync, dipake buat cooldown manual).
+var DB_FRESHNESS_KEY='klopos_db_freshness_v1';
+function getKnownDbFreshness(){var v=localStorage.getItem(DB_FRESHNESS_KEY);return v?parseInt(v,10):0;}
+function setKnownDbFreshness(ts){localStorage.setItem(DB_FRESHNESS_KEY,String(ts));}
 function fmtSyncTime(ts){
   if(!ts)return'belum pernah';
   var dt=new Date(ts);if(isNaN(dt.getTime()))return'—';
@@ -3327,29 +3334,29 @@ function handleExportCsv(){
 
 // ── SYNC FROM GOOGLE APPS SCRIPT ───────────────────────────────────────────
 
-// Sync window: 2 bulan ke belakang (kebutuhan histori pendek) s/d Desember (kebutuhan follow-up ke depan
-// -- dicek jauh lebih sering). Nggak narik Jan-Des penuh krn localStorage nggak muat 1 tahun penuh (~36rb baris).
-function syncThreeMonths(){
-  if(!manualSyncAllowed())return;
-  var MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  var curIdx=new Date().getMonth();
-  var startIdx=Math.max(0,curIdx-2);
-  var queue=MONTHS.slice(startIdx);
-  var btn=document.getElementById('sync-3m-btn');
+// Engine sync per-bulan sekuensial (1 request/bulan + jeda 1.5s -- hindari rate-limit GAS/503 borongan).
+// Shared: manual "Sync Semua Bulan" (window 2-belakang+forward) DAN auto full-sync freshness-gated
+// (CLM-08, semua 12 bulan, dipanggil dari checkFreshnessAndAutoSync). opts.silent nge-skip toast
+// per-bulan (background run nggak perlu spam "Mengambil data Jan..." tiap bulan) tapi toast selesai
+// (opts.doneMsg) TETAP muncul.
+function syncMonthList(months,opts){
+  opts=opts||{};
+  var btn=opts.btnId?document.getElementById(opts.btnId):null;
   if(btn)btn.disabled=true;
 
   function doNext(idx){
-    if(idx>=queue.length){
-      if(btn){btn.disabled=false;btn.textContent='📅 Sync Semua Bulan';}
+    if(idx>=months.length){
+      if(btn){btn.disabled=false;btn.textContent=opts.btnIdleLabel||'Sync';}
       setLastSyncAt(Date.now());
-      toast('✅ Selesai sync '+queue[0]+'–'+queue[queue.length-1]+'. Mengambil agen…',5000);
+      toast(opts.doneMsg||('✅ Selesai sync '+months[0]+'–'+months[months.length-1]+'. Mengambil agen…'),5000);
       renderTab(currentTab);
       setTimeout(function(){syncAssignOnly('');},400);
+      if(opts.onComplete)opts.onComplete();
       return;
     }
-    var mon=queue[idx];
-    if(btn)btn.textContent='⏳ ('+(idx+1)+'/'+queue.length+') '+mon+'…';
-    toast('Mengambil data '+mon+'… ('+(idx+1)+'/'+queue.length+')',3000);
+    var mon=months[idx];
+    if(btn)btn.textContent='⏳ ('+(idx+1)+'/'+months.length+') '+mon+'…';
+    if(!opts.silent)toast('Mengambil data '+mon+'… ('+(idx+1)+'/'+months.length+')',3000);
     var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
     var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
     fetch(GAS_URL+'?action=data&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||''),ctrl?{signal:ctrl.signal}:{})
@@ -3397,16 +3404,51 @@ function syncThreeMonths(){
           }
         });
         Store.set(d);
-        // Jeda antar-bulan -- request beruntun tanpa jeda kena rate-limit GAS (503 borongan)
         setTimeout(function(){doNext(idx+1);},1500);
       })
       .catch(function(err){
         if(timer)clearTimeout(timer);
-        toast('Gagal sync '+mon+': '+(err.name==='AbortError'?'Timeout 90s':err.message),4000);
+        if(!opts.silent)toast('Gagal sync '+mon+': '+(err.name==='AbortError'?'Timeout 90s':err.message),4000);
         setTimeout(function(){doNext(idx+1);},1500);
       });
   }
   doNext(0);
+}
+
+// Sync window: 2 bulan ke belakang (kebutuhan histori pendek) s/d Desember (kebutuhan follow-up ke depan
+// -- dicek jauh lebih sering). Beda dari auto full-sync CLM-08 (semua 12 bulan) yg freshness-gated (jarang
+// jalan, jadi aman narik semua sekaligus) -- ini manual, dipencet kapan aja, tetep di-window biar hemat.
+function syncThreeMonths(){
+  if(!manualSyncAllowed())return;
+  var MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var curIdx=new Date().getMonth();
+  var startIdx=Math.max(0,curIdx-2);
+  var queue=MONTHS.slice(startIdx);
+  syncMonthList(queue,{btnId:'sync-3m-btn',btnIdleLabel:'📅 Sync Semua Bulan'});
+}
+
+// CLM-08: cek freshness DB (ringan, token-gated, BUKAN narik data) -- auto full-sync SEMUA 12 bulan
+// HANYA kalau server beneran refresh sejak sync terakhir (max ~3x/hari ikut cadence KLOPOS asli, BUKAN
+// tiap kali halaman dibuka kayak heuristik lama). Non-blocking: startApp() udah renderTab (data cached)
+// duluan sebelum ini dipanggil -- sync jalan di background, diam2 kalau DB belum berubah (hemat ~30 detik).
+function checkFreshnessAndAutoSync(){
+  if(!Auth.isLoggedIn())return;
+  fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(Auth.getToken()||''))
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(json){
+      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      var serverFresh=json.lastRefresh||0;
+      var known=getKnownDbFreshness();
+      if(serverFresh<=known)return; // DB belum berubah sejak sync terakhir -- skip diam2
+      var ALL_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      toast('🔄 Data DB baru — auto-sync semua bulan berjalan di latar belakang…',4000);
+      syncMonthList(ALL_MONTHS,{
+        silent:true,
+        doneMsg:'✅ Auto-sync selesai — data terbaru sudah tersedia.',
+        onComplete:function(){setKnownDbFreshness(serverFresh);}
+      });
+    })
+    .catch(function(){/* freshness check gagal -- diam2, bukan jalur kritis, jangan ganggu UX */});
 }
 
 function toExcelSerial(val){
@@ -4190,14 +4232,10 @@ function startApp(){
   document.documentElement.setAttribute('data-theme',savedTheme);
   document.getElementById('theme-btn').textContent=savedTheme==='dark'?'☀️':'🌙';
   renderTab('overview');
-  // CLM-01: auto-sync ikut cadence DB (≈3x/hari) — trigger bila data >8 jam saat halaman dibuka
-  var lastSync=getLastSyncAt();
-  if(Date.now()-lastSync>AUTO_SYNC_STALE){
-    setTimeout(function(){
-      toast('🔄 Data >8 jam — auto-sync berjalan di latar belakang…',3500);
-      syncFromGAS({auto:true});
-    },1200);
-  }
+  // CLM-08: ganti heuristik lama "stale >8 jam" (sync sia-sia kalau DB belum berubah) dengan cek
+  // freshness RIIL ke server -- auto full-sync (semua bulan) HANYA kalau DB beneran refresh sejak
+  // terakhir kita sync. Non-blocking: renderTab di atas udah nampilin data cached duluan.
+  setTimeout(checkFreshnessAndAutoSync,1200);
   // Kirim ulang antrean write-back respons yang sempat gagal (offline queue)
   setTimeout(wbFlush,2500);
 }
