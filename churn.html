@@ -1013,16 +1013,22 @@ var Store={
 // ── AGENTS CONFIG STORE (CLM-06: sumber tunggal identitas — login, assignment, Overview, target, template) ──
 var AgentsConfig={
   KEY:'klopos_agents_v1',
+  // Default fallback ini kepake pas AgentsConfig localStorage KOSONG (browser/origin baru -- kejadian nyata
+  // pas migrasi domain, tiap origin punya localStorage sendiri). Dulu nggak punya field email sama sekali
+  // -> begitu ke-sync ke server, server nolak (invalid_payload, name-tanpa-email) -- ketauan pas dry-run
+  // domain baru. Email di bawah WAJIB match persis roster BOOTSTRAP_ALLOWLIST_ONCE di GAS.
   DEFS:[
-    {id:'a1',name:'Erizka',initials:'ED',displayName:'Erizka',role:'agent',status:'active'},
-    {id:'a2',name:'Elly',initials:'EL',displayName:'Elly (Eliyawati)',role:'agent',status:'active'},
-    {id:'a3',name:'Finne',initials:'FF',displayName:'Finne',role:'agent',status:'active'},
-    {id:'a4',name:'Fauziyah',initials:'FC',displayName:'Fauziyah',role:'agent',status:'active'},
-    {id:'a5',name:'Novianty',initials:'NV',displayName:'Novianty',role:'agent',status:'active'},
-    {id:'a6',name:'Sarah',initials:'SE',displayName:'Sarah',role:'agent',status:'active'},
-    {id:'a7',name:'Sunarti',initials:'SN',displayName:'Sunarti',role:'agent',status:'active'},
-    {id:'a8',name:'Shevtya',initials:'SR',displayName:'Shevtya',role:'agent',status:'active'},
-    {id:'a9',name:'Sekar',initials:'SK',displayName:'Sekar',role:'leader',status:'active'}
+    {id:'a1',name:'Erizka',email:'erizka.dewanty@majoo.id',initials:'ED',displayName:'Erizka',role:'agent',status:'active'},
+    {id:'a2',name:'Elly',email:'eliyawati.eli@majoo.id',initials:'EL',displayName:'Elly (Eliyawati)',role:'agent',status:'active'},
+    {id:'a3',name:'Finne',email:'finne.fadhilla@majoo.id',initials:'FF',displayName:'Finne',role:'agent',status:'active'},
+    {id:'a4',name:'Fauziyah',email:'fauziyah.nisa@majoo.id',initials:'FC',displayName:'Fauziyah',role:'agent',status:'active'},
+    {id:'a5',name:'Novianty',email:'novianty@majoo.id',initials:'NV',displayName:'Novianty',role:'agent',status:'active'},
+    {id:'a6',name:'Sarah',email:'sarah.elizabeth@majoo.id',initials:'SE',displayName:'Sarah',role:'agent',status:'active'},
+    {id:'a7',name:'Sunarti',email:'sunarti@majoo.id',initials:'SN',displayName:'Sunarti',role:'agent',status:'active'},
+    {id:'a8',name:'Shevtya',email:'shevtya.rahma@majoo.id',initials:'SR',displayName:'Shevtya',role:'agent',status:'active'},
+    {id:'a9',name:'Sekar',email:'sekar@majoo.id',initials:'SK',displayName:'Sekar',role:'leader',status:'active'},
+    {id:'a10',name:'Muthia',email:'balqis.muthiah@majoo.id',initials:'BM',displayName:'Muthia',role:'leader',status:'active'},
+    {id:'a11',name:'Ryan',email:'ryanza.rudiananda@majoo.id',initials:'RR',displayName:'Ryan',role:'leader',status:'active'}
   ],
   getAll:function(){
     try{
