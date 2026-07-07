@@ -3956,6 +3956,17 @@ tabContent.addEventListener('click',function(e){
     toast('Berhasil ditambahkan ke GC Watchlist');
     renderWatchlist();
   }
+  // Pagination -- prev/next buttons (masterRows/wsRows dipanggil ulang, pagerRow otomatis clamp halaman)
+  else if(tgt.id==='master-prev-btn'){mPage=Math.max(0,mPage-1);var tbp=document.getElementById('master-tbody');if(tbp)tbp.innerHTML=masterRows(Store.get());}
+  else if(tgt.id==='master-next-btn'){mPage++;var tbn=document.getElementById('master-tbody');if(tbn)tbn.innerHTML=masterRows(Store.get());}
+  else if(tgt.id==='ws-prev-btn'||tgt.id==='ws-next-btn'){
+    wsPage=tgt.id==='ws-prev-btn'?Math.max(0,wsPage-1):wsPage+1;
+    var dwp=Store.get(),mewp=Auth.getActive(),isSupwp=Auth.isSuperior();
+    var wpwp=new Set(dwp.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
+    var tbw=document.getElementById('ws-tbody');if(tbw)tbw.innerHTML=wsRows(dwp,mewp,isSupwp,wpwp);
+  }
+  else if(tgt.id==='resp-prev-btn'){respPage=Math.max(0,respPage-1);renderResponseResults();}
+  else if(tgt.id==='resp-next-btn'){respPage++;renderResponseResults();}
 });
 
 // Inline agent input save on focusout
@@ -4020,17 +4031,6 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='resp-cat-filter'){respCatFilter=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='resp-agent-filter'){respAgentFilter=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='csv-import'){var file=tgt.files[0];if(file)handleCsvImport(file);}
-  // Pagination -- prev/next buttons (masterRows/wsRows dipanggil ulang, pagerRow otomatis clamp halaman)
-  if(tgt.id==='master-prev-btn'){mPage=Math.max(0,mPage-1);var tbp=document.getElementById('master-tbody');if(tbp)tbp.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='master-next-btn'){mPage++;var tbn=document.getElementById('master-tbody');if(tbn)tbn.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='ws-prev-btn'||tgt.id==='ws-next-btn'){
-    wsPage=tgt.id==='ws-prev-btn'?Math.max(0,wsPage-1):wsPage+1;
-    var dw=Store.get(),mew=Auth.getActive(),isSupw=Auth.isSuperior();
-    var wpw=new Set(dw.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
-    var tbw=document.getElementById('ws-tbody');if(tbw)tbw.innerHTML=wsRows(dw,mew,isSupw,wpw);
-  }
-  if(tgt.id==='resp-prev-btn'){respPage=Math.max(0,respPage-1);renderResponseResults();}
-  if(tgt.id==='resp-next-btn'){respPage++;renderResponseResults();}
 });
 
 tabContent.addEventListener('input',function(e){
