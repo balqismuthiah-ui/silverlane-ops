@@ -929,20 +929,27 @@ var Store={
   set:function(d){
     try{
       localStorage.setItem(STORE_KEY,JSON.stringify(d));
+      return;
     }catch(e){
-      if(e.name==='QuotaExceededError'||e.code===22||e.code===1014){
-        toast('⚠ Storage penuh — menghapus data bulan terlama untuk buat ruang...',4000);
-        var trimmed=JSON.parse(JSON.stringify(d));
-        // Sort newest month first, keep latest 8000
-        var MORD=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        trimmed.records.sort(function(a,b){return MORD.indexOf(b.bulan||'')-MORD.indexOf(a.bulan||'');});
-        if(trimmed.records.length>8000){
-          trimmed.records=trimmed.records.slice(0,8000);
-        }
-        try{localStorage.setItem(STORE_KEY,JSON.stringify(trimmed));}
-        catch(e2){toast('Storage tetap penuh. Hapus data lama via Reset dulu.',5000);}
-      }
+      if(e.name!=='QuotaExceededError'&&e.code!==22&&e.code!==1014)return;
     }
+    // Storage penuh -- angka tetap (dulu 8000) ternyata masih ketebakan kegedean utk quota browser
+    // asli (~5MB, ~700B/record -> muat ~6500-7000an). Sekarang coba beneran ngecilin bertahap
+    // (75%/60%/45%/30%/15%) sampe salah satu muat, drop bulan terlama duluan.
+    toast('⚠ Storage penuh — mengurangi data lama untuk buat ruang...',4000);
+    var MORD=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var base=JSON.parse(JSON.stringify(d));
+    base.records.sort(function(a,b){return MORD.indexOf(b.bulan||'')-MORD.indexOf(a.bulan||'');});
+    var full=base.records;
+    for(var frac=0.75;frac>0.05;frac-=0.15){
+      base.records=full.slice(0,Math.floor(full.length*frac));
+      try{
+        localStorage.setItem(STORE_KEY,JSON.stringify(base));
+        toast('Storage penuh — disimpan '+base.records.length+' dari '+full.length+' records (bulan terlama dibuang duluan)',6000);
+        return;
+      }catch(e2){/* coba fraksi lebih kecil */}
+    }
+    toast('Storage tetap penuh walau udah dikecilin drastis. Hapus data lama via Reset dulu.',5000);
   },
   reset:function(){localStorage.removeItem(STORE_KEY);}
 };
