@@ -757,10 +757,13 @@ var PAYMENT_STATUS={
   'approved':{label:'Disetujui',color:'pri',blast:true},
   'expired':{label:'Invoice Kadaluarsa',color:'red',blast:true}
 };
-function payBadge(s){
-  if(!s)return'<span class="badge badge-gray">—</span>';
-  var p=PAYMENT_STATUS[s];
-  return p?'<span class="badge badge-'+p.color+'">'+p.label+'</span>':'<span class="badge badge-gray">'+s+'</span>';
+// invoiceSent = indikator TERPISAH dari paymentStatus -- ada No Invoice/VA Merchant/VA Outlet/VA CRM
+// di sheet (kolom AH/AL/AM/AN) cuma nunjukin invoice UDAH DIKIRIM, BUKAN udah dibayar. Ditampilin
+// dampingan, bukan nimpa status Lunas/Belum Lunas (kasus umum: belum lunas TAPI invoice udah terkirim).
+function payBadge(s,invoiceSent){
+  var main=!s?'<span class="badge badge-gray">—</span>':(PAYMENT_STATUS[s]?'<span class="badge badge-'+PAYMENT_STATUS[s].color+'">'+PAYMENT_STATUS[s].label+'</span>':'<span class="badge badge-gray">'+s+'</span>');
+  var extra=invoiceSent?' <span class="badge badge-blu" style="font-size:10px" title="Ada No Invoice/VA Merchant/VA Outlet/VA CRM di sheet">📄 Invoice Terkirim</span>':'';
+  return main+extra;
 }
 
 // ── UTILS ──────────────────────────────────────────────────────────────────
@@ -1939,7 +1942,7 @@ function masterRows(d){
       +'<td>'+lifecycleBadge(r.lifecycleStatus)+'</td>'
       +'<td>'+blastBadge(r.blastStatus)+'</td>'
       +'<td>'+respBadge(r.response&&r.response.category)+'</td>'
-      +'<td>'+payBadge(r.paymentStatus)+'</td>'
+      +'<td>'+payBadge(r.paymentStatus,r.invoiceSent)+'</td>'
       +'<td><div class="row-tools">'
       +'<button class="action-btn ab-view" data-act="view" data-id="'+r.id+'">Lihat</button>'
       +'<button class="action-btn ab-edit" data-act="assign" data-id="'+r.id+'">Assign</button>'
@@ -2237,7 +2240,7 @@ function renderBlast(){
       +'<td>'+fmtRelativeBlast(row.lastBlastAt)+'</td>'
       +'<td>'+fmtDate(row.expiryDate)+'</td>'
       +'<td>'+cadenceBadge+'</td>'
-      +'<td>'+payBadge(row.record.paymentStatus)+'</td>'
+      +'<td>'+payBadge(row.record.paymentStatus,row.record.invoiceSent)+'</td>'
       +'</tr>';
   }).join('');
 
@@ -3364,7 +3367,8 @@ function syncThreeMonths(){
             email:String(row['Email Outlet']||row['Email User']||'').trim(),
             expiryDate:expiry,phone:phone,
             productPackage:String(row['Jenis Paket (yang dibayar)']||'').trim(),
-            paymentStatus:resolvePaymentStatus(row),
+            paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
+            invoiceSent:hasInvoiceSent(row)?true:null,
             lifecycleStatus:String(row['Lifecycle Status']||'').trim(),
             gtvLast3M:gtv||null,
             idMerchant:String(row['ID Merchant']||'').trim()||null,
@@ -3422,14 +3426,13 @@ function mapPaymentStatus(raw){
   return null;
 }
 
-// "Invoice Terkirim" dari teks bebas "Status Pembayaran" nggak reliable (rancu, banyak variasi frasa).
-// Indikator invoice yg beneran akurat = ada isi di No Invoice/VA Merchant/VA Outlet/VA CRM (kolom AH/AL/AM/AN).
-// "Lunas" tetap menang kalau Status Pembayaran udah confirm paid (invoice tetap ada tapi udah selesai).
-function resolvePaymentStatus(row){
-  var mapped=mapPaymentStatus(row['Status Pembayaran']);
-  if(mapped==='paid')return'paid';
-  var hasInvoiceCols=!!(String(row['No Invoice']||'').trim()||String(row['VA Merchant']||'').trim()||String(row['VA Outlet']||'').trim()||String(row['VA CRM']||'').trim());
-  return hasInvoiceCols?'invoice':mapped;
+// invoiceSent = indikator TERPISAH dari paymentStatus. "Sudah ada invoice" (No Invoice/VA Merchant/
+// VA Outlet/VA CRM terisi -- kolom AH/AL/AM/AN) BUKAN berarti "sudah lunas" -- default H-30 invoice
+// tagihan udah pasti tampil di dashboard begitu masuk window itu, tapi belum tentu dibayar. Jangan
+// dicampur jadi satu status -- tampilin dampingan (payBadge) biar "Belum Lunas" + "Invoice Terkirim"
+// bisa muncul bareng tanpa nutupin satu sama lain.
+function hasInvoiceSent(row){
+  return!!(String(row['No Invoice']||'').trim()||String(row['VA Merchant']||'').trim()||String(row['VA Outlet']||'').trim()||String(row['VA CRM']||'').trim());
 }
 
 function currentMonthAbbr(){
@@ -3502,7 +3505,8 @@ function syncFromGAS(opts){
           phone:phone,
           phoneAlts:phoneAlts,
           productPackage:String(row['Jenis Paket (yang dibayar)']||'').trim(),
-          paymentStatus:resolvePaymentStatus(row),
+          paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
+          invoiceSent:hasInvoiceSent(row)?true:null,
           lifecycleStatus:String(row['Lifecycle Status']||'').trim(),
           gtvLast3M:gtv||null,
           idMerchant:String(row['ID Merchant']||'').trim()||null,
