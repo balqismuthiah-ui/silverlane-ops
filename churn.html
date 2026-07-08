@@ -1246,6 +1246,7 @@ var mPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
 var masterCountText=''; // CLM-08: teks counter #master-count, di-set masterRows() sebelum span-nya ada di DOM
 var blastHidePaid=true;
 var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
+var respUpsellFilter=[]; // CLM-08 (4a): work-order queue -- filter klaim upsell by status
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
 // record (baru kebukti sejak migrasi IndexedDB ngilangin plafon localStorage lama).
 var PAGE_SIZE=300;
@@ -2172,7 +2173,7 @@ function renderResponseResults(){
   if(!el)return;
   // CLM-08 (e): respCatFilter/respAgentFilter sekarang Array -- WAJIB cek .length, bukan truthy
   // langsung (array kosong `[]` tetap truthy di JS, beda kelakuan sama string kosong `''` lama).
-  var hasFilter=respSearch||respCatFilter.length||respAgentFilter.length;
+  var hasFilter=respSearch||respCatFilter.length||respAgentFilter.length||respUpsellFilter.length;
   if(!hasFilter){
     el.innerHTML='<div class="empty" style="padding:48px 20px">🔍 Ketik nama atau ID outlet untuk mencari, atau pilih filter di atas</div>';
     return;
@@ -2185,6 +2186,13 @@ function renderResponseResults(){
     if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
     if(respCatFilter.length&&!respCatFilter.some(function(v){return v==='__none__'?!(r.response&&r.response.category):(r.response&&r.response.category===v);}))return false;
     if(respAgentFilter.length&&respAgentFilter.indexOf(r.assignedAgent)<0)return false;
+    // CLM-08 (4a): work-order queue -- filter "Klaim Upsell: Menunggu Validasi" biar leader nggak
+    // perlu buka case satu-satu buat nemuin klaim pending (match kalau SALAH SATU platform statusnya
+    // ada di filter terpilih -- 1 case bisa punya s.d. 2 klaim platform independen).
+    if(respUpsellFilter.length){
+      var platformStatuses=UPSELL_PLATFORMS.map(function(p){return r.upsell&&r.upsell[p.key]&&r.upsell[p.key].status;}).filter(Boolean);
+      if(!respUpsellFilter.some(function(v){return platformStatuses.indexOf(v)>=0;}))return false;
+    }
     return true;
   });
   var respTotalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
@@ -2235,11 +2243,15 @@ function renderResponse(){
   var catOptsArr=Object.keys(RESP_CATS).map(function(c){return{value:c,label:c};})
     .concat([{value:'__none__',label:'Belum Dikategorikan'}]);
   var agentOptsArr=allUsersInclInactive().map(function(a){return{value:a,label:a};});
+  // CLM-08 (4a): work-order queue -- leader (atau agen) bisa filter langsung ke case yg klaim
+  // upsell-nya lagi Menunggu Validasi, tanpa perlu buka satu-satu.
+  var upsellOptsArr=[{value:'pending',label:'Menunggu Validasi'},{value:'approved',label:'Approved'},{value:'rejected',label:'Rejected'}];
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
     +'<input class="fsearch" type="search" id="resp-search" placeholder="🔍 Cari nama / ID outlet..." value="'+respSearch+'">'
     +renderMultiSelect('respCatFilter','Status',catOptsArr,respCatFilter)
     +renderMultiSelect('respAgentFilter','Agen',agentOptsArr,respAgentFilter)
+    +renderMultiSelect('respUpsellFilter','Klaim Upsell',upsellOptsArr,respUpsellFilter)
     +'</div>'
     +'<div id="resp-results"></div>';
   renderResponseResults();
@@ -4228,7 +4240,7 @@ var MSEL_REFRESH={
   mAgent:refreshMasterBody,mBulan:refreshMasterBody,mLifecycle:refreshMasterBody,
   mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
-  respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults
+  respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults
 };
 // Buka/tutup panel multi-select: klik trigger toggle + tutup panel lain yg lagi kebuka; klik di
 // luar panel manapun nutup semua. Level document (bukan tabContent) krn butuh nangkep klik DI LUAR
