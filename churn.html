@@ -2439,7 +2439,7 @@ function renderWatchlistTable(){
   var s=wlSearch.toLowerCase();
   var filtered=gcWatchlistData.filter(isWatchlistActionable).filter(function(w){
     if(!s)return true;
-    return (w.outletId||'').toLowerCase().includes(s)||(w.outletName||'').toLowerCase().includes(s)||(w.label||'').toLowerCase().includes(s)||(w.flaggedBy||'').toLowerCase().includes(s)||(w.category||'').toLowerCase().includes(s);
+    return (w.outletId||'').toLowerCase().includes(s)||(w.outletName||'').toLowerCase().includes(s)||(w.label||'').toLowerCase().includes(s)||(w.flaggedBy||'').toLowerCase().includes(s)||(w.category||'').toLowerCase().includes(s)||(w.phone||'').includes(s.replace(/\D/g,''));
   });
   el.innerHTML=filtered.map(function(w){
     var isNeedCheck=w.category===GC_NEEDCHECK_KATEGORI;
@@ -3894,7 +3894,11 @@ function syncUpsellOnly(){
 function rebuildGcFlagMap(){
   var map={};
   gcWatchlistData.forEach(function(w){
-    if(w.status===GC_NEEDCHECK_KATEGORI)return;
+    // CLM-09: exclude by KATEGORI (bukan status) -- bulk-seed lama punya banyak baris kategori
+    // 'Need check Get Contact' dengan status legacy yg BEDA (bukan string needcheck itu sendiri),
+    // jadi cek status doang kebobolan ~4.4rb baris ke gcFlagMap (nge-badge nomor yg SENGAJA belum
+    // diverifikasi -- ketauan pas tes CLM-09 di data produksi asli, bukan cuma data sintetis tes).
+    if(w.category===GC_NEEDCHECK_KATEGORI)return;
     if(w.resolvedAt)return;
     if(!map[w.phone])map[w.phone]=w; // 1 nomor mestinya 1 baris (dedup by phone-key di GAS)
   });
