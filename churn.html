@@ -37,19 +37,21 @@ input,select,textarea,button{font-family:inherit;font-size:14px}
 button{cursor:pointer;border:none}
 
 /* AUTH */
-#auth-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999}
-.auth-card{background:var(--sur);border:1px solid var(--bdr);border-radius:var(--r);padding:36px 32px;width:340px;box-shadow:var(--shm)}
-.auth-logo{display:flex;align-items:center;gap:10px;margin-bottom:24px;justify-content:center}
-.auth-title{font-size:18px;font-weight:700;color:var(--pri)}
-.auth-sub{font-size:12px;color:var(--tx3);margin-top:2px}
-.auth-card label{display:block;font-size:12px;font-weight:600;color:var(--tx2);margin-bottom:4px}
-.auth-card select,.auth-card input{width:100%;padding:9px 12px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);margin-bottom:14px;outline:none}
-.auth-card select:focus,.auth-card input:focus{border-color:var(--pri)}
-.auth-card .btn-pri{width:100%;padding:10px;background:var(--pri);color:#fff;border-radius:var(--rs);font-weight:600;border:none}
-.auth-card .btn-pri:hover{background:var(--prid)}
-.auth-card .btn-sec{width:100%;padding:10px;background:var(--sur2);color:var(--tx2);border-radius:var(--rs);font-weight:600;border:1px solid var(--bdr);margin-top:8px}
+#auth-screen{position:fixed;inset:0;background:#fff;display:flex;align-items:center;justify-content:center;z-index:999}
+.auth-card{background:#fff;border-radius:16px;padding:40px 36px;width:340px;box-shadow:0 4px 40px rgba(41,182,179,.13)}
+.auth-logo-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;justify-content:center}
+.auth-logo-clm{font-size:11px;font-weight:700;color:#1D8C8C;letter-spacing:1.4px;text-transform:uppercase}
+.auth-sign-in-sub{font-size:10.5px;font-weight:700;color:#a8c8c6;letter-spacing:.9px;text-transform:uppercase;text-align:center;margin-bottom:28px}
+.auth-card input{width:100%;padding:10px 14px;border:1.5px solid #e2eded;border-radius:10px;background:#fff;color:var(--tx);margin-bottom:14px;outline:none;font-family:inherit;font-size:14px;box-sizing:border-box}
+.auth-card input:focus{border-color:#29B6B3}
+.auth-hint{font-size:11px;color:#b0c8c6;margin:-8px 0 14px;line-height:1.5}
+.auth-card .btn-pri{width:100%;padding:11px;background:linear-gradient(135deg,#A1CF7E 0%,#29B6B3 100%);color:#fff;border-radius:10px;font-weight:700;border:none;font-size:14px;cursor:pointer;font-family:inherit}
+.auth-card .btn-pri:hover{opacity:.9}
+.auth-card .btn-sec{width:100%;padding:10px;background:#f4fafa;color:#29B6B3;border-radius:10px;font-weight:600;border:1px solid #d0e8e7;margin-top:8px;font-size:13px;cursor:pointer;font-family:inherit}
+.auth-otp-hint{font-size:12px;color:var(--tx3);background:#f4fafa;border-radius:8px;padding:8px 10px;margin-bottom:12px}
+.auth-footer-note{font-size:10.5px;color:#c0d8d6;text-align:center;margin-top:14px}
 .auth-note{font-size:11px;color:var(--tx3);text-align:center;margin-top:10px;cursor:pointer;text-decoration:underline}
-.auth-error{background:var(--redl);color:var(--red);padding:8px 12px;border-radius:var(--rs);font-size:12px;margin-bottom:12px;display:none}
+.auth-error{background:var(--redl);color:var(--red);padding:8px 12px;border-radius:8px;font-size:12px;margin-bottom:12px;display:none}
 
 /* HEADER */
 .header{background:var(--brand-gradient);padding:0 20px;display:flex;align-items:center;gap:16px;height:56px;box-shadow:0 2px 16px rgba(41,182,179,.35)}
@@ -215,25 +217,20 @@ tr:hover td{background:var(--sur2)}
 <!-- AUTH SCREEN -->
 <div id="auth-screen">
   <div class="auth-card">
-    <div class="auth-logo">
-      <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="18" cy="18" r="18" fill="#0d9488"/>
-        <path d="M18 8L21.5 14.5H28L22.5 18.5L25 25L18 21L11 25L13.5 18.5L8 14.5H14.5L18 8Z" fill="white"/>
-      </svg>
-      <div>
-        <div class="auth-title">majoo</div>
-        <div class="auth-sub">CLM Retention Team</div>
-      </div>
+    <div class="auth-logo-row">
+      <img id="auth-logo-img" alt="majoo" style="height:28px;display:block">
+      <span class="auth-logo-clm">CLM</span>
     </div>
+    <div class="auth-sign-in-sub">Sign in to continue</div>
     <div class="auth-error" id="auth-error"></div>
     <div id="auth-step1">
-      <label>Email @majoo.id</label>
-      <input type="email" id="auth-email" placeholder="nama@majoo.id" autocomplete="email">
-      <div style="font-size:11px;color:var(--tx3);margin:-8px 0 12px">Kode OTP dikirim ke email kalau terdaftar</div>
-      <button class="btn-pri" id="auth-send-otp-btn">Kirim Kode OTP</button>
+      <input type="email" id="auth-email" placeholder="you@majoo.id" autocomplete="email">
+      <div class="auth-hint">Kami akan mengirim kode 6 digit yang berlaku 60 detik.</div>
+      <button class="btn-pri" id="auth-send-otp-btn">Email me a code</button>
+      <div class="auth-footer-note">Hanya email @majoo.id yang diterima.</div>
     </div>
     <div id="auth-step-otp" style="display:none">
-      <div style="font-size:12px;color:var(--tx3);background:var(--sur2);border-radius:var(--rs);padding:8px 10px;margin-bottom:12px">Kode OTP 6-digit sudah dikirim ke <strong id="auth-otp-email-lbl"></strong>, berlaku 10 menit.</div>
+      <div class="auth-otp-hint">Kode OTP 6-digit sudah dikirim ke <strong id="auth-otp-email-lbl"></strong>, berlaku 10 menit.</div>
       <label>Kode OTP</label>
       <input type="text" id="auth-otp" maxlength="6" placeholder="6 digit" inputmode="numeric" autocomplete="one-time-code">
       <button class="btn-pri" id="auth-verify-otp-btn">Masuk</button>
@@ -2841,6 +2838,10 @@ function openResp(id){
   var r=d.records.find(function(x){return x.id===id;});
   if(!r)return;
   var isSup=Auth.isSuperior();
+  // CLM-08 item (b): Response Update sekarang view-all (semua agen bisa buka case siapa aja) --
+  // nomor HP submission ("Nomor HP Baru") harus ikut aturan mask yg sama kayak Master&Assign/My
+  // Worksheet, bukan keliatan mentah ke semua yg buka modal-nya.
+  var canSeePhone=(Auth.getActive()===r.assignedAgent)||isSup;
   respTargetId=id;
   var resp=r.response||{};
   respOpenSnapshot={id:id,updatedAt:resp.updatedAt||null}; // P1-1: snapshot utk deteksi konflik
@@ -2879,8 +2880,10 @@ function openResp(id){
     +'<div id="resp-detail-wrap"><label>Detail</label><select id="resp-detail">'+detailOpts+'</select></div>'
     +'<div id="resp-evidence-wrap"><label id="resp-evidence-lbl">Evidence (link chat / screenshot)</label>'
     +'<input type="text" id="resp-response-evidence" value="'+(resp.evidenceLink||'')+'" placeholder="https://... — WAJIB kalau kategori RESPON NEGATIF"></div>'
-    +'<label>Nomor HP Baru (opsional)</label>'
-    +'<input type="tel" id="resp-phone" value="'+(resp.updatedPhone||'')+'" placeholder="628xxx...">'
+    +'<label>Nomor HP Baru (opsional)'+(canSeePhone?'':' <span style="color:var(--tx3);font-weight:400">— disamarkan, cuma agen terkait/leader yg bisa lihat & ubah</span>')+'</label>'
+    +(canSeePhone
+      ?'<input type="tel" id="resp-phone" value="'+(resp.updatedPhone||'')+'" placeholder="628xxx...">'
+      :'<input type="tel" id="resp-phone" value="'+maskPhone(resp.updatedPhone)+'" disabled data-masked="1">')
     +'<label>Status WA</label>'
     +'<select id="resp-wa">'
     +'<option value="unchecked"'+(resp.waStatus==='unchecked'?' selected':'')+'>Belum dicek</option>'
@@ -2936,7 +2939,10 @@ function saveResp(){
   var me=Auth.getActive();
   var cat=document.getElementById('resp-cat').value;
   var detail=document.getElementById('resp-detail').value;
-  var phone=document.getElementById('resp-phone').value.trim();
+  var phoneEl=document.getElementById('resp-phone');
+  // Kalau field disamarkan (nggak canSeePhone), value-nya cuma teks mask ("0812••••34") -- BUKAN
+  // input beneran, jangan divalidasi/dipakai buat overwrite. Preserve punya lama (lihat di bawah).
+  var phone=phoneEl.dataset.masked?'':phoneEl.value.trim();
   var wa=document.getElementById('resp-wa').value;
   var note=document.getElementById('resp-note').value.trim();
   var evidEl2=document.getElementById('resp-response-evidence');
@@ -4471,5 +4477,6 @@ refreshUserLists(); // CLM-06: baca AGENTS/SUPERIOR/ALL_USERS dari AgentsConfig 
 initAuth();
 if(Auth.isLoggedIn())_storeReady.then(startApp);
 </script>
+<script>(function(){var h=document.querySelector('.header-logo img'),a=document.getElementById('auth-logo-img');if(h&&a)a.src=h.src;})();</script>
 </body>
 </html>
