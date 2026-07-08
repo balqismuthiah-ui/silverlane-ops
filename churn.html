@@ -1223,7 +1223,7 @@ function mkRec(id,name,expiry,phone,agent,blastSt,email,pkg){
     blastStatus:blastSt||'pending',
     blastDate:blasted?'2026-06-10T08:30:00':null,
     lastBlastAt:blasted?'2026-06-10T08:30:00':null,
-    gcFlagged:false,invoiced:false,paymentStatus:null,
+    invoiced:false,paymentStatus:null,
     response:{category:null,detail:null,note:'',updatedPhone:null,waStatus:'unchecked',updatedAt:null,updatedBy:null},
     upsell:{maps:null,playstore:null,hardware:null}, // CLM-08 (4b): hardware = platform ke-3
     blastLog:{} // CLM-05 #25: {[cpKey]: {status,sentAt,broadcastName}} dari sync BROADCASTLOG CLARA
@@ -1231,7 +1231,7 @@ function mkRec(id,name,expiry,phone,agent,blastSt,email,pkg){
 }
 
 function initData(){
-  return{records:[],watchlist:[],nextAssignIdx:1,version:4};
+  return{records:[],nextAssignIdx:1,version:4};
 }
 
 // ── STATE ──────────────────────────────────────────────────────────────────
@@ -1261,6 +1261,13 @@ var mPage=0,wsPage=0,respPage=0;
 var wlSearch='';
 var mLifecycle=[]; // CLM-08 (e): multi-select
 var mBulan=[]; // CLM-08 (e): multi-select
+// CLM-09: GC Watchlist bidirectional -- gcWatchlistData = array mentah dari ?action=gcwatchlist
+// (SEMUA entry non-Not-Found, termasuk need-check), gcFlagMap = turunan buat auto-flag badge doang
+// (confirmed/Done + belum di-resolve). Cache localStorage biar nggak blank pas reload sebelum sync jalan.
+var GC_CACHE_KEY='klopos_gcwatchlist_v1';
+var gcWatchlistData=(function(){try{return JSON.parse(localStorage.getItem(GC_CACHE_KEY)||'[]');}catch(e){return[];}})();
+var gcFlagMap={};
+var GC_NEEDCHECK_KATEGORI='Need check Get Contact'; // CLM-09: samain persis string GAS
 var GAS_URL='https://script.google.com/macros/s/AKfycbx6SYfl0O6D3RgMkzZpT17_OxuuClhaOitq9ILa1ryYCX-qlznSz0d9iw4q8bGS68WqWQ/exec';
 var syncMonthFilter='';
 var syncInProgress=false;
@@ -1395,6 +1402,20 @@ function writeBackUpsell(r,platform,me){
     }
   });
 }
+// CLM-09: write-back GC Watchlist -- reuse antrean+_gasPost generik yg sama kayak writeBackUpsell
+// (action-agnostic, server route by payload.action). 2 mode: submit biasa (kategori known/need-check)
+// atau resolveOnly (toggle Aktif/Resolved, nggak nyentuh kategori/status verifikasi).
+function writeBackGcWatchlist(payload){
+  _gasPost(payload).then(function(){
+    if(_wbWarned)wbFlush();
+  }).catch(function(){
+    var q=wbQueueGet();q.push(payload);wbQueueSet(q);
+    if(!_wbWarned){
+      _wbWarned=true;
+      toast('⚠ Write-back ke Sheets belum aktif — data disimpan lokal & diantre, dikirim otomatis saat GAS siap',4500);
+    }
+  });
+}
 // Kirim ulang antrean yang tertunda (dipanggil saat startApp & setelah sync)
 function wbFlush(){
   var q=wbQueueGet();if(!q.length)return;
@@ -1469,8 +1490,9 @@ function fmtMetricVal(val,unit){
   return String(val);
 }
 
-function buildExplodedRows(records,watchlist){
-  var watchPhones=new Set(watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
+// CLM-09: `watchlist` param DIBUANG -- GC Watchlist sekarang sheet-backed (gcFlagMap global,
+// bukan d.watchlist lokal-per-browser lagi). Cek langsung ke gcFlagMap[phone] (key udah normPhone).
+function buildExplodedRows(records){
   var rows=[];
   for(var i=0;i<records.length;i++){
     var r=records[i];
@@ -1478,7 +1500,7 @@ function buildExplodedRows(records,watchlist){
       key:r.id+'_primary',outletId:r.id,outletName:r.outletName,
       phone:r.phone,phoneType:'Utama',
       isDummy:isDummyPhone(r.phone),
-      isGC:r.gcFlagged||watchPhones.has(r.phone),
+      isGC:!!gcFlagMap[r.phone],
       lastBlastAt:r.lastBlastAt,expiryDate:r.expiryDate,
       assignedAgent:r.assignedAgent,record:r
     });
@@ -1487,7 +1509,7 @@ function buildExplodedRows(records,watchlist){
         key:r.id+'_updated',outletId:r.id,outletName:r.outletName,
         phone:r.response.updatedPhone,phoneType:'Diperbarui',
         isDummy:isDummyPhone(r.response.updatedPhone),
-        isGC:watchPhones.has(r.response.updatedPhone),
+        isGC:!!gcFlagMap[r.response.updatedPhone],
         lastBlastAt:r.lastBlastAt,expiryDate:r.expiryDate,
         assignedAgent:r.assignedAgent,record:r
       });
@@ -1502,8 +1524,8 @@ function buildExplodedRows(records,watchlist){
 // TETAP dipakai apa adanya di Responses Update, TIDAK ikut explode ini).
 // Dedup HANYA di-scope PER-CASE (Set baru tiap record) — JANGAN pernah dedup lintas-case:
 // 2 case beda yg kebetulan share 1 nomor (mis. 1 owner 2 outlet) harus tetap muncul terpisah.
-function buildCsvPhoneRows(records,watchlist){
-  var watchPhones=new Set(watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
+// CLM-09: `watchlist` param DIBUANG -- sama alasan kayak buildExplodedRows di atas.
+function buildCsvPhoneRows(records){
   var rows=[];
   records.forEach(function(rec){
     var alts=(rec.phoneAlts&&rec.phoneAlts.length)?rec.phoneAlts:(rec.phone?[normPhone(rec.phone)]:[]);
@@ -1514,7 +1536,7 @@ function buildCsvPhoneRows(records,watchlist){
       rows.push({
         record:rec,phone:p,outletId:rec.id,outletName:rec.outletName,
         isDummy:isDummyPhone(p),
-        isGC:rec.gcFlagged||watchPhones.has(p)
+        isGC:!!gcFlagMap[p]
       });
     });
   });
@@ -1593,7 +1615,7 @@ function renderOverview(){
 
   var pBlasted=total?Math.round((blasted/total)*100):0;
   var pRenewal=total?Math.round((renewal/total)*100):0;
-  var gcCount=d.watchlist.filter(function(w){return w.status==='active';}).length;
+  var gcCount=Object.keys(gcFlagMap).length; // CLM-09: sheet-backed (confirmed+belum-resolve), bukan d.watchlist lokal
 
   // ── Review stats (team-wide) ──────────────────────────────────────────
   var allRecs=d.records;
@@ -1962,7 +1984,6 @@ function pagerRow(colspan,page,totalPages,total,prevId,nextId){
 // ── TAB: MASTER ────────────────────────────────────────────────────────────
 function masterRows(d){
   var me=Auth.getActive(),isSup=Auth.isSuperior(); // dihitung sekali, bukan per-row (mahal di 35k+ record)
-  var watchPhones=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
   var s=mSearch.toLowerCase();
   var filtered=d.records.filter(function(r){
     if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
@@ -1990,14 +2011,14 @@ function masterRows(d){
   mPage=Math.min(mPage,totalPages-1);
   var paged=filtered.slice(mPage*PAGE_SIZE,(mPage+1)*PAGE_SIZE);
   return paged.map(function(r){
-    var isGC=r.gcFlagged||watchPhones.has(r.phone);
+    var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
     var isDummy=isDummyPhone(r.phone);
     var dispId=r.outletId||r.id;
     var canSeePhone=(me===r.assignedAgent)||isSup;
     var phoneDisp=canSeePhone?'<span class="phone-full">'+r.phone+'</span>':'<span class="phone-mask">'+maskPhone(r.phone)+'</span>';
     return'<tr>'
       +'<td style="font-size:12px">'+dispId+'</td>'
-      +'<td>'+r.outletName+(isGC?'<br><span class="gc-flag">⚠ GC</span>':'')
+      +'<td>'+r.outletName+(isGC?'<br>'+gcWatchlistBadge(r.phone):'')
         +(r.bulan?'<br><span style="font-size:10px;color:var(--tx3)">['+r.bulan+']</span>':'')+'</td>'
       +'<td>'+fmtDate(r.expiryDate)+'</td>'
       +'<td>'+phoneDisp+(isDummy?'<br><span class="dummy-flag">🚫 Dummy</span>':'')+'</td>'
@@ -2105,7 +2126,7 @@ function wsFilteredRecs(d,me,isSup){
   return pool.filter(function(r){return r.id.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s)||(r.namaMerchant||'').toLowerCase().includes(s);});
 }
 
-function wsRows(d,me,isSup,watchPhones){
+function wsRows(d,me,isSup){
   var recs=wsFilteredRecs(d,me,isSup);
   // Simpan di var modul (sama pola kayak masterCountText) -- dipake renderWorksheet buat isi
   // #ws-count di render PERTAMA, sebelum span-nya sendiri ada di DOM.
@@ -2118,7 +2139,7 @@ function wsRows(d,me,isSup,watchPhones){
   var paged=recs.slice(wsPage*PAGE_SIZE,(wsPage+1)*PAGE_SIZE);
   return paged.map(function(r){
     var canSeePhone=(Auth.getActive()===r.assignedAgent)||isSup;
-    var isGC=r.gcFlagged||watchPhones.has(r.phone);
+    var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
     var isDummy=isDummyPhone(r.phone);
     var chk=wsSelectedIds.has(r.id)?'checked':'';
     var phoneDisp=canSeePhone?'<span class="phone-full">'+r.phone+'</span>':'<span class="phone-mask">'+maskPhone(r.phone)+'</span>';
@@ -2128,7 +2149,7 @@ function wsRows(d,me,isSup,watchPhones){
     return'<tr>'
       +'<td><input type="checkbox" class="ws-chk" data-id="'+r.id+'" '+chk+'></td>'
       +'<td>'+r.id+'</td>'
-      +'<td>'+r.outletName+(isGC?'<br><span class="gc-flag">⚠ GC</span>':'')+'</td>'
+      +'<td>'+r.outletName+(isGC?'<br>'+gcWatchlistBadge(r.phone):'')+'</td>'
       +'<td>'+fmtDate(r.expiryDate)+'</td>'
       +'<td>'+phoneDisp+(isDummy?'<br><span class="dummy-flag">🚫 Dummy</span>':'')+'</td>'
       +'<td>'+updPhoneDisp+'</td>'
@@ -2149,7 +2170,6 @@ function renderWorksheet(){
   var d=Store.get();
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
-  var watchPhones=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
 
   var agentFilter=isSup?renderMultiSelect('wsAgentFilter','Agen',allUsersInclInactive().map(function(a){return{value:a,label:a};}),wsAgentFilter):'';
   var payOptsArr=Object.keys(PAYMENT_STATUS).map(function(p){return{value:p,label:PAYMENT_STATUS[p].label};})
@@ -2157,7 +2177,7 @@ function renderWorksheet(){
   var payFilter=renderMultiSelect('wsPayment','Status Pembayaran',payOptsArr,wsPayment);
   // Hitung rows + counter DULU (sama pola kayak renderMaster) -- biar #ws-count keisi benar
   // di render PERTAMA, bukan cuma pas filter berikutnya.
-  var wsRowsHtml=wsRows(d,me,isSup,watchPhones);
+  var wsRowsHtml=wsRows(d,me,isSup);
 
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
@@ -2187,7 +2207,6 @@ function renderResponseResults(){
   }
   var d=Store.get();
   var pool=d.records;
-  var watchPhones=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
   var s=respSearch.toLowerCase();
   var filtered=pool.filter(function(r){
     if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
@@ -2214,8 +2233,8 @@ function renderResponseResults(){
       return p.icon+' '+line.count+' '+upsellLineBadge(line);
     });
     var reviewLine=upsellLines.length?('<div style="font-size:11px;color:var(--tx3);margin-top:6px;padding-top:6px;border-top:1px solid var(--bdr)">'+upsellLines.join(' &nbsp;·&nbsp; ')+'</div>'):'';
-    var isGC=r.gcFlagged||watchPhones.has(r.phone);
-    var gcBtn=isGC?'<span class="badge badge-red" style="font-size:10px">⚠ GC</span>'
+    var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
+    var gcBtn=isGC?gcWatchlistBadge(r.phone)
       :'<button class="action-btn ab-wl" data-act="gc" data-id="'+r.id+'" style="padding:3px 6px;font-size:11px">⚠ GC</button>';
     return'<div class="card" style="display:flex;flex-direction:column;gap:5px">'
       +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">'
@@ -2271,7 +2290,7 @@ function renderBlast(){
   var isSup=Auth.isSuperior();
   var recs=isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;});
   recs=applyBlastMonthGate(recs,isSup);
-  var allRows=buildExplodedRows(recs,d.watchlist);
+  var allRows=buildExplodedRows(recs);
   var rows=blastHidePaid?allRows.filter(function(row){
     if(row.record.paymentStatus==='paid')return false;
     if(row.record.response&&PAID_DETAILS.indexOf(row.record.response.detail)>=0)return false;
@@ -2405,27 +2424,37 @@ function renderBlast(){
 }
 
 // ── TAB: WATCHLIST ─────────────────────────────────────────────────────────
+// CLM-09: sheet-backed (gcWatchlistData, keshare 11 akun) -- bukan d.watchlist lokal lagi.
+// Jangan dump ~3.987 baris bulk-seed: tampilin subset actionable (dashboard-flagged [flaggedBy
+// keisi] + outlet-invalid [Nomor Tidak Valid/Tidak ada WA/invisible]), bulk internal-seed lain
+// cukup buat matching badge di belakang layar (rebuildGcFlagMap), nggak perlu didump di tab ini.
+function isWatchlistActionable(w){
+  if(w.flaggedBy)return true;
+  var c=(w.category||'').toLowerCase();
+  return c.indexOf('nomor tidak valid')>=0||c.indexOf('tidak ada wa')>=0||c==='invisible';
+}
 function renderWatchlistTable(){
   var el=document.getElementById('wl-tbody');
   if(!el)return;
-  var d=Store.get();
   var s=wlSearch.toLowerCase();
-  var filtered=d.watchlist.filter(function(w){
+  var filtered=gcWatchlistData.filter(isWatchlistActionable).filter(function(w){
     if(!s)return true;
-    return w.outletId.toLowerCase().includes(s)||w.outletName.toLowerCase().includes(s)||w.reason.toLowerCase().includes(s)||w.flaggedBy.toLowerCase().includes(s);
+    return (w.outletId||'').toLowerCase().includes(s)||(w.outletName||'').toLowerCase().includes(s)||(w.label||'').toLowerCase().includes(s)||(w.flaggedBy||'').toLowerCase().includes(s)||(w.category||'').toLowerCase().includes(s);
   });
   el.innerHTML=filtered.map(function(w){
+    var isNeedCheck=w.category===GC_NEEDCHECK_KATEGORI;
+    var statusLabel=w.resolvedAt?'Resolved':(isNeedCheck?'Perlu Cek':'Aktif');
+    var statusColor=w.resolvedAt?'gray':(isNeedCheck?'yel':'red');
     return'<tr>'
-      +'<td>'+w.outletId+'</td>'
-      +'<td>'+w.outletName+'</td>'
+      +'<td>'+(w.outletId||'—')+'</td>'
+      +'<td>'+(w.outletName||'—')+'</td>'
       +'<td class="phone-mask">'+maskPhone(w.phone)+'</td>'
-      +'<td>'+w.reason+'</td>'
-      +'<td>'+w.flaggedBy+'</td>'
+      +'<td>'+w.category+(w.label?' — '+w.label:'')+'</td>'
+      +'<td>'+(w.flaggedBy||'—')+'</td>'
       +'<td>'+fmtDate(w.flaggedAt)+'</td>'
-      +'<td><span class="badge badge-'+(w.status==='active'?'red':'gray')+'">'+(w.status==='active'?'Aktif':'Resolved')+'</span></td>'
+      +'<td><span class="badge badge-'+statusColor+'">'+statusLabel+'</span></td>'
       +'<td>'
-      +'<button class="action-btn ab-edit" data-act="toggle-wl" data-wid="'+w.id+'">'+(w.status==='active'?'Resolve':'Aktifkan')+'</button> '
-      +'<button class="action-btn ab-wl" data-act="del-wl" data-wid="'+w.id+'">Hapus</button>'
+      +'<button class="action-btn ab-edit" data-act="toggle-wl" data-wid="'+w.phone+'">'+(w.resolvedAt?'Aktifkan':'Resolve')+'</button>'
       +'</td></tr>';
   }).join('')||'<tr><td colspan="8" class="empty">Belum ada watchlist</td></tr>';
 }
@@ -2444,17 +2473,24 @@ function renderWatchlist(){
     +'<input type="text" id="wl-new-outlet-id" placeholder="Diisi otomatis jika nomor ditemukan..." style="width:100%;padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);outline:none;box-sizing:border-box"></div>'
     +'<div><label style="font-size:11px;font-weight:600;color:var(--tx2);display:block;margin-bottom:4px">Sales ID (opsional)</label>'
     +'<input type="text" id="wl-new-sales-id" placeholder="Untuk identifikasi nanti..." style="width:100%;padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);outline:none;box-sizing:border-box"></div>'
+    +'<div><label style="font-size:11px;font-weight:600;color:var(--tx2);display:block;margin-bottom:4px">Kategori <span style="color:var(--red)">*</span></label>'
+    +'<select id="wl-new-kategori" style="width:100%;padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);outline:none;box-sizing:border-box">'
+    +'<option value="">— pilih —</option>'
+    +GC_KATEGORI_OPTIONS.map(function(k){return'<option value="'+k+'">'+k+'</option>';}).join('')
+    +'<option value="'+GC_NEEDCHECK_KATEGORI+'">Perlu cek GetContact (belum yakin)</option>'
+    +'</select></div>'
     +'</div>'
     +'<div id="wl-add-results" style="margin-bottom:8px"></div>'
-    +'<label style="font-size:11px;font-weight:600;color:var(--tx2);display:block;margin-bottom:4px">Alasan <span style="color:var(--red)">*</span></label>'
+    +'<label style="font-size:11px;font-weight:600;color:var(--tx2);display:block;margin-bottom:4px">Catatan (opsional)</label>'
     +'<textarea id="wl-new-reason" rows="2" placeholder="Jelaskan mengapa nomor ini perlu masuk GC Watchlist..." style="width:100%;padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);outline:none;resize:vertical;box-sizing:border-box;font-size:13px"></textarea>'
+    +'<div style="margin-top:4px;font-size:11px;color:var(--tx3)">Kategori yang sudah jelas langsung aktif & keshare ke semua akun. "Perlu cek" masuk backlog verifikasi manual.</div>'
     +'<div style="margin-top:8px"><button class="btn btn-red" id="wl-new-submit">🚩 Tandai ke Watchlist</button></div>'
     +'</div>'
     +'<div class="frow" style="margin-bottom:8px">'
     +'<input class="fsearch" type="search" id="wl-search" placeholder="🔍 Cari dalam watchlist..." value="'+wlSearch+'">'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table>'
-    +'<thead><tr><th>ID</th><th>Nama</th><th>HP</th><th>Alasan</th><th>Ditandai Oleh</th><th>Tgl</th><th>Status</th><th>Aksi</th></tr></thead>'
+    +'<thead><tr><th>ID</th><th>Nama</th><th>HP</th><th>Kategori / Catatan</th><th>Ditandai Oleh</th><th>Tgl</th><th>Status</th><th>Aksi</th></tr></thead>'
     +'<tbody id="wl-tbody"></tbody></table></div></div>';
   renderWatchlistTable();
 }
@@ -2792,8 +2828,7 @@ function openDetail(id){
   var isSup=Auth.isSuperior();
   var canSeePhone=(me===r.assignedAgent)||isSup;
   var resp=r.response||{};
-  var watchPhones=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
-  var isGC=r.gcFlagged||watchPhones.has(r.phone);
+  var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
   var isDummy=isDummyPhone(r.phone);
   var sheetSection='';
   if(r.idMerchant||r.lifecycleStatus||r.gtvLast3M){
@@ -2827,7 +2862,7 @@ function openDetail(id){
     +'<tr><td style="color:var(--tx3)">Email</td><td>'+(r.email||'—')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Paket</td><td>'+(r.productPackage||'—')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Expired</td><td>'+fmtDate(r.expiryDate)+'</td></tr>'
-    +'<tr><td style="color:var(--tx3)">Nomor HP</td><td>'+(canSeePhone?'<span class="phone-full">'+r.phone+'</span>':maskPhone(r.phone))+(isDummy?' <span class="dummy-flag">🚫 Dummy</span>':'')+(isGC?' <span class="gc-flag">⚠ GC</span>':'')+'</td></tr>'
+    +'<tr><td style="color:var(--tx3)">Nomor HP</td><td>'+(canSeePhone?'<span class="phone-full">'+r.phone+'</span>':maskPhone(r.phone))+(isDummy?' <span class="dummy-flag">🚫 Dummy</span>':'')+(isGC?' '+gcWatchlistBadge(r.phone):'')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Agen</td><td>'+(r.assignedAgent||'Unassigned')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Blast</td><td>'+blastBadge(r.blastStatus)+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Last Blast</td><td>'+fmtRelativeBlast(r.lastBlastAt)+'</td></tr>'
@@ -3153,16 +3188,25 @@ function openWA(id){
   openModal('wa-modal');
 }
 
+// CLM-09: kategori "known" -> status confirmed/'Done' di sheet (langsung ke-flag semua akun).
+// GC_NEEDCHECK_KATEGORI (const terpisah, dipakai match filter juga) -> backlog, nggak ke-flag.
+var GC_KATEGORI_OPTIONS=['Internal - CX','Internal - Sales','Internal - Akademi','Internal - PO','Nomor Tidak Valid','Tidak ada WA'];
+
 function openGC(id){
   var d=Store.get();
   var r=d.records.find(function(x){return x.id===id;});
   if(!r)return;
   gcTargetId=id;
+  var optsHtml=GC_KATEGORI_OPTIONS.map(function(k){return '<option value="'+k+'">'+k+'</option>';}).join('')
+    +'<option value="'+GC_NEEDCHECK_KATEGORI+'">Perlu cek GetContact (belum yakin)</option>';
   document.getElementById('gc-body').innerHTML=
     '<p style="margin-bottom:12px">Outlet: <strong>'+r.outletName+'</strong></p>'
     +'<p style="margin-bottom:12px">Nomor: <span class="phone-mask">'+maskPhone(r.phone)+'</span></p>'
-    +'<label>Alasan Flagging</label>'
-    +'<textarea id="gc-reason" rows="3" placeholder="Jelaskan mengapa nomor ini perlu masuk GetContact watchlist..."></textarea>';
+    +'<label>Kategori</label>'
+    +'<select id="gc-kategori">'+optsHtml+'</select>'
+    +'<label style="margin-top:10px;display:block">Catatan (opsional)</label>'
+    +'<textarea id="gc-reason" rows="3" placeholder="Jelaskan mengapa nomor ini perlu masuk GetContact watchlist..."></textarea>'
+    +'<p style="margin-top:8px;font-size:11px;color:var(--tx3)">Kategori yang sudah jelas (Internal-X / Nomor Tidak Valid / Tidak ada WA) langsung aktif & muncul badge di semua akun. "Perlu cek" masuk backlog verifikasi manual, belum muncul badge.</p>';
   openModal('gc-modal');
 }
 
@@ -3171,13 +3215,22 @@ function saveGC(){
   var d=Store.get();
   var r=d.records.find(function(x){return x.id===gcTargetId;});
   if(!r)return;
+  var kategori=document.getElementById('gc-kategori').value;
   var reason=document.getElementById('gc-reason').value.trim();
-  if(!reason){toast('Masukkan alasan flagging');return;}
-  r.gcFlagged=true;
-  d.watchlist.push({id:'wl_'+uid(),outletId:r.id,outletName:r.outletName,phone:r.phone,reason:reason,flaggedBy:Auth.getActive(),flaggedAt:new Date().toISOString(),status:'active',log:[]});
-  Store.set(d);
+  var me=Auth.getActive();
+  var now=new Date().toISOString();
+  writeBackGcWatchlist({action:'writeGcWatchlist',phone:r.phone,label:reason,category:kategori,outletId:r.id,outletName:r.outletName});
+  // Optimistic local upsert (by phone-key, sama pola GAS) -- badge kepake instan, sinkron beneran
+  // (dari sheet, keshare 11 akun) nyusul lewat syncGcWatchlist berikutnya.
+  var norm=normPhone(r.phone);
+  var isConfirmed=kategori!==GC_NEEDCHECK_KATEGORI;
+  var existing=gcWatchlistData.find(function(w){return w.phone===norm;});
+  var entry={phone:norm,label:reason,category:kategori,outletId:r.id,outletName:r.outletName,status:isConfirmed?'Done':GC_NEEDCHECK_KATEGORI,flaggedBy:me,flaggedAt:now,resolvedAt:''};
+  if(existing)Object.assign(existing,entry);else gcWatchlistData.push(entry);
+  try{localStorage.setItem(GC_CACHE_KEY,JSON.stringify(gcWatchlistData));}catch(e){}
+  rebuildGcFlagMap();
   closeModal('gc-modal');
-  toast('Berhasil ditambahkan ke GC Watchlist');
+  toast(isConfirmed?'Berhasil ditandai & langsung aktif di semua akun':'Ditambahkan ke backlog "Perlu Cek GetContact"');
   renderTab(currentTab);
 }
 
@@ -3268,12 +3321,12 @@ function openCsvModal(){
   recs=applyBlastMonthGate(recs,isSup);
   // Seleksi checkbox tabel (per phone-row lama) di-map ke SET CASE ID -- CSV sekarang explode
   // per-case dari U/V/W (buildCsvPhoneRows), granularitasnya beda dari tabel yg masih per r.phone/updatedPhone.
-  var tableRows=buildExplodedRows(recs,d.watchlist);
+  var tableRows=buildExplodedRows(recs);
   var selectedCaseIds=csvSelectedIds.size>0
     ?new Set(tableRows.filter(function(row){return csvSelectedIds.has(row.key);}).map(function(row){return row.record.id;}))
     :null;
   var csvRecs=selectedCaseIds?recs.filter(function(r){return selectedCaseIds.has(r.id);}):recs;
-  var rows=buildCsvPhoneRows(csvRecs,d.watchlist);
+  var rows=buildCsvPhoneRows(csvRecs);
   var filteredRows=rows.filter(function(row){return!row.isDummy&&!row.isGC;});
 
   var tpls=Templates.getAll();
@@ -3834,6 +3887,44 @@ function syncUpsellOnly(){
   });
 }
 
+// CLM-09: GC Watchlist bidirectional -- rebuild gcFlagMap dari gcWatchlistData. Cuma entry
+// CONFIRMED (status!=='Need check Get Contact') DAN belum di-resolve (!resolvedAt) yg qualify buat
+// auto-flag badge -- need-check tetap keliatan di tab Watchlist GC (list backlog) tapi NGGAK
+// nge-flag di My Worksheet/Master/Response Update (hindari false-confidence sebelum diverifikasi).
+function rebuildGcFlagMap(){
+  var map={};
+  gcWatchlistData.forEach(function(w){
+    if(w.status===GC_NEEDCHECK_KATEGORI)return;
+    if(w.resolvedAt)return;
+    if(!map[w.phone])map[w.phone]=w; // 1 nomor mestinya 1 baris (dedup by phone-key di GAS)
+  });
+  gcFlagMap=map;
+}
+function syncGcWatchlist(){
+  var btn=document.getElementById('sync-gcwl-btn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+  _gasGet('gcwatchlist',60000).then(function(json){
+    gcWatchlistData=json.data||[];
+    try{localStorage.setItem(GC_CACHE_KEY,JSON.stringify(gcWatchlistData));}catch(e){}
+    rebuildGcFlagMap();
+    renderTab(currentTab);
+    toast(gcWatchlistData.length+' entry GC Watchlist disinkronkan');
+  }).catch(function(err){
+    toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync GC Watchlist: '+err.message,5000);
+  }).then(function(){
+    var b=document.getElementById('sync-gcwl-btn');
+    if(b){b.disabled=false;b.textContent='📥 Sync GC Watchlist';}
+  });
+}
+// Badge visual kategori GC (My Worksheet/Master/Response Update) -- visual-only, NGGAK auto-exclude
+// dari blast/overview (keputusan Muthia, hindari false-positive nge-drop case beneran).
+function gcWatchlistBadge(phone){
+  var w=gcFlagMap[normPhone(phone)];
+  if(!w)return'';
+  var label=w.label?(': '+w.label):'';
+  return'<span class="badge badge-red" style="font-size:10px" title="Sumber: GetContact Watchlist">⚠️ '+w.category+label+'</span>';
+}
+
 // CLM-05 #25: sync-down BROADCASTLOG CLARA (bukti kirim WABA aktual) -> derivasi checkpoint H-3/H+2/H+8.
 // Kontrak GAS (?action=broadcastlog): {data:[{phone, sends:[{broadcast_name, sent_at, terminal_status}]}]}.
 // phone MENTAH dari sheet (bukan hasil normalisasi GAS) -> WAJIB normPhone() 2 sisi biar match.
@@ -4078,26 +4169,17 @@ tabContent.addEventListener('click',function(e){
     else if(act==='edit-target')openTargetModal(id);
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab('overview');}}
     else if(act==='toggle-wl'){
-      var dd=Store.get();var w=dd.watchlist.find(function(x){return x.id===wid;});
+      // CLM-09: sheet-backed -- resolveOnly write, nutup/buka kolom "Resolved At" (L), nggak
+      // nyentuh kategori/status verifikasi GetContact (2 konsep beda, lihat catatan writeGcWatchlistToSheet).
+      var w=gcWatchlistData.find(function(x){return x.phone===wid;});
       if(w){
-        w.status=w.status==='active'?'resolved':'active';
-        var activeLeft=dd.watchlist.filter(function(x){return x.outletId===w.outletId&&x.status==='active';}).length;
-        var recTgl=dd.records.find(function(r){return r.id===w.outletId;});
-        if(recTgl)recTgl.gcFlagged=activeLeft>0;
-        Store.set(dd);renderWatchlist();
+        var willResolve=!w.resolvedAt;
+        writeBackGcWatchlist({action:'writeGcWatchlist',resolveOnly:true,phone:w.phone,reactivate:!willResolve});
+        w.resolvedAt=willResolve?new Date().toISOString():'';
+        try{localStorage.setItem(GC_CACHE_KEY,JSON.stringify(gcWatchlistData));}catch(e){}
+        rebuildGcFlagMap();
+        renderWatchlist();
       }
-    }
-    else if(act==='del-wl'){
-      if(!confirm('Hapus entri ini dari watchlist?'))return;
-      var dd2=Store.get();
-      var delEnt=dd2.watchlist.find(function(x){return x.id===wid;});
-      dd2.watchlist=dd2.watchlist.filter(function(x){return x.id!==wid;});
-      if(delEnt){
-        var stillAct=dd2.watchlist.some(function(w2){return w2.outletId===delEnt.outletId&&w2.status==='active';});
-        var recDel=dd2.records.find(function(r){return r.id===delEnt.outletId;});
-        if(recDel&&!stillAct)recDel.gcFlagged=false;
-      }
-      Store.set(dd2);renderWatchlist();toast('Entri dihapus');
     }
     return;
   }
@@ -4156,7 +4238,7 @@ tabContent.addEventListener('click',function(e){
     recs3=applyBlastMonthGate(recs3,isSup3);
     var todayStr3=localDateStr(new Date().toISOString());
     var n3=0,nSkip3=0;
-    buildExplodedRows(recs3,d3.watchlist).forEach(function(row){
+    buildExplodedRows(recs3).forEach(function(row){
       var due3=checkpointsDueOn(row.expiryDate,todayStr3);
       if(!due3.length)return;
       // "belum keblast": lewati kalau SEMUA checkpoint due hari ini udah confirmed terkirim (non-failed) via BROADCASTLOG
@@ -4174,7 +4256,7 @@ tabContent.addEventListener('click',function(e){
     var d2=Store.get();var me2=Auth.getActive();var isSup2=Auth.isSuperior();
     var recs2=isSup2?d2.records:d2.records.filter(function(r){return r.assignedAgent===me2;});
     recs2=applyBlastMonthGate(recs2,isSup2);
-    buildExplodedRows(recs2,d2.watchlist).forEach(function(row){csvSelectedIds.add(row.key);});
+    buildExplodedRows(recs2).forEach(function(row){csvSelectedIds.add(row.key);});
     renderBlast();
   }
   else if(tgt.id==='desel-all-blast-btn'){csvSelectedIds.clear();renderBlast();}
@@ -4184,18 +4266,24 @@ tabContent.addEventListener('click',function(e){
     var outletNameV=(document.getElementById('wl-new-outlet-name')||{}).value||'';
     var salesIdV=(document.getElementById('wl-new-sales-id')||{}).value||'';
     var reasonV=(document.getElementById('wl-new-reason')||{}).value||'';
+    var kategoriV=(document.getElementById('wl-new-kategori')||{}).value||'';
     if(!phoneV.trim()){toast('Nomor HP wajib diisi');return;}
-    if(!reasonV.trim()){toast('Alasan wajib diisi');return;}
+    if(!kategoriV){toast('Pilih kategori');return;}
     var normPV=normPhone(phoneV.trim());
     var dw=Store.get();
     var matchRec=dw.records.find(function(r){return r.phone===normPV;});
-    var finalOutletId=(outletIdV.trim())||(matchRec?matchRec.id:'—');
-    var finalOutletName=(outletNameV.trim())||(matchRec?matchRec.outletName:'(tidak dikenal)');
-    var finalReason=reasonV.trim()+(salesIdV.trim()?' [Sales ID: '+salesIdV.trim()+']':'');
-    if(matchRec)matchRec.gcFlagged=true;
-    dw.watchlist.push({id:'wl_'+uid(),outletId:finalOutletId,outletName:finalOutletName,phone:normPV,reason:finalReason,flaggedBy:Auth.getActive(),flaggedAt:new Date().toISOString(),status:'active',log:[]});
-    Store.set(dw);
-    toast('Berhasil ditambahkan ke GC Watchlist');
+    var finalOutletId=(outletIdV.trim())||(matchRec?matchRec.id:'');
+    var finalOutletName=(outletNameV.trim())||(matchRec?matchRec.outletName:'');
+    var finalLabel=reasonV.trim()+(salesIdV.trim()?' [Sales ID: '+salesIdV.trim()+']':'');
+    var me=Auth.getActive();var now=new Date().toISOString();
+    var isConfirmed=kategoriV!==GC_NEEDCHECK_KATEGORI;
+    writeBackGcWatchlist({action:'writeGcWatchlist',phone:normPV,label:finalLabel,category:kategoriV,outletId:finalOutletId,outletName:finalOutletName});
+    var existing=gcWatchlistData.find(function(w){return w.phone===normPV;});
+    var entry={phone:normPV,label:finalLabel,category:kategoriV,outletId:finalOutletId,outletName:finalOutletName,status:isConfirmed?'Done':GC_NEEDCHECK_KATEGORI,flaggedBy:me,flaggedAt:now,resolvedAt:''};
+    if(existing)Object.assign(existing,entry);else gcWatchlistData.push(entry);
+    try{localStorage.setItem(GC_CACHE_KEY,JSON.stringify(gcWatchlistData));}catch(e){}
+    rebuildGcFlagMap();
+    toast(isConfirmed?'Berhasil ditandai & langsung aktif di semua akun':'Ditambahkan ke backlog "Perlu Cek GetContact"');
     renderWatchlist();
   }
   // Pagination -- prev/next buttons (masterRows/wsRows dipanggil ulang, pagerRow otomatis clamp halaman)
@@ -4204,8 +4292,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='ws-prev-btn'||tgt.id==='ws-next-btn'){
     wsPage=tgt.id==='ws-prev-btn'?Math.max(0,wsPage-1):wsPage+1;
     var dwp=Store.get(),mewp=Auth.getActive(),isSupwp=Auth.isSuperior();
-    var wpwp=new Set(dwp.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
-    var tbw=document.getElementById('ws-tbody');if(tbw)tbw.innerHTML=wsRows(dwp,mewp,isSupwp,wpwp);
+    var tbw=document.getElementById('ws-tbody');if(tbw)tbw.innerHTML=wsRows(dwp,mewp,isSupwp);
   }
   else if(tgt.id==='resp-prev-btn'){respPage=Math.max(0,respPage-1);renderResponseResults();}
   else if(tgt.id==='resp-next-btn'){respPage++;renderResponseResults();}
@@ -4239,8 +4326,7 @@ function refreshMasterBody(){mPage=0;var tb=document.getElementById('master-tbod
 function refreshWsBody(){
   wsPage=0;
   var d=Store.get();var me=Auth.getActive();var isSup=Auth.isSuperior();
-  var wp=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
-  var tb=document.getElementById('ws-tbody');if(tb)tb.innerHTML=wsRows(d,me,isSup,wp);
+  var tb=document.getElementById('ws-tbody');if(tb)tb.innerHTML=wsRows(d,me,isSup);
   updateWsBulkBar();
 }
 function refreshRespResults(){respPage=0;renderResponseResults();}
@@ -4342,7 +4428,7 @@ tabContent.addEventListener('input',function(e){
       res.innerHTML='<div style="padding:6px 8px;background:var(--sur2);border-radius:var(--rs);border:1px solid var(--grn);font-size:12px">'
         +'<strong>'+hit.outletName+'</strong> <span style="color:var(--tx3)">#'+hit.id+'</span>'
         +' &nbsp;·&nbsp; Agen: '+hit.assignedAgent
-        +(hit.gcFlagged?'&nbsp;<span class="badge badge-red" style="font-size:10px">Sudah di GC</span>':'')
+        +(gcFlagMap[hit.phone]?'&nbsp;<span class="badge badge-red" style="font-size:10px">Sudah di GC</span>':'')
         +'</div>';
       var oidInp=document.getElementById('wl-new-outlet-id');
       var onInp=document.getElementById('wl-new-outlet-name');
@@ -4428,6 +4514,7 @@ function startApp(){
   var savedTheme=localStorage.getItem('klopos_theme')||'light';
   document.documentElement.setAttribute('data-theme',savedTheme);
   document.getElementById('theme-btn').textContent=savedTheme==='dark'?'☀️':'🌙';
+  rebuildGcFlagMap(); // CLM-09: isi awal dari cache localStorage (kalau ada) sebelum render pertama
   renderTab('overview');
   // CLM-08: ganti heuristik lama "stale >8 jam" (sync sia-sia kalau DB belum berubah) dengan cek
   // freshness RIIL ke server -- auto full-sync (semua bulan) HANYA kalau DB beneran refresh sejak
@@ -4435,6 +4522,10 @@ function startApp(){
   setTimeout(checkFreshnessAndAutoSync,1200);
   // Kirim ulang antrean write-back respons yang sempat gagal (offline queue)
   setTimeout(wbFlush,2500);
+  // CLM-09: GC Watchlist -- sync ringan (~4rb row phone-only, jauh lebih murah dari full 35k KLOPOS),
+  // piggyback on-load doang (bukan freshness-gated kayak KLOPOS -- sheet manually-curated, nggak
+  // perlu presisi 3x/hari). Tombol manual "Sync GC Watchlist" tetap ada buat refresh kapan aja.
+  setTimeout(syncGcWatchlist,3200);
   // CLM-08: auto-poll respons agen lain -- on-load (staggered dikit dari freshness biar nggak
   // barengan) + tiap 5 menit selama halaman kebuka (visibility-gated -- lihat startRespPolling).
   setTimeout(pollResponsesDelta,1800);
