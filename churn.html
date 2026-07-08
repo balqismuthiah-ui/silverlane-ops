@@ -196,6 +196,15 @@ tr:hover td{background:var(--sur2)}
 .frow input,.frow select{padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:13px;outline:none}
 .frow input:focus,.frow select:focus{border-color:var(--pri)}
 .fsearch{min-width:180px;flex:1;max-width:280px}
+/* CLM-08 (e): generic multi-select dropdown -- ganti <select> filter single-value */
+.msel{position:relative;display:inline-block}
+.msel-trigger{padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:13px;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+.msel-trigger:after{content:'▾';font-size:9px;color:var(--tx3)}
+.msel-panel{position:absolute;top:100%;left:0;margin-top:4px;background:var(--card);border:1px solid var(--bdr);border-radius:var(--rs);box-shadow:0 4px 16px rgba(0,0,0,.18);padding:6px;z-index:60;min-width:200px;max-height:280px;overflow-y:auto;display:none}
+.msel.open .msel-panel{display:block}
+.msel-opt-row{display:flex;align-items:center;gap:6px;padding:5px 6px;font-size:12px;color:var(--tx);white-space:nowrap;cursor:pointer;border-radius:4px}
+.msel-opt-row:hover{background:var(--sur2)}
+.msel-opt-row input{margin:0}
 /* AGENT INLINE INPUTS */
 .ag-inp{padding:3px 6px;border:1px solid var(--bdr);border-radius:3px;background:var(--sur2);color:var(--tx);font-size:12px;outline:none}
 .ag-inp:focus{border-color:var(--pri)}
@@ -1229,21 +1238,21 @@ var agentEditId=null;
 var csvSelectedIds=new Set();
 var wsSelectedIds=new Set();
 var wsSearch='';
-var wsAgentFilter='';
-var wsPayment=''; // CLM-08: filter Status Pembayaran (item c brief)
+var wsAgentFilter=[]; // CLM-08 (e): multi-select, array kosong = semua agen
+var wsPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
 var wsCountText=''; // CLM-08: teks counter #ws-count, di-set wsRows() -- lihat catatan masterCountText
-var mSearch='',mAgent='',mBlast='',mResp='';
-var mPayment=''; // CLM-08: filter Status Pembayaran (item c brief)
+var mSearch='',mAgent=[],mBlast=[],mResp=[]; // CLM-08 (e): semua multi-select (array kosong = semua)
+var mPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
 var masterCountText=''; // CLM-08: teks counter #master-count, di-set masterRows() sebelum span-nya ada di DOM
 var blastHidePaid=true;
-var respSearch='',respCatFilter='',respAgentFilter='';
+var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
 // record (baru kebukti sejak migrasi IndexedDB ngilangin plafon localStorage lama).
 var PAGE_SIZE=300;
 var mPage=0,wsPage=0,respPage=0;
 var wlSearch='';
-var mLifecycle='';
-var mBulan='';
+var mLifecycle=[]; // CLM-08 (e): multi-select
+var mBulan=[]; // CLM-08 (e): multi-select
 var GAS_URL='https://script.google.com/macros/s/AKfycbx6SYfl0O6D3RgMkzZpT17_OxuuClhaOitq9ILa1ryYCX-qlznSz0d9iw4q8bGS68WqWQ/exec';
 var syncMonthFilter='';
 var syncInProgress=false;
@@ -1390,6 +1399,29 @@ function wbFlush(){
 }
 
 // ── RENDER HELPERS ─────────────────────────────────────────────────────────
+// CLM-08 (e): dropdown multi-select generik -- ganti <select> single-value jadi checkbox-panel,
+// dipake semua filter di Master&Assign/My Worksheet/Response Update. `filterName` = nama var global
+// (mAgent dkk, sekarang Array) yg diakses via window[...] di handler generik (lihat listener
+// 'change'/'click' utk .msel-opt/.msel-trigger). `options`=[{value,label}], `selected`=array value
+// yg lagi aktif. Kosong = "Semua X" (behavior sama kayak value='' filter lama).
+function renderMultiSelect(filterName,baseTitle,options,selected){
+  var selSet=new Set(selected);
+  var summary;
+  if(selected.length===0)summary='Semua '+baseTitle;
+  else if(selected.length===1){
+    var f=options.find(function(o){return o.value===selected[0];});
+    summary=f?f.label:selected[0];
+  }else summary=baseTitle+' ('+selected.length+')';
+  var rows=options.map(function(o){
+    var v=String(o.value).replace(/"/g,'&quot;'),lb=String(o.label).replace(/"/g,'&quot;');
+    return'<label class="msel-opt-row"><input type="checkbox" class="msel-opt" data-filter="'+filterName+'" data-label="'+lb+'" value="'+v+'"'+(selSet.has(o.value)?' checked':'')+'>'+o.label+'</label>';
+  }).join('');
+  return'<div class="msel" data-msel="'+filterName+'">'
+    +'<button type="button" class="msel-trigger" data-msel-trigger="'+filterName+'" data-basetitle="'+baseTitle+'">'+summary+'</button>'
+    +'<div class="msel-panel">'+(rows||'<div style="padding:6px;font-size:12px;color:var(--tx3)">— tidak ada opsi —</div>')+'</div>'
+    +'</div>';
+}
+
 function respBadge(cat){
   if(!cat)return'<span class="badge badge-gray">Belum Dikategorikan</span>';
   var c=RESP_CATS[cat];
@@ -1926,21 +1958,17 @@ function masterRows(d){
   var s=mSearch.toLowerCase();
   var filtered=d.records.filter(function(r){
     if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
-    if(mAgent){
-      if(mAgent==='__unassigned__'){if(r.assignedAgent)return false;}
-      else if(r.assignedAgent!==mAgent)return false;
+    // CLM-08 (e): semua filter di bawah multi-select (array) -- OR di dalam 1 filter (match SALAH
+    // SATU value terpilih), AND lintas filter (semua filter harus match). Kosong=semua (skip check).
+    if(mAgent.length&&!mAgent.some(function(v){return v==='__unassigned__'?!r.assignedAgent:r.assignedAgent===v;}))return false;
+    if(mBlast.length&&mBlast.indexOf(r.blastStatus)<0)return false;
+    if(mLifecycle.length&&mLifecycle.indexOf(r.lifecycleStatus||'')<0)return false;
+    if(mBulan.length){
+      var _cm=(r.cohortMonths||r.bulan||'').split(',');
+      if(!mBulan.some(function(v){return _cm.indexOf(v)>=0;}))return false;
     }
-    if(mBlast&&r.blastStatus!==mBlast)return false;
-    if(mLifecycle&&(r.lifecycleStatus||'')!==mLifecycle)return false;
-    if(mBulan){var _cm=(r.cohortMonths||r.bulan||'').split(',');if(_cm.indexOf(mBulan)<0)return false;}
-    if(mResp){
-      if(mResp==='__none__'){if(r.response&&r.response.category)return false;}
-      else if(!r.response||r.response.category!==mResp)return false;
-    }
-    if(mPayment){
-      if(mPayment==='__none__'){if(r.paymentStatus)return false;}
-      else if(r.paymentStatus!==mPayment)return false;
-    }
+    if(mResp.length&&!mResp.some(function(v){return v==='__none__'?!(r.response&&r.response.category):(r.response&&r.response.category===v);}))return false;
+    if(mPayment.length&&!mPayment.some(function(v){return v==='__none__'?!r.paymentStatus:r.paymentStatus===v;}))return false;
     return true;
   });
   // Simpan di var modul (bukan cuma tulis ke DOM) -- dipake renderMaster buat isi #master-count
@@ -1985,17 +2013,15 @@ function renderMaster(){
     document.getElementById('tab-content').innerHTML='<div class="empty">Tab ini hanya bisa diakses oleh Team Lead (Sekar).</div>';
     return;
   }
-  var agentOpts='<option value="">Semua Agen</option>'+allUsersInclInactive().map(function(a){return'<option value="'+a+'"'+(mAgent===a?' selected':'')+'>'+a+'</option>';}).join('')
-    +'<option value="__unassigned__"'+(mAgent==='__unassigned__'?' selected':'')+'>Unassigned</option>';
-  var blastOpts='<option value="">Semua Status Blast</option><option value="pending"'+(mBlast==='pending'?' selected':'')+'>Pending</option><option value="blasted"'+(mBlast==='blasted'?' selected':'')+'>Blasted</option><option value="skip"'+(mBlast==='skip'?' selected':'')+'>Skip</option>';
-  var respOpts='<option value="">Semua Respon</option>'+Object.keys(RESP_CATS).map(function(c){return'<option value="'+c+'"'+(mResp===c?' selected':'')+'>'+c+'</option>';}).join('')+'<option value="__none__"'+(mResp==='__none__'?' selected':'')+'>Belum Dikategorikan</option>';
-  var payOpts='<option value="">Semua Status Pembayaran</option>'+Object.keys(PAYMENT_STATUS).map(function(p){return'<option value="'+p+'"'+(mPayment===p?' selected':'')+'>'+PAYMENT_STATUS[p].label+'</option>';}).join('')+'<option value="__none__"'+(mPayment==='__none__'?' selected':'')+'>Belum Ada Status</option>';
-  var lcOpts='<option value="">Semua Status Lifecycle</option>'
-    +'<option value="Hot"'+(mLifecycle==='Hot'?' selected':'')+'>Hot</option>'
-    +'<option value="Warm"'+(mLifecycle==='Warm'?' selected':'')+'>Warm</option>'
-    +'<option value="Cold"'+(mLifecycle==='Cold'?' selected':'')+'>Cold</option>'
-    +'<option value="Zombie"'+(mLifecycle==='Zombie'?' selected':'')+'>Zombie</option>'
-    +'<option value="Churn"'+(mLifecycle==='Churn'?' selected':'')+'>Churn</option>';
+  // CLM-08 (e): options sekarang {value,label} array, dipake renderMultiSelect() (bukan <option> string)
+  var agentOptsArr=allUsersInclInactive().map(function(a){return{value:a,label:a};})
+    .concat([{value:'__unassigned__',label:'Unassigned'}]);
+  var blastOptsArr=[{value:'pending',label:'Pending'},{value:'blasted',label:'Blasted'},{value:'skip',label:'Skip'}];
+  var respOptsArr=Object.keys(RESP_CATS).map(function(c){return{value:c,label:c};})
+    .concat([{value:'__none__',label:'Belum Dikategorikan'}]);
+  var payOptsArr=Object.keys(PAYMENT_STATUS).map(function(p){return{value:p,label:PAYMENT_STATUS[p].label};})
+    .concat([{value:'__none__',label:'Belum Ada Status'}]);
+  var lcOptsArr=['Hot','Warm','Cold','Zombie','Churn'].map(function(l){return{value:l,label:l};});
   var monthOpts='<option value="">Semua Bulan (Jan–Des 26)</option>';
   ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].forEach(function(m){
     monthOpts+='<option value="'+m+'"'+(syncMonthFilter===m?' selected':'')+'>'+m+' 26</option>';
@@ -2007,9 +2033,7 @@ function renderMaster(){
     var ORDER=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     return ORDER.indexOf(a)-ORDER.indexOf(b);
   });
-  var bulanOpts='<option value="">Semua Periode</option>'+bulanVals.map(function(b){
-    return'<option value="'+b+'"'+(mBulan===b?' selected':'')+'>'+b+' 26</option>';
-  }).join('');
+  var bulanOptsArr=bulanVals.map(function(b){return{value:b,label:b+' 26'};});
   var syncInfo=d.records.length>0?'<span style="font-size:11px;color:var(--tx3);margin-left:8px">'+d.records.length+' records tersimpan</span>':'';
   var lastSyncInfo='<span id="last-sync-info" style="font-size:11px;color:var(--tx3);margin-left:8px" title="Auto-sync jalan bila data >8 jam saat halaman dibuka">🕒 Terakhir sync: '+fmtSyncTime(getLastSyncAt())+'</span>';
   // Hitung rows + counter DULU (sebelum susun string innerHTML) -- biar #master-count keisi
@@ -2038,12 +2062,12 @@ function renderMaster(){
     +'</div>'
     +'<div class="frow">'
     +'<input class="fsearch" type="search" id="m-search" placeholder="🔍 Cari nama / ID / merchant..." value="'+mSearch+'">'
-    +'<select id="m-agent">'+agentOpts+'</select>'
-    +'<select id="m-bulan" title="Filter Periode Billing">'+bulanOpts+'</select>'
-    +'<select id="m-lifecycle">'+lcOpts+'</select>'
-    +'<select id="m-blast">'+blastOpts+'</select>'
-    +'<select id="m-resp">'+respOpts+'</select>'
-    +'<select id="m-payment">'+payOpts+'</select>'
+    +renderMultiSelect('mAgent','Agen',agentOptsArr,mAgent)
+    +renderMultiSelect('mBulan','Periode',bulanOptsArr,mBulan)
+    +renderMultiSelect('mLifecycle','Lifecycle',lcOptsArr,mLifecycle)
+    +renderMultiSelect('mBlast','Status Blast',blastOptsArr,mBlast)
+    +renderMultiSelect('mResp','Respon',respOptsArr,mResp)
+    +renderMultiSelect('mPayment','Status Pembayaran',payOptsArr,mPayment)
     +'<span id="master-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+masterCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
@@ -2055,15 +2079,17 @@ function renderMaster(){
 // Scope agen/leader doang (sebelum search/payment) -- basis pembanding buat counter "X dari Y",
 // biar Y berarti "seluruh worksheet-ku" (bukan grand total lintas-agen yg nggak relevan buat agen biasa).
 function wsBasePool(d,me,isSup){
-  var fa=isSup?wsAgentFilter:me;
-  return fa?d.records.filter(function(r){return r.assignedAgent===fa;}):(isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;}));
+  // CLM-08 (e): wsAgentFilter multi-select -- cuma relevan buat leader (agen biasa selalu ke-scope
+  // ke case-nya sendiri doang, nggak dikasih UI filter ini -- lihat renderWorksheet).
+  if(!isSup)return d.records.filter(function(r){return r.assignedAgent===me;});
+  if(!wsAgentFilter.length)return d.records;
+  return d.records.filter(function(r){return wsAgentFilter.indexOf(r.assignedAgent)>=0;});
 }
 function wsFilteredRecs(d,me,isSup){
   var pool=wsBasePool(d,me,isSup);
-  if(wsPayment){
+  if(wsPayment.length){
     pool=pool.filter(function(r){
-      if(wsPayment==='__none__')return!r.paymentStatus;
-      return r.paymentStatus===wsPayment;
+      return wsPayment.some(function(v){return v==='__none__'?!r.paymentStatus:r.paymentStatus===v;});
     });
   }
   if(!wsSearch)return pool;
@@ -2117,18 +2143,10 @@ function renderWorksheet(){
   var isSup=Auth.isSuperior();
   var watchPhones=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
 
-  var agentFilter='';
-  if(isSup){
-    agentFilter='<select id="ws-agent-filter" style="padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx)">'
-      +'<option value="">Semua Agen</option>'
-      +allUsersInclInactive().map(function(a){return'<option value="'+a+'"'+(wsAgentFilter===a?' selected':'')+'>'+a+'</option>';}).join('')
-      +'</select>';
-  }
-  var payFilter='<select id="ws-payment">'
-    +'<option value="">Semua Status Pembayaran</option>'
-    +Object.keys(PAYMENT_STATUS).map(function(p){return'<option value="'+p+'"'+(wsPayment===p?' selected':'')+'>'+PAYMENT_STATUS[p].label+'</option>';}).join('')
-    +'<option value="__none__"'+(wsPayment==='__none__'?' selected':'')+'>Belum Ada Status</option>'
-    +'</select>';
+  var agentFilter=isSup?renderMultiSelect('wsAgentFilter','Agen',allUsersInclInactive().map(function(a){return{value:a,label:a};}),wsAgentFilter):'';
+  var payOptsArr=Object.keys(PAYMENT_STATUS).map(function(p){return{value:p,label:PAYMENT_STATUS[p].label};})
+    .concat([{value:'__none__',label:'Belum Ada Status'}]);
+  var payFilter=renderMultiSelect('wsPayment','Status Pembayaran',payOptsArr,wsPayment);
   // Hitung rows + counter DULU (sama pola kayak renderMaster) -- biar #ws-count keisi benar
   // di render PERTAMA, bukan cuma pas filter berikutnya.
   var wsRowsHtml=wsRows(d,me,isSup,watchPhones);
@@ -2152,7 +2170,9 @@ function renderWorksheet(){
 function renderResponseResults(){
   var el=document.getElementById('resp-results');
   if(!el)return;
-  var hasFilter=respSearch||respCatFilter||respAgentFilter;
+  // CLM-08 (e): respCatFilter/respAgentFilter sekarang Array -- WAJIB cek .length, bukan truthy
+  // langsung (array kosong `[]` tetap truthy di JS, beda kelakuan sama string kosong `''` lama).
+  var hasFilter=respSearch||respCatFilter.length||respAgentFilter.length;
   if(!hasFilter){
     el.innerHTML='<div class="empty" style="padding:48px 20px">🔍 Ketik nama atau ID outlet untuk mencari, atau pilih filter di atas</div>';
     return;
@@ -2163,11 +2183,8 @@ function renderResponseResults(){
   var s=respSearch.toLowerCase();
   var filtered=pool.filter(function(r){
     if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
-    if(respCatFilter){
-      if(respCatFilter==='__none__'){if(r.response&&r.response.category)return false;}
-      else if(!r.response||r.response.category!==respCatFilter)return false;
-    }
-    if(respAgentFilter&&r.assignedAgent!==respAgentFilter)return false;
+    if(respCatFilter.length&&!respCatFilter.some(function(v){return v==='__none__'?!(r.response&&r.response.category):(r.response&&r.response.category===v);}))return false;
+    if(respAgentFilter.length&&respAgentFilter.indexOf(r.assignedAgent)<0)return false;
     return true;
   });
   var respTotalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
@@ -2215,17 +2232,14 @@ function renderResponseResults(){
 }
 
 function renderResponse(){
-  var catOpts='<option value="">Semua Status</option>'
-    +Object.keys(RESP_CATS).map(function(c){return'<option value="'+c+'"'+(respCatFilter===c?' selected':'')+'>'+c+'</option>';}).join('')
-    +'<option value="__none__"'+(respCatFilter==='__none__'?' selected':'')+'>Belum Dikategorikan</option>';
-  var agentOpts='<option value="">Semua Agen</option>'+allUsersInclInactive().map(function(a){
-    return'<option value="'+a+'"'+(respAgentFilter===a?' selected':'')+'>'+a+'</option>';
-  }).join('');
+  var catOptsArr=Object.keys(RESP_CATS).map(function(c){return{value:c,label:c};})
+    .concat([{value:'__none__',label:'Belum Dikategorikan'}]);
+  var agentOptsArr=allUsersInclInactive().map(function(a){return{value:a,label:a};});
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
     +'<input class="fsearch" type="search" id="resp-search" placeholder="🔍 Cari nama / ID outlet..." value="'+respSearch+'">'
-    +'<select id="resp-cat-filter">'+catOpts+'</select>'
-    +'<select id="resp-agent-filter">'+agentOpts+'</select>'
+    +renderMultiSelect('respCatFilter','Status',catOptsArr,respCatFilter)
+    +renderMultiSelect('respAgentFilter','Agen',agentOptsArr,respAgentFilter)
     +'</div>'
     +'<div id="resp-results"></div>';
   renderResponseResults();
@@ -2519,7 +2533,7 @@ function toggleAgentStatus(id){
   var d=Store.get();
   var affected=d.records.filter(function(r){return r.assignedAgent===ag.name;}).length;
   if(affected>0){
-    mAgent=ag.name;
+    mAgent=[ag.name]; // CLM-08 (e): mAgent sekarang array multi-select
     toast('⚠ '+ag.name+' dinonaktifkan — '+affected+' case masih assigned ke dia, perlu direassign manual (diarahkan ke Master, filter: '+ag.name+')',6000);
     renderTab('master');
   }else{
@@ -4198,6 +4212,41 @@ tabContent.addEventListener('focusout',function(e){
   }
 });
 
+// CLM-08 (e): refresh cuma bagian data (tbody), BUKAN render ulang seluruh tab (`.frow` filter row
+// termasuk panel multi-select yg lagi kebuka) -- dipake generic checkbox handler + search input.
+function refreshMasterBody(){mPage=0;var tb=document.getElementById('master-tbody');if(tb)tb.innerHTML=masterRows(Store.get());}
+function refreshWsBody(){
+  wsPage=0;
+  var d=Store.get();var me=Auth.getActive();var isSup=Auth.isSuperior();
+  var wp=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));
+  var tb=document.getElementById('ws-tbody');if(tb)tb.innerHTML=wsRows(d,me,isSup,wp);
+  updateWsBulkBar();
+}
+function refreshRespResults(){respPage=0;renderResponseResults();}
+// Peta nama var-filter -> fungsi refresh yg sesuai, dipake handler checkbox .msel-opt generik.
+var MSEL_REFRESH={
+  mAgent:refreshMasterBody,mBulan:refreshMasterBody,mLifecycle:refreshMasterBody,
+  mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,
+  wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
+  respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults
+};
+// Buka/tutup panel multi-select: klik trigger toggle + tutup panel lain yg lagi kebuka; klik di
+// luar panel manapun nutup semua. Level document (bukan tabContent) krn butuh nangkep klik DI LUAR
+// #tab-content juga (mis. klik ke area kosong halaman).
+document.addEventListener('click',function(e){
+  var trg=e.target.closest('[data-msel-trigger]');
+  if(trg){
+    var wrap=trg.closest('.msel');
+    var wasOpen=wrap.classList.contains('open');
+    document.querySelectorAll('.msel.open').forEach(function(m){m.classList.remove('open');});
+    if(!wasOpen)wrap.classList.add('open');
+    return;
+  }
+  if(!e.target.closest('.msel-panel')){
+    document.querySelectorAll('.msel.open').forEach(function(m){m.classList.remove('open');});
+  }
+});
+
 tabContent.addEventListener('change',function(e){
   var tgt=e.target;
   if(tgt.classList.contains('blast-chk')){
@@ -4228,24 +4277,34 @@ tabContent.addEventListener('change',function(e){
     });
     updateWsBulkBar();
   }
-  if(tgt.id==='ws-agent-filter'){wsAgentFilter=tgt.value;wsPage=0;renderWorksheet();}
-  if(tgt.id==='m-agent'){mAgent=tgt.value;mPage=0;var tb=document.getElementById('master-tbody');if(tb)tb.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-blast'){mBlast=tgt.value;mPage=0;var tb2=document.getElementById('master-tbody');if(tb2)tb2.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-resp'){mResp=tgt.value;mPage=0;var tb3=document.getElementById('master-tbody');if(tb3)tb3.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-lifecycle'){mLifecycle=tgt.value;mPage=0;var tb4=document.getElementById('master-tbody');if(tb4)tb4.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-bulan'){mBulan=tgt.value;mPage=0;var tb5=document.getElementById('master-tbody');if(tb5)tb5.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='m-payment'){mPayment=tgt.value;mPage=0;var tb6=document.getElementById('master-tbody');if(tb6)tb6.innerHTML=masterRows(Store.get());}
-  if(tgt.id==='ws-payment'){wsPayment=tgt.value;wsPage=0;renderWorksheet();}
   if(tgt.id==='sync-month-sel'){syncMonthFilter=tgt.value;}
-  if(tgt.id==='resp-cat-filter'){respCatFilter=tgt.value;respPage=0;renderResponseResults();}
-  if(tgt.id==='resp-agent-filter'){respAgentFilter=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='csv-import'){var file=tgt.files[0];if(file)handleCsvImport(file);}
+  // CLM-08 (e): checkbox di dalam panel multi-select -- toggle value di array state (window[name]),
+  // update teks trigger, refresh cuma bagian data (tbody/results), BUKAN render ulang seluruh tab
+  // (biar panel yg lagi kebuka nggak ke-destroy/ketutup pas centang beberapa opsi berturut-turut).
+  if(tgt.classList.contains('msel-opt')){
+    var name=tgt.dataset.filter;
+    var arr=window[name]||[];
+    var idx=arr.indexOf(tgt.value);
+    if(tgt.checked){if(idx<0)arr.push(tgt.value);}else if(idx>=0)arr.splice(idx,1);
+    window[name]=arr;
+    var trg=document.querySelector('[data-msel-trigger="'+name+'"]');
+    if(trg){
+      var baseTitle=trg.dataset.basetitle;
+      var panel=trg.parentElement.querySelector('.msel-panel');
+      var checkedEls=panel?panel.querySelectorAll('.msel-opt:checked'):[];
+      trg.textContent=arr.length===0?('Semua '+baseTitle)
+        :arr.length===1?(checkedEls[0]?checkedEls[0].dataset.label:arr[0])
+        :baseTitle+' ('+arr.length+')';
+    }
+    if(MSEL_REFRESH[name])MSEL_REFRESH[name]();
+  }
 });
 
 tabContent.addEventListener('input',function(e){
   var tgt=e.target;
-  if(tgt.id==='ws-search'){wsSearch=tgt.value;wsPage=0;var d=Store.get();var me=Auth.getActive();var isSup=Auth.isSuperior();var wp=new Set(d.watchlist.filter(function(w){return w.status==='active';}).map(function(w){return w.phone;}));var tb=document.getElementById('ws-tbody');if(tb)tb.innerHTML=wsRows(d,me,isSup,wp);}
-  if(tgt.id==='m-search'){mSearch=tgt.value;mPage=0;var tb2=document.getElementById('master-tbody');if(tb2)tb2.innerHTML=masterRows(Store.get());}
+  if(tgt.id==='ws-search'){wsSearch=tgt.value;refreshWsBody();}
+  if(tgt.id==='m-search'){mSearch=tgt.value;refreshMasterBody();}
   if(tgt.id==='resp-search'){respSearch=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='wl-search'){wlSearch=tgt.value;renderWatchlistTable();}
   if(tgt.id==='wl-new-phone'){
