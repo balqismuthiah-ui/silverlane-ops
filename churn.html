@@ -634,7 +634,8 @@ function computeMetricRaw(metricKey,recs,period){
     return{actual:recs.filter(function(r){return respOutcome(r.response)==='renewal';}).length,unit:'count'};
   }
   if(metricKey==='upsell_approved_count'){
-    return{actual:recs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps')+upsellApprovedCount(r,'playstore');},0),unit:'count'};
+    // CLM-08 (4b): generik lewat UPSELL_PLATFORMS biar hardware ikut dihitung (brief: "dihitung metrik")
+    return{actual:recs.reduce(function(s,r){return s+UPSELL_PLATFORMS.reduce(function(s2,p){return s2+upsellApprovedCount(r,p.key);},0);},0),unit:'count'};
   }
   if(FIN_METRIC_KEYS.indexOf(metricKey)>=0){
     return computeFinancialsMetric(metricKey,recs,period);
@@ -663,7 +664,7 @@ function computeTargetActual(target,allRecs,agentName){
 }
 
 // ── CLM-03 UPSELLING (per-platform independen) ──────────────────────────────
-const UPSELL_PLATFORMS=[{key:'maps',label:'Google Maps',icon:'📍'},{key:'playstore',label:'PlayStore',icon:'📱'}];
+const UPSELL_PLATFORMS=[{key:'maps',label:'Google Maps',icon:'📍'},{key:'playstore',label:'PlayStore',icon:'📱'},{key:'hardware',label:'Hardware',icon:'🖥️'}];
 function upsellLineBadge(line){
   if(!line)return'';
   if(line.status==='approved')return'<span class="badge badge-grn" style="font-size:10px">✓ Approved</span>';
@@ -683,7 +684,9 @@ function upsellClaimedCount(r,platform){
 }
 function upsellIsPending(r){
   var u=r.upsell||{};
-  return(u.maps&&u.maps.status==='pending')||(u.playstore&&u.playstore.status==='pending');
+  // CLM-08 (4b): generik lewat UPSELL_PLATFORMS -- dulu hardcode maps/playstore doang, ketinggalan
+  // pas hardware ditambah kalau nggak difix.
+  return UPSELL_PLATFORMS.some(function(p){return u[p.key]&&u[p.key].status==='pending';});
 }
 // Kunci edit non-Sekar begitu status platform itu udah diputuskan (Approved/Rejected) — per baris, independen dari platform lain
 function upsellLocked(line,isSup){
@@ -704,16 +707,20 @@ function buildUpsellFieldset(p,line,isSup){
   var lockNote=locked?'<div style="font-size:11px;color:var(--tx3);font-style:italic;margin-bottom:4px">🔒 Sudah divalidasi — hanya Team Lead yang bisa ubah</div>':'';
   var rejNote=(line&&line.status==='rejected'&&line.rejectReason)?'<div style="font-size:11px;color:var(--red);margin-bottom:4px">Alasan reject: '+line.rejectReason+'</div>':'';
 
+  // CLM-08 (4b): hardware = "nawarin user beli perangkat", bukan klaim rating -- label count/evidence
+  // disesuaikan biar masuk akal, tapi struktur field (count+evidence+validasi+audit) tetap identik.
+  var countLabel=p.key==='hardware'?'Jumlah unit ditawarkan (klaim)':'Jumlah rating (klaim)';
+  var evidPlaceholder=p.key==='hardware'?'Link chat/invoice atau screenshot':'https://...';
   var html='<div style="border:1px solid var(--bdr);border-radius:var(--rs);padding:10px;margin-bottom:8px">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
     +'<strong style="font-size:12px">'+p.icon+' '+p.label+'</strong>'+statusBadge
     +'</div>'
     +meta+lockNote+rejNote
     +'<div style="display:flex;gap:8px;margin-bottom:6px">'
-    +'<div style="flex:1"><label style="font-size:11px">Jumlah rating (klaim)</label><input type="number" id="upsell-'+p.key+'-count" min="0" value="'+count+'" style="margin-bottom:0"'+(locked?' disabled':'')+'></div>'
+    +'<div style="flex:1"><label style="font-size:11px">'+countLabel+'</label><input type="number" id="upsell-'+p.key+'-count" min="0" value="'+count+'" style="margin-bottom:0"'+(locked?' disabled':'')+'></div>'
     +'</div>'
     +'<label style="font-size:11px">Evidence (link chat/review atau screenshot) — wajib kalau diisi</label>'
-    +'<input type="text" id="upsell-'+p.key+'-evidence" value="'+evidence+'" placeholder="https://..."'+(locked?' disabled':'')+'>';
+    +'<input type="text" id="upsell-'+p.key+'-evidence" value="'+evidence+'" placeholder="'+evidPlaceholder+'"'+(locked?' disabled':'')+'>';
 
   if(isSup&&line){
     // Safety: kalau agentCredit (mis. data lama/anomali) di luar daftar AGENTS, tetap tampilkan sbg opsi biar select nggak diam-diam ganti ke opsi pertama
@@ -912,7 +919,7 @@ function migrateUpsell(d){
   d.records.forEach(function(r){
     if(r.upsell)return; // udah model baru
     var old=r.review;
-    r.upsell={maps:null,playstore:null};
+    r.upsell={maps:null,playstore:null,hardware:null}; // CLM-08 (4b): hardware = platform ke-3
     if(!old)return;
     var mkLine=function(count){
       return{
@@ -1218,7 +1225,7 @@ function mkRec(id,name,expiry,phone,agent,blastSt,email,pkg){
     lastBlastAt:blasted?'2026-06-10T08:30:00':null,
     gcFlagged:false,invoiced:false,paymentStatus:null,
     response:{category:null,detail:null,note:'',updatedPhone:null,waStatus:'unchecked',updatedAt:null,updatedBy:null},
-    upsell:{maps:null,playstore:null},
+    upsell:{maps:null,playstore:null,hardware:null}, // CLM-08 (4b): hardware = platform ke-3
     blastLog:{} // CLM-05 #25: {[cpKey]: {status,sentAt,broadcastName}} dari sync BROADCASTLOG CLARA
   };
 }
@@ -3023,7 +3030,7 @@ function saveResp(){
   if(detailFinal&&PAID_DETAILS.indexOf(detailFinal)>=0)r.paymentStatus='paid';
 
   // CLM-03: upsell per-platform — PASS 1 validasi semua platform dulu, jangan mutasi apa pun kalau ada yg gagal
-  r.upsell=r.upsell||{maps:null,playstore:null};
+  r.upsell=r.upsell||{maps:null,playstore:null,hardware:null}; // CLM-08 (4b): +hardware
   var upsellError=null;
   UPSELL_PLATFORMS.forEach(function(p){
     if(upsellError)return;
@@ -3809,9 +3816,11 @@ function syncUpsellOnly(){
       var jc=String(row['Join Code']||'').trim();if(!jc)return;
       var sep=jc.lastIndexOf('_');if(sep<0)return;
       var caseId=jc.substring(0,sep),platform=jc.substring(sep+1);
-      if(platform!=='maps'&&platform!=='playstore')return;
+      // CLM-08 (4b): whitelist generik dari UPSELL_PLATFORMS (bukan hardcode 2 string) -- otomatis
+      // ikut kalau platform baru ditambah lagi ke array, nggak perlu inget update di sini juga.
+      if(!UPSELL_PLATFORMS.some(function(p){return p.key===platform;}))return;
       var rec=idx[caseId];if(!rec)return;
-      rec.upsell=rec.upsell||{maps:null,playstore:null};
+      rec.upsell=rec.upsell||{maps:null,playstore:null,hardware:null};
       var merged=mergeUpsellFromRemote(rec.upsell[platform],row);
       if(merged!==rec.upsell[platform]){rec.upsell[platform]=merged;n++;}
     });
