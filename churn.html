@@ -90,6 +90,14 @@ button{cursor:pointer;border:none}
 .stat-val{font-size:28px;font-weight:800;color:var(--pri)}
 .stat-lbl{font-size:12px;color:var(--tx3);margin-top:4px}
 
+/* CLM-11 A1: funnel MoM stat cards (besar dari .stat biasa) */
+.grid-funnel{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:900px){.grid-funnel{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.grid-funnel{grid-template-columns:1fr}}
+.funnel-card{background:var(--sur);border:1px solid var(--bdr);border-radius:var(--r);padding:14px}
+.funnel-card .stat-lbl{margin-top:0;margin-bottom:4px}
+.funnel-mom{font-size:11px;margin-top:6px;color:var(--tx3)}
+
 /* TABLES */
 .tbl-wrap{overflow-x:auto;border-radius:var(--rs);border:1px solid var(--bdr)}
 .tbl-wrap.sticky-wrap{overflow-y:auto;max-height:calc(100vh - 260px)}
@@ -273,6 +281,7 @@ tr:hover td{background:var(--sur2)}
     <button class="ntab" data-tab="watchlist">🚫 Watchlist GC</button>
     <button class="ntab" data-tab="klopos">📅 KLOPOS Daily</button>
     <button class="ntab" data-tab="invoice">🧾 Invoice Tracker</button>
+    <button class="ntab" data-tab="konfigakun">⚙️ Konfigurasi Akun</button>
   </div>
 
   <div class="main" id="tab-content"></div>
@@ -1372,6 +1381,7 @@ var mSearch='',mAgent=[],mBlast=[],mResp=[]; // CLM-08 (e): semua multi-select (
 var mPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
 var masterCountText=''; // CLM-08: teks counter #master-count, di-set masterRows() sebelum span-nya ada di DOM
 var blastHidePaid=true;
+var blastAgentFilter=[]; // CLM-11 A4: multi-select, leader-only, array kosong = semua agen
 var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
 var respUpsellFilter=[]; // CLM-08 (4a): work-order queue -- filter klaim upsell by status
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
@@ -1395,6 +1405,9 @@ var upsellTeamViewSel='CLM'; // CLM-10 §3: view aktif Multi-team Upsell Tracker
 var invSearch='',invStatusFilter=[],invAgentFilter=[];
 var invPage=0;
 var invDay=''; // 'hari H' buat metrik #1 (dibuat) & #4 (terbayar) -- kosong = pakai hari ini saat render
+// CLM-11 A4: filter Bulan + rentang tanggal -- ngontrol BARIS TABEL (invBasePool/invFilteredRows)
+// DOANG, terpisah total dari invDay (yang cuma ngontrol 2 metric card tanggal-spesifik di atas).
+var invBulanFilter=[],invStartDate='',invEndDate='';
 var syncInProgress=false;
 
 // ── CLM-01 SYNC STATE (cadence + rate-limit) ────────────────────────────────
@@ -1709,6 +1722,45 @@ function buildCsvPhoneRows(records){
   return rows;
 }
 
+// CLM-11 A1: breakdown funnel di-scope ke 1 cohort-bulan (cohortMonths, bukan tahun -- lihat
+// catatan YoY di memory, cohortMonths BUKAN tahun-aware, jadi cuma MoM adjacent-month yg valid).
+// monthKey null/'' = semua cohort (dipakai fallback kalau data blm ke-tag cohortMonths).
+function computeFunnelBreakdown(recsInScope,monthKey){
+  var periodRecs=monthKey?recsInScope.filter(function(r){
+    return(r.cohortMonths||r.bulan||'').split(',').indexOf(monthKey)>=0;
+  }):recsInScope;
+  var total=periodRecs.length;
+  var blasted=periodRecs.filter(function(r){return r.blastStatus==='blasted';}).length;
+  var renewal=periodRecs.filter(function(r){return respOutcome(r.response)==='renewal';}).length;
+  var tidakRenewal=periodRecs.filter(function(r){return respOutcome(r.response)==='churn';}).length;
+  var followUp=periodRecs.filter(function(r){return respOutcome(r.response)==='followup';}).length;
+  var belumDikategorikan=periodRecs.filter(function(r){return!(r.response&&r.response.category);}).length;
+  var nomorTidakValid=periodRecs.filter(function(r){return r.response&&r.response.category==='NOMOR TIDAK VALID';}).length;
+  var kategoriLain=periodRecs.filter(function(r){
+    if(!(r.response&&r.response.category))return false;
+    if(r.response.category==='NOMOR TIDAK VALID')return false;
+    return respOutcome(r.response)==='other';
+  }).length;
+  var gcCount=periodRecs.filter(function(r){return!!gcFlagMap[r.phone];}).length;
+  return{total:total,blasted:blasted,renewal:renewal,tidakRenewal:tidakRenewal,followUp:followUp,
+    belumDikategorikan:belumDikategorikan,nomorTidakValid:nomorTidakValid,kategoriLain:kategoriLain,gcCount:gcCount};
+}
+// MoM delta line, "vs cohort bulan lalu (status terkini)" -- BUKAN trend historis (lihat memory CLM-11 A1).
+function funnelMomHtml(nowVal,prevVal,prevMonthKey){
+  if(!prevMonthKey)return'';
+  var diff=nowVal-prevVal;
+  var pct=prevVal?Math.round((diff/prevVal)*100):(nowVal?100:0);
+  var arrow=diff>0?'▲':(diff<0?'▼':'—');
+  var clr=diff>0?'var(--grn)':(diff<0?'var(--red)':'var(--tx3)');
+  return'<div class="funnel-mom" style="color:'+clr+'">'+arrow+' '+(diff>0?'+':'')+diff+' ('+(diff>0?'+':'')+pct+'%) vs cohort '+prevMonthKey+' (status terkini)</div>';
+}
+function funnelCardHtml(label,val,color,nowB,prevB,key,prevMonthKey){
+  return'<div class="funnel-card"><div class="stat-lbl">'+label+'</div>'
+    +'<div class="stat-val" style="color:'+color+'">'+nowB[key]+'</div>'
+    +(prevB?funnelMomHtml(nowB[key],prevB[key],prevMonthKey):'')
+    +'</div>';
+}
+
 // ── TAB: OVERVIEW ──────────────────────────────────────────────────────────
 function renderOverview(){
   var d=Store.get();
@@ -1717,6 +1769,13 @@ function renderOverview(){
   var me=Auth.getActive();
   var currentMonthKey=MONTH_KEYS[new Date().getMonth()]; // dipake bareng agentTargetSection + targetsSection
   var myRecs=isSup?recs:recs.filter(function(r){return r.assignedAgent===me;});
+
+  // CLM-11 A1: funnel MoM — cohort bulan-ini vs bulan-lalu (mismatch tahun BUKAN dicover, lihat memory
+  // "A1 YoY structural nggak bisa jalan" — cohortMonths BUKAN tahun-aware, cuma valid buat adjacent-month).
+  var prevMonthKey=MONTH_KEYS[(new Date().getMonth()+11)%12];
+  var funnelHasCohortData=myRecs.some(function(r){return!!(r.cohortMonths||r.bulan);});
+  var funnelNow=computeFunnelBreakdown(myRecs,funnelHasCohortData?currentMonthKey:null);
+  var funnelPrev=funnelHasCohortData?computeFunnelBreakdown(myRecs,prevMonthKey):null;
 
   var total=myRecs.length;
   var blasted=myRecs.filter(function(r){return r.blastStatus==='blasted';}).length; // provisional — gated BROADCASTLOG, lihat CLM-05
@@ -2124,30 +2183,31 @@ function renderOverview(){
     }
   }
 
+  // CLM-11 A1: funnel = MoM stat cards, cohort bulan-ini vs bulan-lalu (status TERKINI, bukan
+  // snapshot beku -- lihat memory "A1 semantik"). YoY SENGAJA di-drop (structural, lihat memory
+  // "A1 YoY"). Urutan LOCKED: Total Leads->Blast->Renewal->Tidak Renewal->Follow Up->
+  // Belum Dikategorikan->Nomor Tidak Valid->Kategori Lain->GC Watchlist (GC di paling akhir).
+  var funnelPct=funnelNow.total?function(n){return Math.round((n/funnelNow.total)*100);}:function(){return 0;};
   document.getElementById('tab-content').innerHTML=
-    '<div class="ov-section"><div class="ov-section-title">📊 Ringkasan '+(isSup?'Semua Agen':'Saya — '+me)+'</div>'
-    +'<div class="grid4" style="margin-bottom:16px">'
-    +'<div class="stat"><div class="stat-val">'+total+'</div><div class="stat-lbl">Total Outlet</div></div>'
-    +'<div class="stat" title="Provisional — belum exclude/confirm via BROADCASTLOG CLARA"><div class="stat-val" style="color:var(--grn)">'+blasted+'</div><div class="stat-lbl">Sudah Blast ('+pBlasted+'%) ⚠</div></div>'
-    +'<div class="stat"><div class="stat-val" style="color:var(--grn)">'+renewal+'</div><div class="stat-lbl">Renewal ('+pRenewal+'%)</div></div>'
-    +'<div class="stat"><div class="stat-val" style="color:var(--red)">'+tidakRenewal+'</div><div class="stat-lbl">Tidak Renewal</div></div>'
+    '<div class="ov-section"><div class="ov-section-title">📊 Ringkasan '+(isSup?'Semua Agen':'Saya — '+me)
+    +(funnelHasCohortData?' — Cohort '+currentMonthKey+' 26':'')+'</div>'
+    +'<div class="grid-funnel">'
+    +funnelCardHtml('Total Leads',null,'var(--pri)',funnelNow,funnelPrev,'total',prevMonthKey)
+    +funnelCardHtml('Sudah Diblast ('+funnelPct(funnelNow.blasted)+'%) ⚠',null,'var(--grn)',funnelNow,funnelPrev,'blasted',prevMonthKey)
+    +funnelCardHtml('Sudah Renewal ('+funnelPct(funnelNow.renewal)+'%)',null,'var(--grn)',funnelNow,funnelPrev,'renewal',prevMonthKey)
+    +funnelCardHtml('Tidak Renewal',null,'var(--red)',funnelNow,funnelPrev,'tidakRenewal',prevMonthKey)
+    +funnelCardHtml('Follow Up',null,'var(--yel)',funnelNow,funnelPrev,'followUp',prevMonthKey)
+    +funnelCardHtml('Belum Dikategorikan',null,'var(--tx3)',funnelNow,funnelPrev,'belumDikategorikan',prevMonthKey)
+    +funnelCardHtml('Nomor Tidak Valid',null,'var(--org)',funnelNow,funnelPrev,'nomorTidakValid',prevMonthKey)
+    +funnelCardHtml('Kategori Lain (No Response/Bukan Renewal)',null,'var(--tx3)',funnelNow,funnelPrev,'kategoriLain',prevMonthKey)
+    +funnelCardHtml('GC Watchlist Aktif',null,'var(--pri)',funnelNow,funnelPrev,'gcCount',prevMonthKey)
     +'</div>'
-    +'<div class="grid4">'
-    +'<div class="stat"><div class="stat-val" style="color:var(--yel)">'+followUp+'</div><div class="stat-lbl">Follow Up</div></div>'
-    +'<div class="stat"><div class="stat-val" style="color:var(--tx3)">'+belumDikategorikan+'</div><div class="stat-lbl">Belum Dikategorikan</div></div>'
-    +'<div class="stat"><div class="stat-val">'+gcCount+'</div><div class="stat-lbl">GC Watchlist Aktif</div></div>'
-    +'<div class="stat"><div class="stat-val" style="color:var(--org)">'+nomorTidakValid+'</div><div class="stat-lbl">Nomor Tidak Valid</div></div>'
+    +(funnelHasCohortData?'':'<div style="font-size:11px;color:var(--tx3);margin-top:8px">⚠ Belum ada data cohort bulan (belum di-sync ulang) — angka di atas mencakup SEMUA data, MoM belum tersedia.</div>')
     +'</div>'
-    // AC-A8 fix: kategori Summary lain (NO RESPONSE, BUKAN RENEWAL, dst) yg sebelumnya nggak punya bucket
-    // sendiri -> "hilang" dari total. Ditampilin eksplisit biar sum semua kategori SELALU = Total Outlet.
-    +'<div class="grid4" style="margin-top:8px">'
-    +'<div class="stat"><div class="stat-val" style="color:var(--tx3)">'+kategoriLain+'</div><div class="stat-lbl">Kategori Lain (No Response/Bukan Renewal)</div></div>'
-    +'</div>'
-    +'</div>'
+    +targetsSection
     +agentTargetSection
     +configurableTargetSection
     +upsellTeamSection
-    +targetsSection
     +monthlySummarySection
     +backlogSection
     +agentSection;
@@ -2423,6 +2483,21 @@ function invBasePool(enriched,me,isSup){
 function invFilteredRows(enriched,me,isSup){
   var pool=invBasePool(enriched,me,isSup);
   if(invStatusFilter.length)pool=pool.filter(function(r){return invStatusFilter.indexOf(r.statusDetail)>=0;});
+  // CLM-11 A4: filter Bulan + rentang tanggal by createdDate -- dimensi independen dari invDay.
+  if(invBulanFilter.length)pool=pool.filter(function(r){
+    if(!r.createdDate)return false;
+    var dt=new Date(r.createdDate);
+    if(isNaN(dt.getTime()))return false;
+    return invBulanFilter.indexOf(MONTH_KEYS[dt.getMonth()])>=0;
+  });
+  if(invStartDate||invEndDate)pool=pool.filter(function(r){
+    if(!r.createdDate)return false;
+    var ds=localDateStr(r.createdDate);
+    if(!ds)return false;
+    if(invStartDate&&ds<invStartDate)return false;
+    if(invEndDate&&ds>invEndDate)return false;
+    return true;
+  });
   if(!invSearch)return pool;
   var s=invSearch.toLowerCase();
   return pool.filter(function(r){return r.invCode.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s);});
@@ -2500,6 +2575,9 @@ function renderInvoiceTracker(){
   var statusOpts=['PAID','APPROVED-INVOICE','APPROVED-PROFORMA','VALIDATED-INVOICE','EXPIRED-INVOICE','VOID-INVOICE'].map(function(s){return{value:s,label:s};});
   var statusFilterHtml=renderMultiSelect('invStatusFilter','Status Invoice',statusOpts,invStatusFilter);
   var agentFilterHtml=isSup?renderMultiSelect('invAgentFilter','Agen',AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}),invAgentFilter):'';
+  // CLM-11 A4: filter Bulan (by createdDate) -- opsi diambil dari MONTH_KEYS statis (bukan cohortMonths
+  // records KLOPOS, ini dataset Invoice Tracker terpisah), + filter Start/End Date custom range.
+  var bulanFilterHtml=renderMultiSelect('invBulanFilter','Bulan (Dibuat)',MONTH_KEYS.map(function(m){return{value:m,label:m+' 26'};}),invBulanFilter);
 
   var enriched=invEnrichedRows(); // 1x per render pass, dipakai bareng buat metrik + tabel (dulu 2x)
   var pool=invFilteredRows(enriched,me,isSup);
@@ -2519,6 +2597,13 @@ function renderInvoiceTracker(){
     +'<input class="fsearch" type="search" id="inv-search" placeholder="🔍 Cari No. Invoice / Nama Outlet..." value="'+invSearch+'">'
     +statusFilterHtml
     +(agentFilterHtml||'')
+    +bulanFilterHtml
+    // CLM-11 A4: rentang tanggal custom -- filter BARIS TABEL doang, terpisah dari date-picker
+    // "Tanggal" di atas (invDay, cuma ngontrol 2 metric card, TIDAK nyentuh baris tabel).
+    +'<label style="font-size:11px;font-weight:600;color:var(--tx3);align-self:center">Rentang:</label>'
+    +'<input type="date" id="inv-start-date" value="'+invStartDate+'" style="padding:5px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:12px">'
+    +'<span style="font-size:11px;color:var(--tx3);align-self:center">s/d</span>'
+    +'<input type="date" id="inv-end-date" value="'+invEndDate+'" style="padding:5px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:12px">'
     +'<span id="inv-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+invCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
@@ -2616,48 +2701,28 @@ function renderResponse(){
 }
 
 // ── TAB: BLAST WABA ────────────────────────────────────────────────────────
-function renderBlast(){
+// CLM-11 A4: rows-computation dipecah dari render, biar refreshBlastBody() (dipanggil pas
+// blastAgentFilter berubah) bisa refresh tbody DOANG -- pola sama refreshWsBody/refreshMasterBody.
+function blastFilteredRows(){
   var d=Store.get();
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
   var recs=isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;});
   recs=applyBlastMonthGate(recs,isSup);
+  // Filter agen cuma relevan buat leader (agen biasa udah ke-scope ke case-nya sendiri di atas).
+  if(isSup&&blastAgentFilter.length){
+    recs=recs.filter(function(r){return blastAgentFilter.indexOf(r.assignedAgent)>=0;});
+  }
   var allRows=buildExplodedRows(recs);
-  var rows=blastHidePaid?allRows.filter(function(row){
+  return blastHidePaid?allRows.filter(function(row){
     if(row.record.paymentStatus==='paid')return false;
     if(row.record.response&&PAID_DETAILS.indexOf(row.record.response.detail)>=0)return false;
     return true;
   }):allRows;
-  var tpls=Templates.getAll();
-  var agents=AgentsConfig.getAll();
-
-  var tplOpts=tpls.map(function(t){return'<option value="'+t.id+'">'+t.name+'</option>';}).join('');
-  var tplRows=tpls.map(function(t){
-    return'<tr class="ctbl">'
-      +'<td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+t.name+'</td>'
-      +'<td>'+t.language+'</td>'
-      +'<td>'+(t.variableMap?t.variableMap.length:0)+'</td>'
-      +'<td><div class="row-tools">'
-      +'<button class="action-btn ab-edit" data-act="edit-tpl" data-id="'+t.id+'">✏</button>'
-      +'<button class="action-btn ab-wl" data-act="del-tpl" data-id="'+t.id+'">✕</button>'
-      +'</div></td></tr>';
-  }).join('');
-
-  var agentRows=agents.map(function(a){
-    var isInactive=a.status==='inactive';
-    var roleTag=a.role==='leader'?' <span style="font-size:10px;color:var(--tx3)">(Team Lead)</span>':'';
-    var statusBadge=isInactive?' <span class="badge badge-gray" style="font-size:9px">Nonaktif</span>':'';
-    return'<tr style="'+(isInactive?'opacity:.55':'')+'">'
-      +'<td style="font-size:12px">'+a.name+roleTag+statusBadge+'</td>'
-      +'<td><input class="ag-inp" style="width:46px" type="text" value="'+a.initials+'" data-agid="'+a.id+'" data-field="initials" maxlength="4"></td>'
-      +'<td><input class="ag-inp" style="width:130px" type="text" value="'+a.displayName+'" data-agid="'+a.id+'" data-field="displayName"></td>'
-      +'<td><input class="ag-inp" style="width:160px" type="email" value="'+(a.email||'')+'" data-agid="'+a.id+'" data-field="email" placeholder="nama@majoo.id"></td>'
-      +'<td><button class="action-btn '+(isInactive?'ab-view':'ab-wl')+'" data-act="toggle-agent-status" data-agid="'+a.id+'" title="'+(isInactive?'Aktifkan kembali — bisa login & masuk pool assignment lagi':'Nonaktifkan — dicabut dari login & pool assignment, data historis tetap utuh')+'">'+(isInactive?'🟢 Aktifkan':'🔴 Nonaktifkan')+'</button></td>'
-      +'</tr>';
-  }).join('');
-
+}
+function blastTableRowsHtml(rows){
   var todayStr=localDateStr(new Date().toISOString());
-  var tableRows=rows.map(function(row){
+  return rows.map(function(row){
     var chk=csvSelectedIds.has(row.key)?'checked':'';
     var gcDisp=row.isGC?'<span class="gc-flag">⚠</span>':'';
     var dummyDisp=row.isDummy?'<span class="dummy-flag">🚫</span>':'';
@@ -2685,6 +2750,30 @@ function renderBlast(){
       +'<td>'+payBadge(row.record.paymentStatus,row.record.invoiceSent)+'</td>'
       +'</tr>';
   }).join('');
+}
+function refreshBlastBody(){
+  var tb=document.getElementById('blast-tbody');
+  if(tb)tb.innerHTML=blastTableRowsHtml(blastFilteredRows())||'<tr><td colspan="10" class="empty">Belum ada data</td></tr>';
+}
+function renderBlast(){
+  var isSup=Auth.isSuperior();
+  var rows=blastFilteredRows();
+  var tpls=Templates.getAll();
+
+  var tplOpts=tpls.map(function(t){return'<option value="'+t.id+'">'+t.name+'</option>';}).join('');
+  var tplRows=tpls.map(function(t){
+    return'<tr class="ctbl">'
+      +'<td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+t.name+'</td>'
+      +'<td>'+t.language+'</td>'
+      +'<td>'+(t.variableMap?t.variableMap.length:0)+'</td>'
+      +'<td><div class="row-tools">'
+      +'<button class="action-btn ab-edit" data-act="edit-tpl" data-id="'+t.id+'">✏</button>'
+      +'<button class="action-btn ab-wl" data-act="del-tpl" data-id="'+t.id+'">✕</button>'
+      +'</div></td></tr>';
+  }).join('');
+
+  var tableRows=blastTableRowsHtml(rows);
+  var blastAgentOptsArr=AGENTS.map(function(a){return{value:a,label:a};});
 
   document.getElementById('tab-content').innerHTML=
     '<div class="blast-cfg">'
@@ -2696,25 +2785,6 @@ function renderBlast(){
       +'<tbody>'+(tplRows||'<tr><td colspan="4" class="empty">—</td></tr>')+'</tbody>'
       +'</table></div>'
       +'<button class="btn btn-pri" id="add-tpl-btn" style="font-size:12px;padding:5px 10px">+ Tambah Template</button>'
-      +'</div>'
-      +'<div class="cfg-panel">'
-      +'<div class="cfg-title">👤 Inisial Agen</div>'
-      +'<div class="tbl-wrap" style="margin-bottom:8px"><table class="ctbl">'
-      +'<thead><tr><th>Nama</th><th>Inisial</th><th>Tampilan</th><th>Email</th><th></th></tr></thead>'
-      +'<tbody>'+(agentRows||'<tr><td colspan="5" class="empty">—</td></tr>')+'</tbody>'
-      +'</table></div>'
-      +'<button class="btn btn-sec" id="add-agent-btn" style="font-size:12px;padding:5px 10px">+ Tambah Info Agen</button>'
-      +'<div class="pay-info" style="margin-top:6px">Inisial digunakan sebagai variabel penutup template</div>'
-      +'</div>'
-      +'<div class="cfg-panel">'
-      +'<div class="cfg-title">🆘 Akses Darurat (Break-Glass)</div>'
-      +'<div class="pay-info" style="margin-bottom:8px">Cuma buat email yang lagi mati total/nggak bisa terima OTP. Kode DITAMPILIN ke kamu buat di-relay — user tetap yang WAJIB input sendiri di layar login. Kamu nggak pernah pegang token/login sebagai dia. Semua kejadian ini teraudit.</div>'
-      +'<select id="emergency-otp-target" style="margin-bottom:8px">'
-      +'<option value="">— Pilih user —</option>'
-      +AgentsConfig.getAll().filter(function(a){return a.status!=='inactive'&&a.email;}).map(function(a){return'<option value="'+a.email+'">'+a.name+' ('+a.email+')</option>';}).join('')
-      +'</select>'
-      +'<button class="btn btn-sec" id="emergency-otp-btn" style="font-size:12px;padding:5px 10px">Generate Kode Darurat</button>'
-      +'<div id="emergency-otp-result" style="margin-top:8px"></div>'
       +'</div>'
     ):'')
     +(isSup?(
@@ -2747,12 +2817,66 @@ function renderBlast(){
     +'<button class="btn btn-sec" id="desel-all-blast-btn">Batal</button>'
     +'<label style="font-size:12px;color:var(--tx2);display:flex;align-items:center;gap:4px"><input type="checkbox" id="hide-paid-chk"'+(blastHidePaid?' checked':'')+'>Sembunyikan Lunas / Paid CRM / Self Onboard</label>'
     +'</div></div>'
+    // CLM-11 A4: filter agen -- leader-only (agen biasa udah ke-scope ke case-nya sendiri, filter
+    // ini nggak relevan buat mereka). Dipisah baris sendiri biar nggak numpuk sama toolbar CSV di atas.
+    +(isSup?('<div class="frow" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">'
+      +renderMultiSelect('blastAgentFilter','Agen',blastAgentOptsArr,blastAgentFilter)
+      +'<span style="font-size:11px;color:var(--tx3);align-self:center">Kosongkan = tampilkan semua agen (pilih buat exclude yang lagi libur)</span>'
+      +'</div>'):'')
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
     +'<thead><tr><th><input type="checkbox" id="blast-chk-all"></th><th>ID</th><th>Nama Outlet</th><th>Tipe</th><th>Nomor HP</th><th>Agen (Inisial)</th><th>Last Blast</th><th>Expired</th><th>Cadence</th><th>Pembayaran</th></tr></thead>'
-    +'<tbody>'+(tableRows||'<tr><td colspan="10" class="empty">Belum ada data</td></tr>')+'</tbody>'
+    +'<tbody id="blast-tbody">'+(tableRows||'<tr><td colspan="10" class="empty">Belum ada data</td></tr>')+'</tbody>'
     +'</table></div></div>'
     +'<div style="margin-top:8px;font-size:11px;color:var(--tx3)">🚫 Dummy &nbsp;⚠ GC &nbsp;Baris oranye=Dummy &nbsp;Baris merah=GC &nbsp;🎯 Cadence = checkpoint jatuh hari ini (H-3/H+2/H+8 relatif Expired Date) &nbsp;💡 Status Lunas disinkronisasi dari database'
     +'<br>✓ Terkirim / ✗ Gagal = bukti kirim aktual dari BROADCASTLOG CLARA (klik 📥 Sync Blast Log di tab Master utk update). 🎯 Tarik Hari Ini otomatis melewati case yang checkpoint-nya udah confirmed terkirim.</div>';
+}
+
+// ── TAB: KONFIGURASI AKUN (CLM-11 A3) ───────────────────────────────────────
+// Konsolidasi Inisial Agen (roster CRUD CLM-06) + Akses Darurat (Break-Glass CLM-07), dipindah
+// dari renderBlast(). Guard TETAP function-level (isSup?(...):'') di sini, BUKAN cuma nav-tab-hide
+// (nav-hide di startApp() itu lapisan tambahan/polish, bukan pengganti guard -- lihat memory CLM-11 A3).
+function renderKonfigurasiAkun(){
+  var isSup=Auth.isSuperior();
+  if(!isSup){
+    document.getElementById('tab-content').innerHTML='<div class="empty">Tab ini hanya bisa diakses oleh Team Lead (Sekar).</div>';
+    return;
+  }
+  var agents=AgentsConfig.getAll();
+  var agentRows=agents.map(function(a){
+    var isInactive=a.status==='inactive';
+    var roleTag=a.role==='leader'?' <span style="font-size:10px;color:var(--tx3)">(Team Lead)</span>':'';
+    var statusBadge=isInactive?' <span class="badge badge-gray" style="font-size:9px">Nonaktif</span>':'';
+    return'<tr style="'+(isInactive?'opacity:.55':'')+'">'
+      +'<td style="font-size:12px">'+a.name+roleTag+statusBadge+'</td>'
+      +'<td><input class="ag-inp" style="width:46px" type="text" value="'+a.initials+'" data-agid="'+a.id+'" data-field="initials" maxlength="4"></td>'
+      +'<td><input class="ag-inp" style="width:130px" type="text" value="'+a.displayName+'" data-agid="'+a.id+'" data-field="displayName"></td>'
+      +'<td><input class="ag-inp" style="width:160px" type="email" value="'+(a.email||'')+'" data-agid="'+a.id+'" data-field="email" placeholder="nama@majoo.id"></td>'
+      +'<td><button class="action-btn '+(isInactive?'ab-view':'ab-wl')+'" data-act="toggle-agent-status" data-agid="'+a.id+'" title="'+(isInactive?'Aktifkan kembali — bisa login & masuk pool assignment lagi':'Nonaktifkan — dicabut dari login & pool assignment, data historis tetap utuh')+'">'+(isInactive?'🟢 Aktifkan':'🔴 Nonaktifkan')+'</button></td>'
+      +'</tr>';
+  }).join('');
+
+  document.getElementById('tab-content').innerHTML=
+    '<div class="blast-cfg">'
+    +'<div class="cfg-panel">'
+    +'<div class="cfg-title">👤 Inisial Agen</div>'
+    +'<div class="tbl-wrap" style="margin-bottom:8px"><table class="ctbl">'
+    +'<thead><tr><th>Nama</th><th>Inisial</th><th>Tampilan</th><th>Email</th><th></th></tr></thead>'
+    +'<tbody>'+(agentRows||'<tr><td colspan="5" class="empty">—</td></tr>')+'</tbody>'
+    +'</table></div>'
+    +'<button class="btn btn-sec" id="add-agent-btn" style="font-size:12px;padding:5px 10px">+ Tambah Info Agen</button>'
+    +'<div class="pay-info" style="margin-top:6px">Inisial digunakan sebagai variabel penutup template</div>'
+    +'</div>'
+    +'<div class="cfg-panel">'
+    +'<div class="cfg-title">🆘 Akses Darurat (Break-Glass)</div>'
+    +'<div class="pay-info" style="margin-bottom:8px">Cuma buat email yang lagi mati total/nggak bisa terima OTP. Kode DITAMPILIN ke kamu buat di-relay — user tetap yang WAJIB input sendiri di layar login. Kamu nggak pernah pegang token/login sebagai dia. Semua kejadian ini teraudit.</div>'
+    +'<select id="emergency-otp-target" style="margin-bottom:8px">'
+    +'<option value="">— Pilih user —</option>'
+    +AgentsConfig.getAll().filter(function(a){return a.status!=='inactive'&&a.email;}).map(function(a){return'<option value="'+a.email+'">'+a.name+' ('+a.email+')</option>';}).join('')
+    +'</select>'
+    +'<button class="btn btn-sec" id="emergency-otp-btn" style="font-size:12px;padding:5px 10px">Generate Kode Darurat</button>'
+    +'<div id="emergency-otp-result" style="margin-top:8px"></div>'
+    +'</div>'
+    +'</div>';
 }
 
 // ── TAB: WATCHLIST ─────────────────────────────────────────────────────────
@@ -2899,7 +3023,7 @@ function saveAgent(){
   else{AgentsConfig.add({name:name,initials:initials,displayName:displayName,email:email,role:role});}
   closeModal('agent-modal');
   toast('Konfigurasi agen disimpan');
-  renderBlast();
+  renderKonfigurasiAkun();
 }
 
 // CLM-06: nonaktifkan (BUKAN hard-delete) — data historis (case/audit/kredit) tetap utuh.
@@ -2911,7 +3035,7 @@ function toggleAgentStatus(id){
   if(ag.status==='inactive'){
     AgentsConfig.setStatus(id,'active');
     toast(ag.name+' diaktifkan kembali — bisa login & masuk pool assignment lagi');
-    renderBlast();
+    renderKonfigurasiAkun();
     return;
   }
   if(ag.role==='leader'){toast('Team Lead nggak bisa dinonaktifkan dari sini');return;}
@@ -2925,7 +3049,7 @@ function toggleAgentStatus(id){
     renderTab('master');
   }else{
     toast(ag.name+' dinonaktifkan (tidak ada case yg perlu direassign)');
-    renderBlast();
+    renderKonfigurasiAkun();
   }
 }
 
@@ -3149,6 +3273,7 @@ function renderTab(tab){
     case 'watchlist':renderWatchlist();break;
     case 'klopos':renderKlopos();break;
     case 'invoice':renderInvoiceTracker();break;
+    case 'konfigakun':renderKonfigurasiAkun();break;
   }
 }
 
@@ -4707,7 +4832,8 @@ var MSEL_REFRESH={
   mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
-  invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody
+  invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
+  blastAgentFilter:refreshBlastBody
 };
 // Buka/tutup panel multi-select: klik trigger toggle + tutup panel lain yg lagi kebuka; klik di
 // luar panel manapun nutup semua. Level document (bukan tabContent) krn butuh nangkep klik DI LUAR
@@ -4786,6 +4912,8 @@ tabContent.addEventListener('input',function(e){
   if(tgt.id==='m-search'){mSearch=tgt.value;refreshMasterBody();}
   if(tgt.id==='inv-search'){invSearch=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='inv-day'){invDay=tgt.value;refreshInvoiceBody();}
+  if(tgt.id==='inv-start-date'){invStartDate=tgt.value;refreshInvoiceBody();}
+  if(tgt.id==='inv-end-date'){invEndDate=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='resp-search'){respSearch=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='wl-search'){wlSearch=tgt.value;renderWatchlistTable();}
   if(tgt.id==='wl-new-phone'){
@@ -4886,6 +5014,11 @@ function startApp(){
   var badge=document.getElementById('header-role-badge');
   badge.textContent=Auth.isSuperior()?'👑 '+me+' (Team Lead)':'👤 '+me;
   badge.className=Auth.isSuperior()?'superior-badge':'agent-badge';
+  // CLM-11 A3: sembunyiin tombol nav "Konfigurasi Akun" dari agent biasa. Lapisan TAMBAHAN/polish
+  // doang -- guard beneran tetap function-level di renderKonfigurasiAkun() (defense-in-depth,
+  // preseden panel-bocor CLM-06 -- nav-hide CSS-level sendirian BISA di-bypass).
+  var konfigTab=document.querySelector('.ntab[data-tab="konfigakun"]');
+  if(konfigTab)konfigTab.style.display=Auth.isSuperior()?'':'none';
   var savedTheme=localStorage.getItem('klopos_theme')||'light';
   document.documentElement.setAttribute('data-theme',savedTheme);
   document.getElementById('theme-btn').textContent=savedTheme==='dark'?'☀️':'🌙';
