@@ -606,6 +606,37 @@ function computeUpsellCountAttach(scopeRecs,period){
   var count=finRows2.filter(function(f){return f.isUpsell;}).length;
   return{count:count,attachPct:finRows2.length?Math.round(count/finRows2.length*100):0,denom:finRows2.length,synced:true};
 }
+// CLM-10 §3: Multi-team Upsell Tracker — slice data mentah UpsellTeamStore per view (4 LOCKED: CLM
+// only / CLM+CC / TC only / Total CX=info). Join creatorName->team lewat roster (Agent CX, EXACT
+// match, udah kebukti ejaan konsisten — beda dari kasus Data-tab email/nama yg perlu normalisasi).
+// Attach rate v2 Opsi B (LOCK Ubay): numerator = SEMUA deal upsell (regardless bentuk), denominator
+// = count renewal Mapping_Revenue_Layer1==='Renewal Subscription' — kedua angka udah di-filter GAS.
+var UPSELL_TEAM_VIEWS={
+  CLM:{label:'CLM',teams:['CLM']},
+  CLM_CC:{label:'CLM + CC',teams:['CLM','CC']},
+  TC:{label:'TC',teams:['TC']},
+  TOTAL_CX:{label:'Total CX (info)',teams:['CLM','CC','TC']}
+};
+function computeUpsellTeamView(period,viewKey){
+  var d=period?UpsellTeamStore.getMonth(period):null;
+  var view=UPSELL_TEAM_VIEWS[viewKey]||UPSELL_TEAM_VIEWS.CLM;
+  if(!d||!d.roster||!d.roster.length)return{synced:false,revenue:0,dealCount:0,renewalCount:0,attachPct:0,byType:[]};
+  var rosterMap={};
+  d.roster.forEach(function(r){rosterMap[r.name]=r.team;});
+  function inView(creatorName){var tm=rosterMap[creatorName];return tm&&view.teams.indexOf(tm)>=0;}
+  var renewalCount=(d.renewals||[]).filter(function(r){return inView(r.creatorName);}).reduce(function(s,r){return s+r.count;},0);
+  var upsellRowsInView=(d.upsell||[]).filter(function(u){return inView(u.creatorName);});
+  var revenue=upsellRowsInView.reduce(function(s,u){return s+u.subtotal;},0);
+  var dealCount=upsellRowsInView.reduce(function(s,u){return s+u.count;},0);
+  var byTypeMap={};
+  upsellRowsInView.forEach(function(u){
+    if(!byTypeMap[u.addonType])byTypeMap[u.addonType]={addonType:u.addonType,revenue:0,count:0};
+    byTypeMap[u.addonType].revenue+=u.subtotal;
+    byTypeMap[u.addonType].count+=u.count;
+  });
+  var byType=Object.keys(byTypeMap).map(function(k){return byTypeMap[k];}).sort(function(a,b){return b.revenue-a.revenue;});
+  return{synced:true,revenue:revenue,dealCount:dealCount,renewalCount:renewalCount,attachPct:renewalCount?Math.round(dealCount/renewalCount*100):0,byType:byType};
+}
 // Hitung angka mentah 1 metrik dari sekumpulan record (dipakai baik scope team maupun personal)
 function computeMetricRaw(metricKey,recs,period){
   var todayStr=localDateStr(new Date().toISOString());
@@ -1143,14 +1174,15 @@ var FinancialsStore={
   getMonth:function(month){return this.getAll()[month]||null;}
 };
 
-// CLM-04 Fase 2 P1: Gross-vs-Net (Data Invoice CX, GAS ?action=grossnet) — TEAM-LEVEL AJA, murni
-// angka agregat dari GAS (nggak ada join per-outlet/per-agen kayak FinancialsStore). Key = "Jan-26"
-// PENUH (bukan "Jan" doang) krn sheet sumbernya span multi-tahun -- lihat catatan di syncGrossNetOnly.
-var GrossNetStore={
-  KEY:'klopos_grossnet_v1',
+// CLM-10 §3: Multi-team Upsell Tracker (RENEWAL & UPSELL 2026, GAS ?action=upsellteam) — ganti
+// Gross-vs-Net (retired). GAS ngasih raw: roster (nama->tim), renewals per-creator (count, denominator
+// attach-rate), upsell per-creator+addonType (qty/subtotal/count, numerator + breakdown). Slicing
+// per view (CLM/CLM+CC/TC/Total CX) dikerjain di frontend, lihat computeUpsellTeamView.
+var UpsellTeamStore={
+  KEY:'klopos_upsellteam_v1',
   getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
-  setMonth:function(monthYear,payload){var all=this.getAll();all[monthYear]=payload;localStorage.setItem(this.KEY,JSON.stringify(all));},
-  getMonth:function(monthYear){return this.getAll()[monthYear]||null;}
+  setMonth:function(month,payload){var all=this.getAll();all[month]=payload;localStorage.setItem(this.KEY,JSON.stringify(all));},
+  getMonth:function(month){return this.getAll()[month]||null;}
 };
 
 // ── CLM-04 TARGETS STORE (configurable, Sekar CRUD) ─────────────────────────
@@ -1270,6 +1302,7 @@ var gcFlagMap={};
 var GC_NEEDCHECK_KATEGORI='Need check Get Contact'; // CLM-09: samain persis string GAS
 var GAS_URL='https://script.google.com/macros/s/AKfycbx6SYfl0O6D3RgMkzZpT17_OxuuClhaOitq9ILa1ryYCX-qlznSz0d9iw4q8bGS68WqWQ/exec';
 var syncMonthFilter='';
+var upsellTeamViewSel='CLM'; // CLM-10 §3: view aktif Multi-team Upsell Tracker (CLM/CLM_CC/TC/TOTAL_CX)
 var syncInProgress=false;
 
 // ── CLM-01 SYNC STATE (cadence + rate-limit) ────────────────────────────────
@@ -1828,21 +1861,36 @@ function renderOverview(){
       +'<tbody>'+(mgmtRows||'<tr><td colspan="8" class="empty">Belum ada target</td></tr>')+'</tbody></table></div>'
       +'<button class="btn btn-pri" id="add-target-btn" style="margin-top:8px;font-size:12px;padding:5px 10px">+ Tambah Target</button>'
       +'</div></div>';
-
-    // CLM-04 Fase 2 P1: Gross-vs-Net (Data Invoice CX) — TEAM-LEVEL AJA, Sekar-only, murni angka
-    // agregat GAS (nggak dicampur ke metrik per-outlet renewal di atas — populasi beda).
-    var gnMonthYear=currentMonthKey+'-26';
-    var gn=GrossNetStore.getMonth(gnMonthYear);
-    var gnBody=gn
-      ?('<div class="grid4">'
-        +'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Revenue Gross</div><div style="font-size:20px;font-weight:800;color:var(--tx)">'+fmtRpShort(gn.grossTotal)+'</div></div>'
-        +'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Revenue Net</div><div style="font-size:20px;font-weight:800;color:var(--grn)">'+fmtRpShort(gn.netTotal)+'</div></div>'
-        +'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Delta (Gross-Net)</div><div style="font-size:20px;font-weight:800;color:var(--yel)">'+gn.deltaPct.toFixed(1)+'%</div></div>'
-        +'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Jumlah Invoice</div><div style="font-size:20px;font-weight:800;color:var(--tx)">'+gn.rowCount+'</div></div>'
-        +'</div>')
-      :'<div class="card empty">Belum ada data — klik "📥 Sync Gross-Net" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div>';
-    configurableTargetSection+='<div class="ov-section"><div class="ov-section-title">💵 Gross vs Net Revenue ('+currentMonthKey+' 26) <span style="font-size:9px;color:var(--tx3)">(Team, dari Data Invoice CX)</span></div>'+gnBody+'</div>';
   }
+
+  // CLM-10 §3: Multi-team Upsell Tracker — GANTI Gross-vs-Net (retired). SEMUA agen bisa lihat
+  // (rollup tim, bukan data personal-only) — TIDAK di-gate isSup, beda dari panel Kelola Target di atas.
+  var utData=UpsellTeamStore.getMonth(currentMonthKey);
+  var utTabsHtml=Object.keys(UPSELL_TEAM_VIEWS).map(function(k){
+    var cls=k===upsellTeamViewSel?'btn-pri':'btn-sec';
+    return'<button class="btn '+cls+'" style="padding:4px 10px;font-size:11px" data-act="upsell-team-view" data-view="'+k+'">'+UPSELL_TEAM_VIEWS[k].label+'</button>';
+  }).join('');
+  var utBody;
+  if(!utData){
+    utBody='<div class="card empty">Belum ada data — klik "📥 Sync Upsell Tim" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div>';
+  }else{
+    var utView=computeUpsellTeamView(currentMonthKey,upsellTeamViewSel);
+    var utTypeRows=utView.byType.map(function(t){
+      return'<tr><td>'+t.addonType+'</td><td>'+t.count+'</td><td>'+fmtRp(t.revenue)+'</td></tr>';
+    }).join('');
+    utBody='<div class="grid4" style="margin-bottom:8px">'
+      +'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Revenue Upsell</div><div style="font-size:20px;font-weight:800;color:var(--grn)">'+fmtRpShort(utView.revenue)+'</div></div>'
+      +'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Jumlah Deal Upsell</div><div style="font-size:20px;font-weight:800;color:var(--tx)">'+utView.dealCount+'</div></div>'
+      +'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Total Renewal</div><div style="font-size:20px;font-weight:800;color:var(--tx)">'+utView.renewalCount+'</div></div>'
+      +'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Attach Rate v2</div><div style="font-size:20px;font-weight:800;color:var(--yel)">'+utView.attachPct+'%</div></div>'
+      +'</div>'
+      +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+      +'<thead><tr><th>Jenis Add-On</th><th>Jumlah Deal</th><th>Revenue</th></tr></thead>'
+      +'<tbody>'+(utTypeRows||'<tr><td colspan="3" class="empty">Belum ada deal upsell di view ini bulan '+currentMonthKey+'</td></tr>')+'</tbody></table></div></div>';
+  }
+  var upsellTeamSection='<div class="ov-section"><div class="ov-section-title">🧩 Multi-team Upsell Tracker ('+currentMonthKey+' 26) <span style="font-size:9px;color:var(--tx3)">(dari RENEWAL & UPSELL 2026)</span></div>'
+    +'<div class="form-row" style="margin-bottom:8px;gap:6px">'+utTabsHtml+'</div>'
+    +utBody+'</div>';
 
   // ── Targets HTML (revenue/insentif — legacy Fase 2, biarkan apa adanya) ──
   // upsell diitung LIVE dari FinancialsStore (v1 lock: count+attach, bukan Rupiah), lihat computeUpsellCountAttach
@@ -1965,6 +2013,7 @@ function renderOverview(){
     +'</div>'
     +agentTargetSection
     +configurableTargetSection
+    +upsellTeamSection
     +targetsSection
     +monthlySummarySection
     +backlogSection
@@ -2082,7 +2131,7 @@ function renderMaster(){
     +'<button class="btn btn-blu" id="sync-upsell-btn" style="padding:5px 12px;font-size:12px" title="Import klaim upsell dari tab UPSELL_CLAIM (biar Sekar lihat klaim semua agen)">📥 Sync Upsell</button>'
     +'<button class="btn btn-blu" id="sync-blastlog-btn" style="padding:5px 12px;font-size:12px" title="Import bukti kirim WABA aktual dari BROADCASTLOG CLARA, cocokkan ke checkpoint H-3/H+2/H+8">📥 Sync Blast Log</button>'
     +'<button class="btn btn-blu" id="sync-financials-btn" style="padding:5px 12px;font-size:12px" title="Import Revenue/MRR/ARPU/Upsell dari RENEWAL & UPSELL 2026 (sesuai bulan sync)">📥 Sync Financials</button>'
-    +'<button class="btn btn-blu" id="sync-grossnet-btn" style="padding:5px 12px;font-size:12px" title="Import Gross-vs-Net dari Data Invoice CX (team-level, sesuai bulan sync)">📥 Sync Gross-Net</button>'
+    +'<button class="btn btn-blu" id="sync-upsellteam-btn" style="padding:5px 12px;font-size:12px" title="Import Multi-team Upsell Tracker (roster+renewal+upsell per add-on) dari RENEWAL & UPSELL 2026 (sesuai bulan sync)">📥 Sync Upsell Tim</button>'
     +'<button class="btn btn-sec" id="sync-3m-btn" style="padding:5px 12px;font-size:12px" title="Sync 2 bulan ke belakang s/d Desember (bukan Jan-Des penuh -- storage browser nggak muat 1 tahun)">📅 Sync Semua Bulan</button>'
     +syncInfo+lastSyncInfo
     +'<label class="btn btn-sec" style="cursor:pointer">📁 Import CSV<input type="file" id="csv-import" accept=".csv" style="display:none"></label>'
@@ -3964,36 +4013,34 @@ function syncFinancialsOnly(monthParam){
     });
 }
 
-// CLM-04 Fase 2 P1: sync Gross-vs-Net (Data Invoice CX, GAS ?action=grossnet) -> GrossNetStore.
-// PENTING: endpoint ini butuh bulan PENUH "Jan-26" (bukan "Jan" 3-huruf kayak sync lain) krn sheet
-// sumbernya (Data Invoice CX) span multi-tahun -- prefix doang bisa nyampur "Jan-25"+"Jan-26".
-// Dashboard cuma pernah urus tahun 2026 (konvensi MONTH_KEYS+" 26" di semua tempat), jadi di sini
-// syncMonthFilter (mis. "Jan") di-suffix "-26" sebelum dikirim ke GAS.
-function syncGrossNetOnly(monthParam){
-  var mon3=(monthParam!==undefined)?monthParam:syncMonthFilter;
-  if(!mon3){toast('Pilih bulan dulu di "Sync Bulan" sebelum sync Gross-vs-Net');return;}
-  var monthYear=mon3+'-26';
-  var btn=document.getElementById('sync-grossnet-btn');
+// CLM-10 §3: sync-down Multi-team Upsell Tracker (RENEWAL & UPSELL 2026, GAS ?action=upsellteam)
+// -> UpsellTeamStore. Key bulan = 3-huruf (currentMonthKey), SAMA pola kayak syncFinancialsOnly
+// (BUKAN full "Jan-26" kayak grossnet lama -- tab RENEWAL/UPSELL cuma tahun 2026, nggak butuh
+// exact-match multi-tahun).
+function syncUpsellTeamOnly(monthParam){
+  var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
+  if(!mon){toast('Pilih bulan dulu di "Sync Bulan" sebelum sync Upsell Tim');return;}
+  var btn=document.getElementById('sync-upsellteam-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  toast('Mengambil data Gross-vs-Net ('+monthYear+')…',4000);
+  toast('Mengambil data Upsell Tim ('+mon+')…',4000);
 
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
   var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
-  var url=GAS_URL+'?action=grossnet&month='+encodeURIComponent(monthYear)+'&token='+encodeURIComponent(Auth.getToken()||'');
+  var url=GAS_URL+'?action=upsellteam&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||'');
 
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
       if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
-      GrossNetStore.setMonth(monthYear,{grossTotal:json.grossTotal||0,netTotal:json.netTotal||0,deltaPct:json.deltaPct||0,rowCount:json.rowCount||0});
+      UpsellTeamStore.setMonth(mon,{roster:json.roster||[],renewals:json.renewals||[],upsell:json.upsell||[]});
       renderTab(currentTab);
-      toast('Gross-vs-Net '+monthYear+' tersimpan: '+(json.rowCount||0)+' invoice',5000);
+      toast('Upsell Tim '+mon+' tersimpan: '+(json.upsell?json.upsell.length:0)+' baris agregat',5000);
     }).catch(function(err){
-      toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Gross-vs-Net: '+err.message,5000);
+      toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Upsell Tim: '+err.message,5000);
     }).then(function(){
-      var b=document.getElementById('sync-grossnet-btn');
-      if(b){b.disabled=false;b.textContent='📥 Sync Gross-Net';}
+      var b=document.getElementById('sync-upsellteam-btn');
+      if(b){b.disabled=false;b.textContent='📥 Sync Upsell Tim';}
     });
 }
 
@@ -4171,6 +4218,7 @@ tabContent.addEventListener('click',function(e){
     }
     else if(act==='toggle-agent-status')toggleAgentStatus(agid);
     else if(act==='edit-target')openTargetModal(id);
+    else if(act==='upsell-team-view'){upsellTeamViewSel=btn.dataset.view;renderTab('overview');}
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab('overview');}}
     else if(act==='toggle-wl'){
       // CLM-09: sheet-backed -- resolveOnly write, nutup/buka kolom "Resolved At" (L), nggak
@@ -4195,7 +4243,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='sync-upsell-btn')syncUpsellOnly();
   else if(tgt.id==='sync-blastlog-btn')syncBroadcastLogOnly();
   else if(tgt.id==='sync-financials-btn')syncFinancialsOnly();
-  else if(tgt.id==='sync-grossnet-btn')syncGrossNetOnly();
+  else if(tgt.id==='sync-upsellteam-btn')syncUpsellTeamOnly();
   else if(tgt.id==='sync-3m-btn')syncThreeMonths();
   else if(tgt.id==='reset-records-btn'){
     if(!confirm('Hapus SEMUA records? Tindakan ini tidak bisa dibatalkan.\n(Response & blast history tidak akan terhapus)'))return;
