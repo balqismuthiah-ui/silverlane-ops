@@ -770,19 +770,50 @@ function computeHotLeadsConversion(recs,period){
   var moving=hotRecs.filter(function(r){return r.expiryDate&&r.expiryDate>endOfMonthStr;}).length;
   return{actual:Math.round(moving/totalHot*100),unit:'%',denom:totalHot};
 }
+// QA fix (Ryry, CLM-11 B1) — Levenshtein edit-distance, dipakai KHUSUS sbg tier-2 fallback buat
+// typo kelas "Fauziayah" vs "Fauziyah" (nama billing diketik manual, beda ejaan dari email agen).
+// GAS action=upsellteam terbukti NGGAK punya kolom email sama sekali (cek langsung ke source tab
+// RENEWAL/UPSELL) -- beda dari Invoice Tracker (Data tab PUNYA INV_Creator_Email), jadi opsi "tambah
+// email-match" nggak feasible di sini. Threshold ketat (<=2) -- cukup buat 1-2 huruf ekstra/salah
+// ketik, TIDAK cukup buat nyampur ke agen lain (8 first-token CLM cukup beda jauh satu sama lain).
+function levenshtein(a,b){
+  var m=a.length,n=b.length,dp=[],i,j;
+  for(i=0;i<=m;i++)dp.push([i]);
+  for(j=0;j<=n;j++)dp[0][j]=j;
+  for(i=1;i<=m;i++)for(j=1;j<=n;j++){
+    dp[i][j]=a[i-1]===b[j-1]?dp[i-1][j-1]:1+Math.min(dp[i-1][j-1],dp[i-1][j],dp[i][j-1]);
+  }
+  return dp[m][n];
+}
 // CLM-11 B1: renewal_count/upsell_approved_count Personal-scope — ganti sumber ke ground-truth
 // billing CLM-10 (tab RENEWAL/UPSELL join ke agen via UpsellTeamStore), BUKAN lagi response.category/
-// CLM-03 approval flag. Reuse invMatchAgentName (join full-name->short-name, sama pola udah locked
-// & live buat Invoice Tracker) krn creatorName di RENEWAL/UPSELL = nama panjang ("Erizka Dwi
-// Dewanty"), beda dari r.assignedAgent yg nama pendek ("Erizka") dipakai di seluruh app.
+// CLM-03 approval flag. TIDAK ubah invMatchAgentName shared (Invoice Tracker §1 udah QA-approved+
+// closed, jangan disenggol) — coba exact-substring itu DULU (sama kayak Invoice Tracker), fuzzy
+// cuma tier-2 kalau exact gagal, SCOPE KETAT ke B1 doang.
 // AC-B1-4: agen 0-match (blm ke-atribusi billing sama sekali) -> actual:0 alami dari filter+reduce
 // kosong, BUKAN NaN/crash.
 function computePersonalBillingCount(metricKey,period,agentName){
   var fin=period?UpsellTeamStore.getMonth(period):null;
   if(!fin||!fin.roster||!fin.roster.length)return{actual:0,unit:'count',synced:false};
   var agents=AgentsConfig.getAll();
+  function matchAgentFuzzy(creatorName){
+    var direct=invMatchAgentName({creatorName:creatorName,creatorEmail:null},agents);
+    if(direct)return direct;
+    var tokens=String(creatorName||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if(!tokens.length)return null;
+    var best=null,bestDist=99;
+    agents.forEach(function(ag){
+      var agToken=normLocalPart(ag.email).split('.')[0];
+      if(!agToken)return;
+      tokens.forEach(function(tok){
+        var dist=levenshtein(tok,agToken);
+        if(dist<bestDist){bestDist=dist;best=ag.name;}
+      });
+    });
+    return bestDist<=2?best:null;
+  }
   function matchesAgent(creatorName){
-    return invMatchAgentName({creatorName:creatorName,creatorEmail:null},agents)===agentName;
+    return matchAgentFuzzy(creatorName)===agentName;
   }
   if(metricKey==='renewal_count'){
     var cnt=(fin.renewals||[]).filter(function(r){return matchesAgent(r.creatorName);}).reduce(function(s,r){return s+r.count;},0);
