@@ -796,21 +796,33 @@ function computePersonalBillingCount(metricKey,period,agentName){
   var fin=period?UpsellTeamStore.getMonth(period):null;
   if(!fin||!fin.roster||!fin.roster.length)return{actual:0,unit:'count',synced:false};
   var agents=AgentsConfig.getAll();
+  // QA fix ronde 2 (Ryry) — threshold <=2 kelonggaran buat token PENDEK (5-6 huruf): "rizki" (nama
+  // ASING, "Rizki Febriansyah", bukan salah satu 8 agen) vs "erizka" = distance 2, false-positive
+  // ke-absorb ke Erizka padahal beda orang. Diperketat <=1 (masih nutup "fauziayah"~"fauziyah"=1)
+  // + tie-break: kalau >1 agen KEBETULAN sama-sama dalam threshold, return null (unmatched) daripada
+  // asal ambil bestDist pertama -- "0 jujur" lebih aman drpd nge-geser ke agen yang salah.
   function matchAgentFuzzy(creatorName){
     var direct=invMatchAgentName({creatorName:creatorName,creatorEmail:null},agents);
     if(direct)return direct;
     var tokens=String(creatorName||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
     if(!tokens.length)return null;
-    var best=null,bestDist=99;
+    var FUZZY_THRESHOLD=1;
+    var candidates=[]; // {name,dist} tiap agen yg dalam threshold (bukan cuma bestDist tunggal)
     agents.forEach(function(ag){
       var agToken=normLocalPart(ag.email).split('.')[0];
       if(!agToken)return;
+      var bestForAgent=99;
       tokens.forEach(function(tok){
         var dist=levenshtein(tok,agToken);
-        if(dist<bestDist){bestDist=dist;best=ag.name;}
+        if(dist<bestForAgent)bestForAgent=dist;
       });
+      if(bestForAgent<=FUZZY_THRESHOLD)candidates.push({name:ag.name,dist:bestForAgent});
     });
-    return bestDist<=2?best:null;
+    if(!candidates.length)return null;
+    candidates.sort(function(a,b){return a.dist-b.dist;});
+    // Ambigu: >1 agen beda punya jarak SAMA-SAMA minimum -> unmatched, jangan nebak.
+    if(candidates.length>1&&candidates[1].dist===candidates[0].dist)return null;
+    return candidates[0].name;
   }
   function matchesAgent(creatorName){
     return matchAgentFuzzy(creatorName)===agentName;
