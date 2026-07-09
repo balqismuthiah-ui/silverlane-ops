@@ -570,7 +570,10 @@ const TARGET_METRICS={
   'mrr':{family:'outcome',label:'MRR'},
   'renewal_arpu':{family:'outcome',label:'Renewal ARPU'},
   'conversion_rate':{family:'outcome',label:'Conversion Rate'},
-  'upsell_attach':{family:'outcome',label:'Upsell Attach Rate'}
+  'upsell_attach':{family:'outcome',label:'Upsell Attach Rate'},
+  // CLM-11 B3: formula persis dari sheet KLOPOS produksi (verified langsung dari sel formula live,
+  // BUKAN versi abstraksi brief -- lihat memory spec-clm11 "AC-B3-1 investigasi selesai").
+  'hot_leads_conversion':{family:'outcome',label:'Hot Leads Conversion'}
 };
 // CLM-04 Fase 2: 5 metrik duit — join Outlet_ID (case, scope-filtered) -> FinancialsStore (per bulan).
 // GAS nyediain per-outlet netRevenue/skuQty/isUpsell; scope Team/Personal filter case DULU (recs udah
@@ -741,7 +744,55 @@ function computeMetricRaw(metricKey,recs,period){
   if(FIN_METRIC_KEYS.indexOf(metricKey)>=0){
     return computeFinancialsMetric(metricKey,recs,period);
   }
+  if(metricKey==='hot_leads_conversion'){
+    return computeHotLeadsConversion(recs,period);
+  }
   return{actual:0,unit:''};
+}
+// CLM-11 B3: formula LIVE dari sheet KLOPOS produksi (verified langsung ke sel, bukan versi abstraksi
+// brief -- lihat memory). Total Hot Leads = lead Hot (bukan demo, bukan recurring) yg Expired-Date-
+// HISTORICAL-nya jatuh di periode tracked (`recs` di sini udah di-scope ke periode via cohortMonths
+// oleh caller, sama pola SEMUA metrik lain di catalog ini -- BUKAN re-filter manual by
+// expiredDateHistorical, biar konsisten satu mekanisme scoping bulan di seluruh app).
+// Hot Leads Moving = subset yg Expired-Date-LATEST-nya udah "gerak" lewat akhir bulan tracked (tanda
+// renewal/reaktivasi). Conversion = Moving/Total. AC-B3-4: Total=0 (bulan tanpa hot leads sama
+// sekali) -> denom:0 dipakai caller buat tampilin state jujur, BUKAN divide-by-zero/NaN.
+function computeHotLeadsConversion(recs,period){
+  var hotRecs=recs.filter(function(r){return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz==='Hot';});
+  var totalHot=hotRecs.length;
+  if(!totalHot)return{actual:0,unit:'%',denom:0};
+  var monthIdx=MONTH_KEYS.indexOf(period);
+  if(monthIdx<0)return{actual:0,unit:'%',denom:0};
+  // Convention app-wide: SEMUA bulan diasumsikan tahun berjalan 2026 (cohortMonths/MONTH_KEYS BUKAN
+  // tahun-aware, sama keterbatasan struktural yg udah didokumentasi di temuan A1-YoY).
+  var lastDay=new Date(2026,monthIdx+1,0).getDate();
+  var endOfMonthStr='2026-'+String(monthIdx+1).padStart(2,'0')+'-'+String(lastDay).padStart(2,'0');
+  var moving=hotRecs.filter(function(r){return r.expiryDate&&r.expiryDate>endOfMonthStr;}).length;
+  return{actual:Math.round(moving/totalHot*100),unit:'%',denom:totalHot};
+}
+// CLM-11 B1: renewal_count/upsell_approved_count Personal-scope — ganti sumber ke ground-truth
+// billing CLM-10 (tab RENEWAL/UPSELL join ke agen via UpsellTeamStore), BUKAN lagi response.category/
+// CLM-03 approval flag. Reuse invMatchAgentName (join full-name->short-name, sama pola udah locked
+// & live buat Invoice Tracker) krn creatorName di RENEWAL/UPSELL = nama panjang ("Erizka Dwi
+// Dewanty"), beda dari r.assignedAgent yg nama pendek ("Erizka") dipakai di seluruh app.
+// AC-B1-4: agen 0-match (blm ke-atribusi billing sama sekali) -> actual:0 alami dari filter+reduce
+// kosong, BUKAN NaN/crash.
+function computePersonalBillingCount(metricKey,period,agentName){
+  var fin=period?UpsellTeamStore.getMonth(period):null;
+  if(!fin||!fin.roster||!fin.roster.length)return{actual:0,unit:'count',synced:false};
+  var agents=AgentsConfig.getAll();
+  function matchesAgent(creatorName){
+    return invMatchAgentName({creatorName:creatorName,creatorEmail:null},agents)===agentName;
+  }
+  if(metricKey==='renewal_count'){
+    var cnt=(fin.renewals||[]).filter(function(r){return matchesAgent(r.creatorName);}).reduce(function(s,r){return s+r.count;},0);
+    return{actual:cnt,unit:'count',synced:true};
+  }
+  if(metricKey==='upsell_approved_count'){
+    var cnt2=(fin.upsell||[]).filter(function(u){return matchesAgent(u.creatorName);}).reduce(function(s,u){return s+u.count;},0);
+    return{actual:cnt2,unit:'count',synced:true};
+  }
+  return{actual:0,unit:'count',synced:false};
 }
 // Team vs Personal = DUA SCOPE INDEPENDEN (keputusan Muthia 3 Jul) — bukan 1 angka yg auto-split per viewer.
 // - scope 'team': actual dihitung dari SEMUA record tim, target = targetValue (1 angka agregat).
@@ -752,6 +803,14 @@ function computeTargetActual(target,allRecs,agentName){
   var period=target.period;
   var periodRecs=period?allRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(period)>=0;}):allRecs;
   if(target.scope==='personal'){
+    // CLM-11 B1: renewal_count/upsell_approved_count Personal -> ground-truth billing (di atas).
+    // AC-B1-3: scope TEAM (di bawah, blok terpisah) TETAP taxonomy-manual lama, TIDAK disentuh.
+    if(agentName&&(target.metricKey==='renewal_count'||target.metricKey==='upsell_approved_count')){
+      var res0=computePersonalBillingCount(target.metricKey,period,agentName);
+      var overrides0=target.personalOverrides||{};
+      res0.effectiveTarget=(overrides0[agentName]!=null)?overrides0[agentName]:target.targetValue;
+      return res0;
+    }
     var scopeRecs=agentName?periodRecs.filter(function(r){return r.assignedAgent===agentName;}):periodRecs;
     var res=computeMetricRaw(target.metricKey,scopeRecs,period);
     var overrides=target.personalOverrides||{};
@@ -1858,7 +1917,11 @@ function renderOverview(){
   // "Histori Tim" legacy) — trend count multi-bulan udah ke-cover "Ringkasan Monthly", trend
   // Renewal Revenue multi-bulan jadi FOLLOW-UP TERPISAH non-blocking (belum dibangun turunannya).
   var renewalAch=computeFinancialsMetric('renewal_revenue',recs,currentMonthKey).actual;
-  var mapsAch=claimedMaps||156, appsAch=claimedApps||104;
+  // CLM-11 B2: card Rating&Review = Sigma klaim APPROVED doang (AC-B2-1/B2-2) -- SEBELUMNYA pakai
+  // claimedMaps/claimedApps (semua status ikut kehitung, termasuk Pending/Rejected) + fallback
+  // hardcode 156/104 yg kebetulan sama kayak angka reference screenshot Muthia (placeholder lama,
+  // bukan data riil). "0 jujur" kalau belum ada klaim approved sama sekali, no hardcode fallback.
+  var mapsAch=valMaps, appsAch=valApps;
   var convColor=pRenewal>=convTargetImp?'var(--grn)':(pRenewal>=convTarget?'var(--yel)':'var(--red)');
   function fmtRp(n){
     if(n>=1000000000)return'Rp '+(n/1000000000).toFixed(1).replace('.',',')+'M';
@@ -2005,10 +2068,14 @@ function renderOverview(){
     var progCards=visibleTargets.map(function(t){
       var meta=TARGET_METRICS[t.metricKey]||{label:t.metricKey};
       var scopeTag='<span style="font-size:9px;color:var(--tx3)"> ('+(t.scope==='personal'?'Personal':'Team')+')</span>';
+      // AC-B3-4: hot_leads_conversion + denom 0 (bulan/agen tanpa hot leads sama sekali) -> "—"
+      // jujur, BUKAN "0%" yg ambigu sama "genuinely 0% conversion padahal ada Hot Leads".
+      function hotLeadsNoData(res){return t.metricKey==='hot_leads_conversion'&&res.denom===0;}
       if(t.scope==='personal'&&isSup){
         // Sekar lihat breakdown per-agen (bukan 1 angka gabungan — personal emang per-orang)
         var rowsHtml=AGENTS.map(function(ag){
           var r2=computeTargetActual(t,recs,ag);
+          if(hotLeadsNoData(r2))return'<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>'+ag+'</span><span style="color:var(--tx3)">— (belum ada Hot Leads)</span></div>';
           var pct2=r2.unit==='%'?r2.actual:(r2.effectiveTarget?Math.round(r2.actual/r2.effectiveTarget*100):0);
           var c2=pct2>=100?'var(--grn)':(pct2>=70?'var(--yel)':'var(--red)');
           return'<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>'+ag+'</span><span style="color:'+c2+'">'+fmtMetricVal(r2.actual,r2.unit)+' / '+fmtMetricVal(r2.effectiveTarget,r2.unit)+' ('+pct2+'%)</span></div>';
@@ -2017,10 +2084,12 @@ function renderOverview(){
       }
       if(t.scope==='personal'){
         var resMe=computeTargetActual(t,recs,me);
+        if(hotLeadsNoData(resMe))return targetCard(meta.label+' <span style="font-size:9px;color:var(--tx3)">(Personal)</span>','—','','','<div style="font-size:11px;color:var(--tx3);margin-top:4px">Belum ada Hot Leads bulan ini</div>');
         return targetCard(meta.label+' <span style="font-size:9px;color:var(--tx3)">(Personal)</span>',resMe.actual,resMe.unit,resMe.effectiveTarget);
       }
       // scope==='team'
       var resTeam=computeTargetActual(t,recs);
+      if(hotLeadsNoData(resTeam))return targetCard(meta.label+' <span style="font-size:9px;color:var(--tx3)">(Team)</span>','—','','','<div style="font-size:11px;color:var(--tx3);margin-top:4px">Belum ada Hot Leads bulan ini</div>');
       return targetCard(meta.label+' <span style="font-size:9px;color:var(--tx3)">(Team)</span>',resTeam.actual,resTeam.unit,resTeam.effectiveTarget);
     }).join('');
     configurableTargetSection='<div class="ov-section"><div class="ov-section-title">🎯 Progres vs Target ('+currentMonthKey+' 26)</div><div class="grid4">'+progCards+'</div></div>';
@@ -2147,10 +2216,10 @@ function renderOverview(){
     +'<div class="card">'
     +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⭐ Rating & Review</div>'
     +'<div style="font-size:12px;font-weight:600;color:var(--tx)">📍 Google Maps</div>'
-    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+mapsAch+'</strong>/'+REVIEW_TARGET+(valMaps?' &nbsp;·&nbsp; <span style="color:var(--grn)">'+valMaps+' valid ✓</span>':' diklaim')+'</div>'
+    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+mapsAch+'</strong>/'+REVIEW_TARGET+' approved'+(claimedMaps>valMaps?' &nbsp;·&nbsp; <span style="color:var(--tx3)">'+(claimedMaps-valMaps)+' belum approved</span>':'')+'</div>'
     +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+mapsPct+'%"></div></div>'
     +'<div style="font-size:12px;font-weight:600;color:var(--tx);margin-top:8px">📱 App Store</div>'
-    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+appsAch+'</strong>/'+REVIEW_TARGET+(valApps?' &nbsp;·&nbsp; <span style="color:var(--grn)">'+valApps+' valid ✓</span>':' diklaim')+'</div>'
+    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+appsAch+'</strong>/'+REVIEW_TARGET+' approved'+(claimedApps>valApps?' &nbsp;·&nbsp; <span style="color:var(--tx3)">'+(claimedApps-valApps)+' belum approved</span>':'')+'</div>'
     +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+appsPct+'%"></div></div>'
     +'</div>'
     +'</div></div>';
@@ -3993,6 +4062,13 @@ function syncMonthList(months,opts){
             paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
             invoiceSent:hasInvoiceSent(row)?true:null,
             lifecycleStatus:String(row['Lifecycle Status']||'').trim(),
+            // CLM-11 B3: field baru buat Hot Leads Conversion (AC-B3-1) -- GAS udah blanket-read
+            // kolom ini dari awal, cuma belum ke-capture ke record. expiredDateHistorical dipakai
+            // localDateStr (bukan Excel-serial `hs` di atas yg cuma buat compound-key sementara).
+            demoTestingV2:String(row['Demo/Testing V2']||'').trim(),
+            recurring:String(row['Recurring']||'').trim(),
+            hwcz:String(row['HWCZ']||'').trim(),
+            expiredDateHistorical:localDateStr(String(row['Expired Date Historical']||'').trim()),
             gtvLast3M:gtv||null,
             idMerchant:String(row['ID Merchant']||'').trim()||null,
             namaMerchant:String(row['Nama Merchant']||'').trim()||null,
@@ -4181,6 +4257,11 @@ function syncFromGAS(opts){
           paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
           invoiceSent:hasInvoiceSent(row)?true:null,
           lifecycleStatus:String(row['Lifecycle Status']||'').trim(),
+          // CLM-11 B3: sama pola kayak sync-satu-bulan di atas (field baru buat Hot Leads Conversion)
+          demoTestingV2:String(row['Demo/Testing V2']||'').trim(),
+          recurring:String(row['Recurring']||'').trim(),
+          hwcz:String(row['HWCZ']||'').trim(),
+          expiredDateHistorical:localDateStr(String(row['Expired Date Historical']||'').trim()),
           gtvLast3M:gtv||null,
           idMerchant:String(row['ID Merchant']||'').trim()||null,
           namaMerchant:String(row['Nama Merchant']||'').trim()||null,
