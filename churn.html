@@ -2192,8 +2192,13 @@ function renderOverview(){
   // "A1 YoY"). Urutan LOCKED: Total Leads->Blast->Renewal->Tidak Renewal->Follow Up->
   // Belum Dikategorikan->Nomor Tidak Valid->Kategori Lain->GC Watchlist (GC di paling akhir).
   var funnelPct=funnelNow.total?function(n){return Math.round((n/funnelNow.total)*100);}:function(){return 0;};
+  // QA fix (Ryry, AC-A2-1): "Target Tim Bulan Ini" harus di POSISI PALING ATAS Overview, di ATAS
+  // funnel juga -- semula targetsSection cuma dipindah ke depan section LAIN (agentTarget/
+  // configurableTarget/upsellTeam), tapi funnel (blok "Ringkasan...") masih ke-render duluan
+  // karena itu markup literal pertama di string, bukan variabel section yang ikut ke-reorder.
   document.getElementById('tab-content').innerHTML=
-    '<div class="ov-section"><div class="ov-section-title">📊 Ringkasan '+(isSup?'Semua Agen':'Saya — '+me)
+    targetsSection
+    +'<div class="ov-section"><div class="ov-section-title">📊 Ringkasan '+(isSup?'Semua Agen':'Saya — '+me)
     +(funnelHasCohortData?' — Cohort '+currentMonthKey+' 26':'')+'</div>'
     +'<div class="grid-funnel">'
     +funnelCardHtml('Total Leads',null,'var(--pri)',funnelNow,funnelPrev,'total',prevMonthKey)
@@ -2208,7 +2213,6 @@ function renderOverview(){
     +'</div>'
     +(funnelHasCohortData?'':'<div style="font-size:11px;color:var(--tx3);margin-top:8px">⚠ Belum ada data cohort bulan (belum di-sync ulang) — angka di atas mencakup SEMUA data, MoM belum tersedia.</div>')
     +'</div>'
-    +targetsSection
     +agentTargetSection
     +configurableTargetSection
     +upsellTeamSection
@@ -2714,8 +2718,12 @@ function blastFilteredRows(){
   var recs=isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;});
   recs=applyBlastMonthGate(recs,isSup);
   // Filter agen cuma relevan buat leader (agen biasa udah ke-scope ke case-nya sendiri di atas).
+  // QA fix (Ryry, AC-A4-1): filter ini EXCLUDE, bukan include -- agen yg di-CENTANG itu yg mau
+  // di-SKIP dari batch blast (mis. lagi libur), konsisten sama hint UI "pilih buat exclude yang
+  // lagi libur". Semula ke-implement include-only (bug P0: pilih 1 agen malah nyaring JADI cuma
+  // dia doang, bukan nyisain semua KECUALI dia).
   if(isSup&&blastAgentFilter.length){
-    recs=recs.filter(function(r){return blastAgentFilter.indexOf(r.assignedAgent)>=0;});
+    recs=recs.filter(function(r){return blastAgentFilter.indexOf(r.assignedAgent)<0;});
   }
   var allRows=buildExplodedRows(recs);
   return blastHidePaid?allRows.filter(function(row){
