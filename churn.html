@@ -9,7 +9,7 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#f0fdf9;--sur:#fff;--sur2:#f5fffe;--bdr:#d1faf4;
+  --bg:#f0fdf9;--sur:#fff;--sur2:#f5fffe;--card:#fff;--bdr:#d1faf4;
   --tx:#0f2a24;--tx2:#2d5c52;--tx3:#6b9e94;
   --pri:#29B6B3;--prid:#1D8C8C;--pril:#E0F7F6;
   --brand-hijau:#A1CF7E;--brand-gradient:linear-gradient(135deg,#A1CF7E 0%,#29B6B3 100%);
@@ -23,7 +23,7 @@
   --r:8px;--rs:5px
 }
 [data-theme=dark]{
-  --bg:#0a1f1c;--sur:#0e2822;--sur2:#0c221d;--bdr:#1a4a42;
+  --bg:#0a1f1c;--sur:#0e2822;--sur2:#0c221d;--card:#0e2822;--bdr:#1a4a42;
   --tx:#e0fdf4;--tx2:#6ddcc8;--tx3:#2d7068;
   --pri:#2dd4bf;--prid:#0d9488;--pril:#0d3d36;
   --grn:#34d399;--grnl:#065f46;
@@ -872,11 +872,12 @@ function payBadge(s,invoiceSent){
 // ── UTILS ──────────────────────────────────────────────────────────────────
 const uid=()=>Math.random().toString(36).slice(2,10);
 
+var _fmtDateFormatter=new Intl.DateTimeFormat('id-ID',{day:'2-digit',month:'short',year:'numeric'});
 function fmtDate(d){
   if(!d)return'—';
   const dt=new Date(d);
   if(isNaN(dt.getTime()))return String(d);
-  return dt.toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'});
+  return _fmtDateFormatter.format(dt);
 }
 
 // Convert any date value to YYYY-MM-DD using LOCAL timezone (avoids UTC midnight shift for WIB)
@@ -1133,7 +1134,9 @@ var AgentsConfig={
     {id:'a10',name:'Muthia',email:'balqis.muthiah@majoo.id',initials:'BM',displayName:'Muthia',role:'leader',status:'active'},
     {id:'a11',name:'Ryan',email:'ryanza.rudiananda@majoo.id',initials:'RR',displayName:'Ryan',role:'leader',status:'active'}
   ],
+  _cache:null,
   getAll:function(){
+    if(this._cache)return this._cache;
     try{
       var d=JSON.parse(localStorage.getItem(this.KEY)||'null');
       if(!d)return JSON.parse(JSON.stringify(this.DEFS));
@@ -1142,12 +1145,13 @@ var AgentsConfig={
         if(!a.role)a.role=(a.name==='Sekar'?'leader':'agent');
         if(!a.status)a.status='active';
       });
+      this._cache=d;
       return d;
     }catch(e){return JSON.parse(JSON.stringify(this.DEFS));}
   },
   // CLM-07: syncAllowlistToServer dipanggil DI SINI (bukan di tiap caller add/update/setStatus) --
   // ini 1 choke point yg dilewatin SEMUA mutasi roster, jadi allowlist server nggak bisa "lupa" ke-sync.
-  save:function(a){localStorage.setItem(this.KEY,JSON.stringify(a));refreshUserLists();syncAllowlistToServer();},
+  save:function(a){localStorage.setItem(this.KEY,JSON.stringify(a));this._cache=null;refreshUserLists();syncAllowlistToServer();},
   getByName:function(n){return this.getAll().find(function(a){return a.name===n;})||null;},
   getInitials:function(n){var a=this.getByName(n);return a?a.initials:n;},
   getDisplayName:function(n){var a=this.getByName(n);return a?a.displayName:n;},
@@ -2385,11 +2389,17 @@ var LEADER_EMAILS=['sekar@majoo.id','balqis.muthiah@majoo.id','ryanza.rudiananda
 function invIsLeaderCreated(row){
   return LEADER_EMAILS.indexOf(String(row.creatorEmail||'').trim().toLowerCase())>=0;
 }
+// PERF (10 Jul, feedback Rahul soal tab lambat): invEnrichedRows() dulu ke-panggil ULANG di tiap
+// pemanggil (invBasePool->invFilteredRows dipanggil 2x per render: sekali buat metrik, sekali buat
+// tabel) -- tiap panggilan parse ULANG localStorage + rebuild join 3.6rb baris dari nol. Sekarang
+// dihitung SEKALI per render pass (di renderInvoiceTracker/refreshInvoiceBody) lalu di-thread ke
+// invBasePool/invFilteredRows/invRows sebagai parameter `enriched`, bukan dihitung ulang tiap fungsi.
 function invEnrichedRows(){
+  var d=InvoiceTrackerStore.get(); // 1x get(), bukan 2x (dulu dipanggil terpisah buat .data & .reassignments)
   var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
   var reassignMap={};
-  (InvoiceTrackerStore.get().reassignments||[]).forEach(function(x){reassignMap[x.invCode]=x;});
-  return InvoiceTrackerStore.get().data.map(function(r){
+  (d.reassignments||[]).forEach(function(x){reassignMap[x.invCode]=x;});
+  return (d.data||[]).map(function(r){
     var baseAgent=invMatchAgentName(r,agents);
     var tag=reassignMap[r.invCode];
     // AC-C3: reassignment OVERRIDE creator asli di SEMUA tampilan (Agent/Leader/8 metrik) -- dipasang
@@ -2403,16 +2413,15 @@ function invEnrichedRows(){
     });
   });
 }
-function invBasePool(me,isSup){
-  var rows=invEnrichedRows();
+function invBasePool(enriched,me,isSup){
   if(isSup){
-    if(!invAgentFilter.length)return rows;
-    return rows.filter(function(r){return invAgentFilter.indexOf(r.agentName)>=0;});
+    if(!invAgentFilter.length)return enriched;
+    return enriched.filter(function(r){return invAgentFilter.indexOf(r.agentName)>=0;});
   }
-  return rows.filter(function(r){return r.agentName===me;});
+  return enriched.filter(function(r){return r.agentName===me;});
 }
-function invFilteredRows(me,isSup){
-  var pool=invBasePool(me,isSup);
+function invFilteredRows(enriched,me,isSup){
+  var pool=invBasePool(enriched,me,isSup);
   if(invStatusFilter.length)pool=pool.filter(function(r){return invStatusFilter.indexOf(r.statusDetail)>=0;});
   if(!invSearch)return pool;
   var s=invSearch.toLowerCase();
@@ -2427,9 +2436,9 @@ function invPaymentBadge(s){
   var map={PAID:'grn','REJECTED-PAYMENT':'red','VOID-PAYMENT':'gray','REQUESTED-PAYMENT':'yel'};
   return'<span class="badge badge-'+(map[s]||'gray')+'">'+(s||'—')+'</span>';
 }
-function invRows(me,isSup){
-  var recs=invFilteredRows(me,isSup);
-  invCountText='Menampilkan '+recs.length+' dari '+invBasePool(me,isSup).length+' invoice';
+function invRows(enriched,me,isSup){
+  var recs=invFilteredRows(enriched,me,isSup);
+  invCountText='Menampilkan '+recs.length+' dari '+invBasePool(enriched,me,isSup).length+' invoice';
   var cnt=document.getElementById('inv-count');
   if(cnt)cnt.textContent=invCountText;
   // AC-A2: kolom Aksi (tombol Tag Ulang) SAMA SEKALI nggak dirender buat non-leader -- bukan cuma
@@ -2473,9 +2482,10 @@ function invMetricCardsHtml(m){
 function refreshInvoiceBody(){
   invPage=0;
   var me=Auth.getActive(),isSup=Auth.isSuperior();
-  var tb=document.getElementById('inv-tbody');if(tb)tb.innerHTML=invRows(me,isSup);
+  var enriched=invEnrichedRows(); // 1x per refresh, dipakai bareng buat tbody + metrik (dulu 2x)
+  var tb=document.getElementById('inv-tbody');if(tb)tb.innerHTML=invRows(enriched,me,isSup);
   var mc=document.getElementById('inv-metrics');
-  if(mc)mc.innerHTML=invMetricCardsHtml(computeInvoiceMetrics(invFilteredRows(me,isSup),invDay||localDateStr(new Date())));
+  if(mc)mc.innerHTML=invMetricCardsHtml(computeInvoiceMetrics(invFilteredRows(enriched,me,isSup),invDay||localDateStr(new Date())));
 }
 function renderInvoiceTracker(){
   var me=Auth.getActive();
@@ -2491,9 +2501,10 @@ function renderInvoiceTracker(){
   var statusFilterHtml=renderMultiSelect('invStatusFilter','Status Invoice',statusOpts,invStatusFilter);
   var agentFilterHtml=isSup?renderMultiSelect('invAgentFilter','Agen',AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}),invAgentFilter):'';
 
-  var pool=invFilteredRows(me,isSup);
+  var enriched=invEnrichedRows(); // 1x per render pass, dipakai bareng buat metrik + tabel (dulu 2x)
+  var pool=invFilteredRows(enriched,me,isSup);
   var metricsHtml=invMetricCardsHtml(computeInvoiceMetrics(pool,invDay||localDateStr(new Date())));
-  var invRowsHtml=invRows(me,isSup);
+  var invRowsHtml=invRows(enriched,me,isSup);
 
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">🧾 Invoice Tracker '+(isSup?'— Semua Agen':'— Saya ('+me+')')+'</div>'
@@ -4647,7 +4658,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='master-next-btn'){mPage++;var tbn=document.getElementById('master-tbody');if(tbn)tbn.innerHTML=masterRows(Store.get());}
   else if(tgt.id==='inv-prev-btn'||tgt.id==='inv-next-btn'){
     invPage=tgt.id==='inv-prev-btn'?Math.max(0,invPage-1):invPage+1;
-    var tbi=document.getElementById('inv-tbody');if(tbi)tbi.innerHTML=invRows(Auth.getActive(),Auth.isSuperior());
+    var tbi=document.getElementById('inv-tbody');if(tbi)tbi.innerHTML=invRows(invEnrichedRows(),Auth.getActive(),Auth.isSuperior());
   }
   else if(tgt.id==='ws-prev-btn'||tgt.id==='ws-next-btn'){
     wsPage=tgt.id==='ws-prev-btn'?Math.max(0,wsPage-1):wsPage+1;
