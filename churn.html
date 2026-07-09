@@ -272,6 +272,7 @@ tr:hover td{background:var(--sur2)}
     <button class="ntab" data-tab="blast">📲 Blast WABA</button>
     <button class="ntab" data-tab="watchlist">🚫 Watchlist GC</button>
     <button class="ntab" data-tab="klopos">📅 KLOPOS Daily</button>
+    <button class="ntab" data-tab="invoice">🧾 Invoice Tracker</button>
   </div>
 
   <div class="main" id="tab-content"></div>
@@ -636,6 +637,54 @@ function computeUpsellTeamView(period,viewKey){
   });
   var byType=Object.keys(byTypeMap).map(function(k){return byTypeMap[k];}).sort(function(a,b){return b.revenue-a.revenue;});
   return{synced:true,revenue:revenue,dealCount:dealCount,renewalCount:renewalCount,attachPct:renewalCount?Math.round(dealCount/renewalCount*100):0,byType:byType};
+}
+
+// CLM-10 §1: Invoice Tracker -- join row mentah "Data" tab ke nama agen (short name, SAMA persis
+// yg dipake r.assignedAgent di seluruh app, mis. "Erizka"). Composite LOCKED (Ubay, 9 Jul):
+// PRIMARY local-part email (strip @domain, case-fold -- nangkep .com/.id keterlanjuran-daftar TANPA
+// exclude), FALLBACK nama HANYA kalau email row kosong (pakai token pertama local-part email agen,
+// BUKAN short display name -- short name "Elly" nggak match "Eliyawati" di data, tapi email
+// "eliyawati.eli" token pertamanya "eliyawati" match). Return null = unattributed (kemungkinan
+// leader-created, lihat §1b Leader Reassignment -- BELUM dibangun, spec terpisah blocked sign-off).
+function normLocalPart(email){
+  if(!email)return'';
+  return String(email).trim().toLowerCase().split('@')[0];
+}
+function invMatchAgentName(row,agents){
+  var emailKey=normLocalPart(row.creatorEmail);
+  if(emailKey){
+    for(var i=0;i<agents.length;i++){
+      if(normLocalPart(agents[i].email)===emailKey)return agents[i].name;
+    }
+  }
+  var nameKey=String(row.creatorName||'').trim().toLowerCase();
+  if(nameKey){
+    for(var j=0;j<agents.length;j++){
+      var firstTok=normLocalPart(agents[j].email).split('.')[0];
+      if(firstTok&&nameKey.indexOf(firstTok)>=0)return agents[j].name;
+    }
+  }
+  return null;
+}
+// INV_STATUS_BUCKETS -- LOCKED 9 Jul (konfirmasi Rahul, lihat spec_clm10 memory). REQUESTED-PAYMENT
+// TETEP di-handle meski 0 baris live saat ini (validasi transfer manual pending, bisa muncul lagi).
+var INV_POTENTIAL_STATUSES=['VALIDATED-INVOICE','APPROVED-INVOICE','APPROVED-PROFORMA'];
+function computeInvoiceMetrics(rows,dayStr){
+  var day=dayStr||localDateStr(new Date());
+  var m={createdOnDay:0,paidTotal:0,sameDayTotal:0,paidOnDay:0,requested:0,rejected:0,potential:0,expired:0};
+  rows.forEach(function(r){
+    var created=localDateStr(r.createdDate),paid=localDateStr(r.paidDate);
+    var isPaid=r.paymentStatus==='PAID';
+    if(created===day)m.createdOnDay++;
+    if(isPaid)m.paidTotal++;
+    if(isPaid&&created&&paid&&created===paid)m.sameDayTotal++;
+    if(isPaid&&paid===day)m.paidOnDay++;
+    if(r.paymentStatus==='REQUESTED-PAYMENT')m.requested++;
+    if(r.paymentStatus==='REJECTED-PAYMENT')m.rejected++;
+    if(INV_POTENTIAL_STATUSES.indexOf(r.statusDetail)>=0)m.potential++;
+    if(r.statusDetail==='EXPIRED-INVOICE')m.expired++;
+  });
+  return m;
 }
 // Hitung angka mentah 1 metrik dari sekumpulan record (dipakai baik scope team maupun personal)
 function computeMetricRaw(metricKey,recs,period){
@@ -1185,6 +1234,17 @@ var UpsellTeamStore={
   getMonth:function(month){return this.getAll()[month]||null;}
 };
 
+// CLM-10 §1: Invoice Tracker (Data Invoice CX, GAS ?action=invoicetracker) -- SATU blob (bukan
+// per-bulan kayak store lain) krn Invoice Tracker perlu di-search/filter LINTAS periode (invoice
+// lama yg baru dibayar minggu ini tetep harus ketemu). Join ke agen (composite email-primer +
+// fallback-nama) DIKERJAIN LIVE saat render/compute, BUKAN disimpen -- biar ngikutin AgentsConfig
+// terbaru kalau ada agen baru/nonaktif (CLM-06), bukan roster beku dari waktu sync.
+var InvoiceTrackerStore={
+  KEY:'klopos_invoicetracker_v1',
+  get:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{data:[],syncedAt:null};}catch(e){return{data:[],syncedAt:null};}},
+  set:function(data){localStorage.setItem(this.KEY,JSON.stringify({data:data,syncedAt:new Date().toISOString()}));}
+};
+
 // ── CLM-04 TARGETS STORE (configurable, Sekar CRUD) ─────────────────────────
 var Targets={
   KEY:'klopos_targets_v1',
@@ -1303,6 +1363,10 @@ var GC_NEEDCHECK_KATEGORI='Need check Get Contact'; // CLM-09: samain persis str
 var GAS_URL='https://script.google.com/macros/s/AKfycbx6SYfl0O6D3RgMkzZpT17_OxuuClhaOitq9ILa1ryYCX-qlznSz0d9iw4q8bGS68WqWQ/exec';
 var syncMonthFilter='';
 var upsellTeamViewSel='CLM'; // CLM-10 §3: view aktif Multi-team Upsell Tracker (CLM/CLM_CC/TC/TOTAL_CX)
+// CLM-10 §1: Invoice Tracker state -- invAgentFilter cuma relevan buat leader (pola sama wsAgentFilter)
+var invSearch='',invStatusFilter=[],invAgentFilter=[];
+var invPage=0;
+var invDay=''; // 'hari H' buat metrik #1 (dibuat) & #4 (terbayar) -- kosong = pakai hari ini saat render
 var syncInProgress=false;
 
 // ── CLM-01 SYNC STATE (cadence + rate-limit) ────────────────────────────────
@@ -2132,6 +2196,7 @@ function renderMaster(){
     +'<button class="btn btn-blu" id="sync-blastlog-btn" style="padding:5px 12px;font-size:12px" title="Import bukti kirim WABA aktual dari BROADCASTLOG CLARA, cocokkan ke checkpoint H-3/H+2/H+8">📥 Sync Blast Log</button>'
     +'<button class="btn btn-blu" id="sync-financials-btn" style="padding:5px 12px;font-size:12px" title="Import Revenue/MRR/ARPU/Upsell dari RENEWAL & UPSELL 2026 (sesuai bulan sync)">📥 Sync Financials</button>'
     +'<button class="btn btn-blu" id="sync-upsellteam-btn" style="padding:5px 12px;font-size:12px" title="Import Multi-team Upsell Tracker (roster+renewal+upsell per add-on) dari RENEWAL & UPSELL 2026 (sesuai bulan sync)">📥 Sync Upsell Tim</button>'
+    +'<button class="btn btn-blu" id="sync-invoicetracker-btn" style="padding:5px 12px;font-size:12px" title="Import Invoice Tracker (semua invoice riil) dari Data Invoice CX -- TIDAK terikat Sync Bulan">📥 Sync Invoice Tracker</button>'
     +'<button class="btn btn-sec" id="sync-3m-btn" style="padding:5px 12px;font-size:12px" title="Sync 2 bulan ke belakang s/d Desember (bukan Jan-Des penuh -- storage browser nggak muat 1 tahun)">📅 Sync Semua Bulan</button>'
     +syncInfo+lastSyncInfo
     +'<label class="btn btn-sec" style="cursor:pointer">📁 Import CSV<input type="file" id="csv-import" accept=".csv" style="display:none"></label>'
@@ -2241,6 +2306,120 @@ function renderWorksheet(){
     +'</table></div></div>';
 
   updateWsBulkBar();
+}
+
+// ── TAB: INVOICE TRACKER (CLM-10 §1) ────────────────────────────────────────
+// Pola sama Master&Assign(leader)/My Worksheet(agent): Leader liat SEMUA invoice, Agent liat
+// invoice miliknya doang. Scope by `agentName` hasil JOIN (invMatchAgentName), BUKAN r.assignedAgent
+// -- itu field case churn (siapa yg PEGANG outlet), beda konsep dari "siapa yg BUAT invoice ini" di
+// Data Invoice CX (bisa aja invoice dibuat leader/sales lain, lihat §1b Leader Reassignment).
+function invEnrichedRows(){
+  var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
+  return InvoiceTrackerStore.get().data.map(function(r){
+    return Object.assign({},r,{agentName:invMatchAgentName(r,agents)});
+  });
+}
+function invBasePool(me,isSup){
+  var rows=invEnrichedRows();
+  if(isSup){
+    if(!invAgentFilter.length)return rows;
+    return rows.filter(function(r){return invAgentFilter.indexOf(r.agentName)>=0;});
+  }
+  return rows.filter(function(r){return r.agentName===me;});
+}
+function invFilteredRows(me,isSup){
+  var pool=invBasePool(me,isSup);
+  if(invStatusFilter.length)pool=pool.filter(function(r){return invStatusFilter.indexOf(r.statusDetail)>=0;});
+  if(!invSearch)return pool;
+  var s=invSearch.toLowerCase();
+  return pool.filter(function(r){return r.invCode.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s);});
+}
+var invCountText='';
+function invStatusBadge(s){
+  var map={PAID:'grn','VOID-INVOICE':'gray','EXPIRED-INVOICE':'red','APPROVED-INVOICE':'yel','APPROVED-PROFORMA':'yel','VALIDATED-INVOICE':'blu'};
+  return'<span class="badge badge-'+(map[s]||'gray')+'">'+(s||'—')+'</span>';
+}
+function invPaymentBadge(s){
+  var map={PAID:'grn','REJECTED-PAYMENT':'red','VOID-PAYMENT':'gray','REQUESTED-PAYMENT':'yel'};
+  return'<span class="badge badge-'+(map[s]||'gray')+'">'+(s||'—')+'</span>';
+}
+function invRows(me,isSup){
+  var recs=invFilteredRows(me,isSup);
+  invCountText='Menampilkan '+recs.length+' dari '+invBasePool(me,isSup).length+' invoice';
+  var cnt=document.getElementById('inv-count');
+  if(cnt)cnt.textContent=invCountText;
+  var colspan=isSup?8:7;
+  if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada data</td></tr>';
+  var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
+  invPage=Math.min(invPage,totalPages-1);
+  var paged=recs.slice(invPage*PAGE_SIZE,(invPage+1)*PAGE_SIZE);
+  return paged.map(function(r){
+    return'<tr>'
+      +'<td>'+r.invCode+'</td>'
+      +'<td>'+r.outletName+'</td>'
+      +(isSup?'<td>'+(r.agentName||'<span style="color:var(--tx3)">— (belum teridentifikasi)</span>')+'</td>':'')
+      +'<td>'+fmtDate(r.createdDate)+'</td>'
+      +'<td>'+fmtDate(r.paidDate)+'</td>'
+      +'<td>'+invStatusBadge(r.statusDetail)+'</td>'
+      +'<td>'+invPaymentBadge(r.paymentStatus)+'</td>'
+      +'<td>'+fmtRpShort(r.total)+'</td>'
+      +'</tr>';
+  }).join('')+pagerRow(colspan,invPage,totalPages,recs.length,'inv-prev-btn','inv-next-btn');
+}
+function invMetricCardsHtml(m){
+  function card(label,val,color){return'<div class="stat"><div class="stat-val"'+(color?' style="color:'+color+'"':'')+'>'+val+'</div><div class="stat-lbl">'+label+'</div></div>';}
+  return card('Dibuat (hari ini)',m.createdOnDay)
+    +card('Dibayar (total)',m.paidTotal,'var(--grn)')
+    +card('Same-day (dibuat=dibayar)',m.sameDayTotal,'var(--grn)')
+    +card('Terbayar (hari ini)',m.paidOnDay,'var(--grn)')
+    +card('Requested Payment',m.requested,'var(--yel)')
+    +card('Rejected (perlu revisi)',m.rejected,'var(--red)')
+    +card('Potensial (validated+approved)',m.potential,'var(--blu)')
+    +card('Expired (perlu FU)',m.expired,'var(--org)');
+}
+function refreshInvoiceBody(){
+  invPage=0;
+  var me=Auth.getActive(),isSup=Auth.isSuperior();
+  var tb=document.getElementById('inv-tbody');if(tb)tb.innerHTML=invRows(me,isSup);
+  var mc=document.getElementById('inv-metrics');
+  if(mc)mc.innerHTML=invMetricCardsHtml(computeInvoiceMetrics(invFilteredRows(me,isSup),invDay||localDateStr(new Date())));
+}
+function renderInvoiceTracker(){
+  var me=Auth.getActive();
+  var isSup=Auth.isSuperior();
+  var d=InvoiceTrackerStore.get();
+
+  if(!d.data||!d.data.length){
+    document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="card empty">Belum ada data — klik "📥 Sync Invoice Tracker" di tab Master &amp; Assign</div></div>';
+    return;
+  }
+
+  var statusOpts=['PAID','APPROVED-INVOICE','APPROVED-PROFORMA','VALIDATED-INVOICE','EXPIRED-INVOICE','VOID-INVOICE'].map(function(s){return{value:s,label:s};});
+  var statusFilterHtml=renderMultiSelect('invStatusFilter','Status Invoice',statusOpts,invStatusFilter);
+  var agentFilterHtml=isSup?renderMultiSelect('invAgentFilter','Agen',AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}),invAgentFilter):'';
+
+  var pool=invFilteredRows(me,isSup);
+  var metricsHtml=invMetricCardsHtml(computeInvoiceMetrics(pool,invDay||localDateStr(new Date())));
+  var invRowsHtml=invRows(me,isSup);
+
+  document.getElementById('tab-content').innerHTML=
+    '<div class="ov-section"><div class="ov-section-title">🧾 Invoice Tracker '+(isSup?'— Semua Agen':'— Saya ('+me+')')+'</div>'
+    +'<div class="form-row" style="margin-bottom:10px;gap:8px;align-items:center">'
+    +'<label style="font-size:11px;font-weight:600;color:var(--tx3)">Tanggal:</label>'
+    +'<input type="date" id="inv-day" value="'+(invDay||localDateStr(new Date()))+'" style="padding:5px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:12px">'
+    +'<span style="font-size:11px;color:var(--tx3)">(dipakai buat metrik "Dibuat" &amp; "Terbayar" di bawah)</span>'
+    +'</div>'
+    +'<div class="grid4" id="inv-metrics">'+metricsHtml+'</div>'
+    +'</div>'
+    +'<div class="frow" style="margin-top:12px">'
+    +'<input class="fsearch" type="search" id="inv-search" placeholder="🔍 Cari No. Invoice / Nama Outlet..." value="'+invSearch+'">'
+    +statusFilterHtml
+    +(agentFilterHtml||'')
+    +'<span id="inv-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+invCountText+'</span>'
+    +'</div>'
+    +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
+    +'<thead><tr><th>No. Invoice</th><th>Nama Outlet</th>'+(isSup?'<th>Agen</th>':'')+'<th>Dibuat</th><th>Dibayar</th><th>Status Invoice</th><th>Status Pembayaran</th><th>Total</th></tr></thead>'
+    +'<tbody id="inv-tbody">'+invRowsHtml+'</tbody></table></div></div>';
 }
 
 // ── TAB: RESPONSE ──────────────────────────────────────────────────────────
@@ -2865,6 +3044,7 @@ function renderTab(tab){
     case 'blast':renderBlast();break;
     case 'watchlist':renderWatchlist();break;
     case 'klopos':renderKlopos();break;
+    case 'invoice':renderInvoiceTracker();break;
   }
 }
 
@@ -4044,6 +4224,35 @@ function syncUpsellTeamOnly(monthParam){
     });
 }
 
+// CLM-10 §1: sync-down Invoice Tracker (Data Invoice CX, GAS ?action=invoicetracker) -> Invoice
+// TrackerStore. TANPA filter bulan (beda dari sync lain) -- Invoice Tracker perlu search/filter
+// lintas periode, jadi tarik SEMUA baris riil sekaligus (~3.6rb, udah di-bound GAS-side ke non-blank
+// INV_Code doang, bukan 33rb baris mentah).
+function syncInvoiceTrackerOnly(){
+  var btn=document.getElementById('sync-invoicetracker-btn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+  toast('Mengambil data Invoice Tracker…',4000);
+
+  var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+  var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
+  var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
+  var url=GAS_URL+'?action=invoicetracker&token='+encodeURIComponent(Auth.getToken()||'');
+
+  fetch(url,opts)
+    .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(json){
+      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      InvoiceTrackerStore.set(json.data||[]);
+      renderTab(currentTab);
+      toast('Invoice Tracker tersimpan: '+(json.total||0)+' invoice',5000);
+    }).catch(function(err){
+      toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Invoice Tracker: '+err.message,5000);
+    }).then(function(){
+      var b=document.getElementById('sync-invoicetracker-btn');
+      if(b){b.disabled=false;b.textContent='📥 Sync Invoice Tracker';}
+    });
+}
+
 function syncBroadcastLogOnly(){
   var btn=document.getElementById('sync-blastlog-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
@@ -4244,6 +4453,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='sync-blastlog-btn')syncBroadcastLogOnly();
   else if(tgt.id==='sync-financials-btn')syncFinancialsOnly();
   else if(tgt.id==='sync-upsellteam-btn')syncUpsellTeamOnly();
+  else if(tgt.id==='sync-invoicetracker-btn')syncInvoiceTrackerOnly();
   else if(tgt.id==='sync-3m-btn')syncThreeMonths();
   else if(tgt.id==='reset-records-btn'){
     if(!confirm('Hapus SEMUA records? Tindakan ini tidak bisa dibatalkan.\n(Response & blast history tidak akan terhapus)'))return;
@@ -4341,6 +4551,10 @@ tabContent.addEventListener('click',function(e){
   // Pagination -- prev/next buttons (masterRows/wsRows dipanggil ulang, pagerRow otomatis clamp halaman)
   else if(tgt.id==='master-prev-btn'){mPage=Math.max(0,mPage-1);var tbp=document.getElementById('master-tbody');if(tbp)tbp.innerHTML=masterRows(Store.get());}
   else if(tgt.id==='master-next-btn'){mPage++;var tbn=document.getElementById('master-tbody');if(tbn)tbn.innerHTML=masterRows(Store.get());}
+  else if(tgt.id==='inv-prev-btn'||tgt.id==='inv-next-btn'){
+    invPage=tgt.id==='inv-prev-btn'?Math.max(0,invPage-1):invPage+1;
+    var tbi=document.getElementById('inv-tbody');if(tbi)tbi.innerHTML=invRows(Auth.getActive(),Auth.isSuperior());
+  }
   else if(tgt.id==='ws-prev-btn'||tgt.id==='ws-next-btn'){
     wsPage=tgt.id==='ws-prev-btn'?Math.max(0,wsPage-1):wsPage+1;
     var dwp=Store.get(),mewp=Auth.getActive(),isSupwp=Auth.isSuperior();
@@ -4387,7 +4601,8 @@ var MSEL_REFRESH={
   mAgent:refreshMasterBody,mBulan:refreshMasterBody,mLifecycle:refreshMasterBody,
   mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
-  respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults
+  respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
+  invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody
 };
 // Buka/tutup panel multi-select: klik trigger toggle + tutup panel lain yg lagi kebuka; klik di
 // luar panel manapun nutup semua. Level document (bukan tabContent) krn butuh nangkep klik DI LUAR
@@ -4464,6 +4679,8 @@ tabContent.addEventListener('input',function(e){
   var tgt=e.target;
   if(tgt.id==='ws-search'){wsSearch=tgt.value;refreshWsBody();}
   if(tgt.id==='m-search'){mSearch=tgt.value;refreshMasterBody();}
+  if(tgt.id==='inv-search'){invSearch=tgt.value;refreshInvoiceBody();}
+  if(tgt.id==='inv-day'){invDay=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='resp-search'){respSearch=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='wl-search'){wlSearch=tgt.value;renderWatchlistTable();}
   if(tgt.id==='wl-new-phone'){
