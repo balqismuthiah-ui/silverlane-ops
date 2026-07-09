@@ -1746,8 +1746,12 @@ function computeFunnelBreakdown(recsInScope,monthKey){
     belumDikategorikan:belumDikategorikan,nomorTidakValid:nomorTidakValid,kategoriLain:kategoriLain,gcCount:gcCount};
 }
 // MoM delta line, "vs cohort bulan lalu (status terkini)" -- BUKAN trend historis (lihat memory CLM-11 A1).
-function funnelMomHtml(nowVal,prevVal,prevMonthKey){
+// AC-A1-4: kalau cohort bulan lalu literally kosong (0 total record -- bukan cuma metrik ini 0),
+// TIDAK ada dasar buat hitung % (nowVal vs 0 selalu "+100%" walau ini pertama kali dia punya data
+// sama sekali, bukan pertumbuhan riil) -- tampilin state jujur "—", BUKAN persentase palsu/crash.
+function funnelMomHtml(nowVal,prevVal,prevMonthKey,prevHasData){
   if(!prevMonthKey)return'';
+  if(!prevHasData)return'<div class="funnel-mom" style="color:var(--tx3)">— (nggak ada data cohort '+prevMonthKey+' buat dibandingkan)</div>';
   var diff=nowVal-prevVal;
   var pct=prevVal?Math.round((diff/prevVal)*100):(nowVal?100:0);
   var arrow=diff>0?'▲':(diff<0?'▼':'—');
@@ -1757,7 +1761,7 @@ function funnelMomHtml(nowVal,prevVal,prevMonthKey){
 function funnelCardHtml(label,val,color,nowB,prevB,key,prevMonthKey){
   return'<div class="funnel-card"><div class="stat-lbl">'+label+'</div>'
     +'<div class="stat-val" style="color:'+color+'">'+nowB[key]+'</div>'
-    +(prevB?funnelMomHtml(nowB[key],prevB[key],prevMonthKey):'')
+    +(prevB?funnelMomHtml(nowB[key],prevB[key],prevMonthKey,prevB.total>0):'')
     +'</div>';
 }
 
