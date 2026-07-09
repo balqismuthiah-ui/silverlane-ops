@@ -325,6 +325,18 @@ tr:hover td{background:var(--sur2)}
   </div>
 </div>
 
+<!-- CLM-10 §1b: Invoice Reassignment Modal -->
+<div class="modal-overlay" id="invreassign-modal">
+  <div class="modal">
+    <div class="modal-hd"><h3>Tag Ulang Invoice</h3><button class="modal-close" data-close="invreassign-modal">✕</button></div>
+    <div class="modal-bd" id="invreassign-body"></div>
+    <div class="modal-ft">
+      <button class="btn btn-sec" data-close="invreassign-modal">Batal</button>
+      <button class="btn btn-pri" id="invreassign-save-btn">Simpan</button>
+    </div>
+  </div>
+</div>
+
 <!-- Template Edit Modal -->
 <div class="modal-overlay" id="tpl-modal">
   <div class="modal wide">
@@ -1241,8 +1253,20 @@ var UpsellTeamStore={
 // terbaru kalau ada agen baru/nonaktif (CLM-06), bukan roster beku dari waktu sync.
 var InvoiceTrackerStore={
   KEY:'klopos_invoicetracker_v1',
-  get:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{data:[],syncedAt:null};}catch(e){return{data:[],syncedAt:null};}},
-  set:function(data){localStorage.setItem(this.KEY,JSON.stringify({data:data,syncedAt:new Date().toISOString()}));}
+  get:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{data:[],reassignments:[],syncedAt:null};}catch(e){return{data:[],reassignments:[],syncedAt:null};}},
+  set:function(data,reassignments){localStorage.setItem(this.KEY,JSON.stringify({data:data,reassignments:reassignments||[],syncedAt:new Date().toISOString()}));},
+  // CLM-10 §1b: optimistic local upsert-by-invCode abis submit tag/un-tag -- badge kepake instan,
+  // sinkron beneran (dari sheet) nyusul lewat sync Invoice Tracker berikutnya (pola sama gcWatchlistData).
+  upsertReassignment:function(entry){
+    var d=this.get();
+    var i=d.reassignments.findIndex(function(r){return r.invCode===entry.invCode;});
+    if(entry.reassignedAgent){
+      if(i>=0)d.reassignments[i]=entry;else d.reassignments.push(entry);
+    }else if(i>=0){
+      d.reassignments.splice(i,1); // un-tag = hapus entry lokal juga (sama pola GAS deleteRow)
+    }
+    localStorage.setItem(this.KEY,JSON.stringify(d));
+  }
 };
 
 // ── CLM-04 TARGETS STORE (configurable, Sekar CRUD) ─────────────────────────
@@ -1502,6 +1526,47 @@ function writeBackUpsell(r,platform,me){
 // CLM-09: write-back GC Watchlist -- reuse antrean+_gasPost generik yg sama kayak writeBackUpsell
 // (action-agnostic, server route by payload.action). 2 mode: submit biasa (kategori known/need-check)
 // atau resolveOnly (toggle Aktif/Resolved, nggak nyentuh kategori/status verifikasi).
+// CLM-10 §1b: BEDA dari writeBackGcWatchlist/writeBackUpsell -- itu fire-and-forget + offline-queue
+// (gagal jaringan = wajar di-retry). Di sini server bisa nolak VALID krn business-rule (invoice belum
+// PAID, agen invalid, dsb) -- _gasPost udah throw pesan errornya (j.ok===false), jadi PANGGIL LANGSUNG
+// (bukan lewat writeBack* generic) biar penolakan ke-surface ke leader, BUKAN diem2 masuk antrean
+// retry yang bakal gagal lagi selamanya.
+var invReassignTargetInvCode=null;
+function openInvReassignModal(invCode){
+  if(!Auth.isSuperior())return; // defense-in-depth -- tombolnya udah nggak dirender buat non-leader
+  var d=InvoiceTrackerStore.get();
+  var row=d.data.find(function(r){return r.invCode===invCode;});
+  if(!row)return;
+  invReassignTargetInvCode=invCode;
+  var existing=(d.reassignments||[]).find(function(r){return r.invCode===invCode;});
+  var agentOpts=AgentsConfig.getAll().filter(function(a){return a.role==='agent';})
+    .map(function(a){return'<option value="'+a.name+'"'+(existing&&existing.reassignedAgent===a.name?' selected':'')+'>'+a.name+'</option>';}).join('');
+  document.getElementById('invreassign-body').innerHTML=
+    '<p style="margin-bottom:8px">Invoice: <strong>'+row.invCode+'</strong></p>'
+    +'<p style="margin-bottom:12px">Outlet: '+row.outletName+' &nbsp;·&nbsp; Dibuat oleh: '+(row.creatorName||row.creatorEmail)+'</p>'
+    +'<label>Deal ini sebenarnya kontribusi agen:</label>'
+    +'<select id="invreassign-agent"><option value="">— Pilih Agen —</option>'+agentOpts+'</select>'
+    +(existing?'<p style="margin-top:10px;font-size:11px;color:var(--tx3)">Ditag oleh '+existing.taggedBy+' pada '+fmtDate(existing.taggedAt)+'. Pilih "— Pilih Agen —" lalu Simpan buat hapus tag.</p>':'');
+  openModal('invreassign-modal');
+}
+function saveInvReassign(){
+  if(!invReassignTargetInvCode)return;
+  var agent=document.getElementById('invreassign-agent').value;
+  var btn=document.getElementById('invreassign-save-btn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Menyimpan...';}
+  _gasPost({action:'writeInvoiceReassignment',invCode:invReassignTargetInvCode,reassignedAgent:agent})
+    .then(function(json){
+      InvoiceTrackerStore.upsertReassignment({invCode:invReassignTargetInvCode,reassignedAgent:agent,taggedBy:Auth.getActive(),taggedAt:json.taggedAt||new Date().toISOString()});
+      closeModal('invreassign-modal');
+      toast(agent?'Invoice ditag ke '+agent:'Tag invoice dihapus');
+      renderTab(currentTab);
+    }).catch(function(err){
+      toast('Gagal simpan: '+err.message,5000);
+    }).then(function(){
+      if(btn){btn.disabled=false;btn.textContent='Simpan';}
+    });
+}
+
 function writeBackGcWatchlist(payload){
   _gasPost(payload).then(function(){
     if(_wbWarned)wbFlush();
@@ -2313,10 +2378,29 @@ function renderWorksheet(){
 // invoice miliknya doang. Scope by `agentName` hasil JOIN (invMatchAgentName), BUKAN r.assignedAgent
 // -- itu field case churn (siapa yg PEGANG outlet), beda konsep dari "siapa yg BUAT invoice ini" di
 // Data Invoice CX (bisa aja invoice dibuat leader/sales lain, lihat §1b Leader Reassignment).
+// CLM-10 §1b: LEADER_EMAILS -- dipake buat 2 hal: (1) tentuin invoice mana yg ELIGIBLE buat tombol
+// "Tag Ulang" (cuma invoice buatan leader, BUKAN sales/CC/TC lain -- AC-D1, itu genuine di luar
+// scope, bukan gap yg perlu di-tag), (2) referensi cross-check. 3 leader = Sekar/Muthia/Ryanza.
+var LEADER_EMAILS=['sekar@majoo.id','balqis.muthiah@majoo.id','ryanza.rudiananda@majoo.id'];
+function invIsLeaderCreated(row){
+  return LEADER_EMAILS.indexOf(String(row.creatorEmail||'').trim().toLowerCase())>=0;
+}
 function invEnrichedRows(){
   var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
+  var reassignMap={};
+  (InvoiceTrackerStore.get().reassignments||[]).forEach(function(x){reassignMap[x.invCode]=x;});
   return InvoiceTrackerStore.get().data.map(function(r){
-    return Object.assign({},r,{agentName:invMatchAgentName(r,agents)});
+    var baseAgent=invMatchAgentName(r,agents);
+    var tag=reassignMap[r.invCode];
+    // AC-C3: reassignment OVERRIDE creator asli di SEMUA tampilan (Agent/Leader/8 metrik) -- dipasang
+    // di titik PALING AWAL (enrichment), jadi otomatis ke-warisin ke invBasePool/invFilteredRows/
+    // computeInvoiceMetrics tanpa perlu logic override terpisah di tempat lain.
+    return Object.assign({},r,{
+      agentName: tag ? tag.reassignedAgent : baseAgent,
+      reassigned: !!tag,
+      reassignedBy: tag ? tag.taggedBy : null,
+      reassignedAt: tag ? tag.taggedAt : null
+    });
   });
 }
 function invBasePool(me,isSup){
@@ -2348,21 +2432,30 @@ function invRows(me,isSup){
   invCountText='Menampilkan '+recs.length+' dari '+invBasePool(me,isSup).length+' invoice';
   var cnt=document.getElementById('inv-count');
   if(cnt)cnt.textContent=invCountText;
-  var colspan=isSup?8:7;
+  // AC-A2: kolom Aksi (tombol Tag Ulang) SAMA SEKALI nggak dirender buat non-leader -- bukan cuma
+  // disabled/CSS-hide (preseden bug panel bocor CLM-06, guard di titik generate HTML bukan tampilan).
+  var colspan=isSup?9:7;
   if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada data</td></tr>';
   var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
   invPage=Math.min(invPage,totalPages-1);
   var paged=recs.slice(invPage*PAGE_SIZE,(invPage+1)*PAGE_SIZE);
   return paged.map(function(r){
+    var agentCell=r.agentName
+      ?(r.agentName+(r.reassigned?' <span class="badge badge-blu" style="font-size:9px" title="Ditag ulang oleh '+(r.reassignedBy||'?')+'">🏷️ ditag ulang</span>':''))
+      :'<span style="color:var(--tx3)">— (belum teridentifikasi)</span>';
+    // AC-D1: tombol Tag Ulang CUMA muncul buat invoice buatan LEADER (bukan sales/CC/TC lain) yg
+    // udah PAID (AC-A1) -- itu satu-satunya kandidat yg genuinely butuh di-tag.
+    var canReassign=isSup&&r.paymentStatus==='PAID'&&invIsLeaderCreated(r);
     return'<tr>'
       +'<td>'+r.invCode+'</td>'
       +'<td>'+r.outletName+'</td>'
-      +(isSup?'<td>'+(r.agentName||'<span style="color:var(--tx3)">— (belum teridentifikasi)</span>')+'</td>':'')
+      +(isSup?'<td>'+agentCell+'</td>':'')
       +'<td>'+fmtDate(r.createdDate)+'</td>'
       +'<td>'+fmtDate(r.paidDate)+'</td>'
       +'<td>'+invStatusBadge(r.statusDetail)+'</td>'
       +'<td>'+invPaymentBadge(r.paymentStatus)+'</td>'
       +'<td>'+fmtRpShort(r.total)+'</td>'
+      +(isSup?'<td>'+(canReassign?'<button class="action-btn ab-edit" data-act="reassign-invoice" data-id="'+r.invCode+'">'+(r.reassigned?'Edit Tag':'Tag Ulang')+'</button>':'')+'</td>':'')
       +'</tr>';
   }).join('')+pagerRow(colspan,invPage,totalPages,recs.length,'inv-prev-btn','inv-next-btn');
 }
@@ -2418,7 +2511,7 @@ function renderInvoiceTracker(){
     +'<span id="inv-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+invCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr><th>No. Invoice</th><th>Nama Outlet</th>'+(isSup?'<th>Agen</th>':'')+'<th>Dibuat</th><th>Dibayar</th><th>Status Invoice</th><th>Status Pembayaran</th><th>Total</th></tr></thead>'
+    +'<thead><tr><th>No. Invoice</th><th>Nama Outlet</th>'+(isSup?'<th>Agen</th>':'')+'<th>Dibuat</th><th>Dibayar</th><th>Status Invoice</th><th>Status Pembayaran</th><th>Total</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
     +'<tbody id="inv-tbody">'+invRowsHtml+'</tbody></table></div></div>';
 }
 
@@ -4242,7 +4335,7 @@ function syncInvoiceTrackerOnly(){
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
       if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
-      InvoiceTrackerStore.set(json.data||[]);
+      InvoiceTrackerStore.set(json.data||[],json.reassignments||[]);
       renderTab(currentTab);
       toast('Invoice Tracker tersimpan: '+(json.total||0)+' invoice',5000);
     }).catch(function(err){
@@ -4428,6 +4521,7 @@ tabContent.addEventListener('click',function(e){
     else if(act==='toggle-agent-status')toggleAgentStatus(agid);
     else if(act==='edit-target')openTargetModal(id);
     else if(act==='upsell-team-view'){upsellTeamViewSel=btn.dataset.view;renderTab('overview');}
+    else if(act==='reassign-invoice')openInvReassignModal(id);
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab('overview');}}
     else if(act==='toggle-wl'){
       // CLM-09: sheet-backed -- resolveOnly write, nutup/buka kolom "Resolved At" (L), nggak
@@ -4726,6 +4820,7 @@ document.querySelectorAll('.modal-overlay').forEach(function(ov){
 
 document.getElementById('resp-save-btn').addEventListener('click',saveResp);
 document.getElementById('gc-save-btn').addEventListener('click',saveGC);
+document.getElementById('invreassign-save-btn').addEventListener('click',saveInvReassign);
 document.getElementById('tpl-save-btn').addEventListener('click',saveTpl);
 document.getElementById('agent-save-btn').addEventListener('click',saveAgent);
 document.getElementById('target-save-btn').addEventListener('click',saveTarget);
