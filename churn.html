@@ -430,8 +430,10 @@ tr:hover td{background:var(--sur2)}
         <option value="personal">Personal (target per-agen, default sama rata + bisa override)</option>
       </select>
       <div id="target-team-wrap">
-        <label>Nilai Target (Team)</label>
+        <label>Nilai Target Regular (Team)</label>
         <input type="number" id="target-value-inp" min="0" placeholder="Contoh: 100">
+        <label style="margin-top:6px">Nilai Target Improved (opsional — stretch goal, kosongkan kalau cuma 1 level)</label>
+        <input type="number" id="target-value-improved-inp" min="0" placeholder="Contoh: 120">
       </div>
       <div id="target-personal-wrap" style="display:none">
         <label>Nilai Default per Agen</label>
@@ -573,7 +575,11 @@ const TARGET_METRICS={
   'upsell_attach':{family:'outcome',label:'Upsell Attach Rate'},
   // CLM-11 B3: formula persis dari sheet KLOPOS produksi (verified langsung dari sel formula live,
   // BUKAN versi abstraksi brief -- lihat memory spec-clm11 "AC-B3-1 investigasi selesai").
-  'hot_leads_conversion':{family:'outcome',label:'Hot Leads Conversion'}
+  'hot_leads_conversion':{family:'outcome',label:'Hot Leads Conversion'},
+  // CLM-11 Fase C: dipakai khusus 3 kartu "Target Tim Bulan Ini" (targetValueImproved 2-tier), reuse
+  // definisi actual yg SUDAH ada (bukan angka baru) -- cuma bikin target-nya configurable Sekar.
+  'upsell_revenue_nasional':{family:'outcome',label:'Upsell Revenue (Nasional CLM+CC)'},
+  'renewal_conversion_pct':{family:'outcome',label:'Konversi Renewal (%)'}
 };
 // CLM-04 Fase 2: 5 metrik duit — join Outlet_ID (case, scope-filtered) -> FinancialsStore (per bulan).
 // GAS nyediain per-outlet netRevenue/skuQty/isUpsell; scope Team/Personal filter case DULU (recs udah
@@ -747,6 +753,20 @@ function computeMetricRaw(metricKey,recs,period){
   if(metricKey==='hot_leads_conversion'){
     return computeHotLeadsConversion(recs,period);
   }
+  // CLM-11 Fase C: Upsell Revenue kartu "Target Tim" -- view Total Nasional (CLM+CC), KONSISTEN sama
+  // konvensi 4-view §3 CLM-10 (CC digabung buat angka nasional). recs diabaikan sengaja -- ini angka
+  // tim/nasional utuh, bukan hasil filter case per-scope kayak metrik lain di sini.
+  if(metricKey==='upsell_revenue_nasional'){
+    var utv=period?computeUpsellTeamView(period,'CLM_CC'):null;
+    return{actual:utv&&utv.synced?utv.revenue:0,unit:'Rp',denom:utv&&utv.synced?1:0};
+  }
+  // Definisi PERSIS sama kayak pRenewal yg dulu inline di renderOverview (respOutcome==='renewal' /
+  // total) -- cuma dipindah ke katalog generik biar target-nya (Regular/Improved) bisa configurable
+  // Sekar, TANPA ubah cara actual dihitung (nol perubahan angka yg udah tampil).
+  if(metricKey==='renewal_conversion_pct'){
+    var doneRenew=recs.filter(function(r){return respOutcome(r.response)==='renewal';}).length;
+    return{actual:recs.length?Math.round(doneRenew/recs.length*100):0,unit:'%'};
+  }
   return{actual:0,unit:''};
 }
 // CLM-11 B3: formula LIVE dari sheet KLOPOS produksi (verified langsung ke sel, bukan versi abstraksi
@@ -837,6 +857,17 @@ function computePersonalBillingCount(metricKey,period,agentName){
   }
   return{actual:0,unit:'count',synced:false};
 }
+// CLM-11 Fase C: Attach Rate per-agen -- formula v2 Opsi B PERSIS (numerator=semua deal upsell,
+// denominator=renewal count), cuma di-slice per orang lewat REUSE computePersonalBillingCount 2x
+// (join fuzzy-match B1 udah teruji, no join baru). "CC digabung ke Total Nasional" (lock spec) itu
+// buat angka AGREGAT tim di kartu Upselling di atas -- di level per-agen di sini nggak relevan, AGENTS[]
+// emang udah cuma 8 agen CLM (arsitektur app dari awal), bukan filter tambahan yg perlu diterapin lagi.
+function computePersonalAttachRate(period,agentName){
+  var ren=computePersonalBillingCount('renewal_count',period,agentName);
+  var ups=computePersonalBillingCount('upsell_approved_count',period,agentName);
+  if(!ren.synced)return{pct:0,denom:0,dealCount:0,synced:false};
+  return{pct:ren.actual?Math.round(ups.actual/ren.actual*100):0,denom:ren.actual,dealCount:ups.actual,synced:true};
+}
 // Team vs Personal = DUA SCOPE INDEPENDEN (keputusan Muthia 3 Jul) — bukan 1 angka yg auto-split per viewer.
 // - scope 'team': actual dihitung dari SEMUA record tim, target = targetValue (1 angka agregat).
 // - scope 'personal': actual dihitung dari record milik SATU agen (agentName wajib diisi), target =
@@ -863,6 +894,10 @@ function computeTargetActual(target,allRecs,agentName){
   // scope==='team' (default)
   var resTeam=computeMetricRaw(target.metricKey,periodRecs,period);
   resTeam.effectiveTarget=target.targetValue;
+  // CLM-11 Fase C: tier KEDUA opsional (stretch goal) -- general di level skema, semua metrik team-scope
+  // BISA isi ini kalau mau (bukan hack khusus Renewal/Upsell). null kalau nggak diisi = tetep 1-tier,
+  // backward-compatible ke SEMUA target yg udah ada sebelum Fase C (targetValueImproved undefined).
+  resTeam.effectiveTargetImproved=(target.targetValueImproved!=null)?target.targetValueImproved:null;
   return resTeam;
 }
 
@@ -1397,7 +1432,14 @@ var Targets={
       {id:'tg3',metricKey:'blast_h+8',period:cm,scope:'team',targetValue:100,visibleToAgent:true},
       {id:'tg4',metricKey:'response_coverage',period:cm,scope:'team',targetValue:100,visibleToAgent:true},
       {id:'tg5',metricKey:'renewal_count',period:cm,scope:'personal',targetValue:7,personalOverrides:{},visibleToAgent:true},
-      {id:'tg6',metricKey:'upsell_approved_count',period:cm,scope:'personal',targetValue:3,personalOverrides:{},visibleToAgent:true}
+      {id:'tg6',metricKey:'upsell_approved_count',period:cm,scope:'personal',targetValue:3,personalOverrides:{},visibleToAgent:true},
+      // CLM-11 Fase C: nilai persis sama kayak konstanta hardcode lama (RENEWAL_TARGET/_IMP,
+      // convTarget/convTargetImp) -- migrasi ke Targets configurable TANPA ubah angka yg udah tampil
+      // ke user saat ini. Upsell Revenue SENGAJA nggak diseed -- belum ada angka target Rupiah real dari
+      // Muthia/Ubay buat metrik ini (beda dari Renewal/Konversi yg udah lama ada angkanya), "0 jujur"
+      // drpd nebak -- kartu-nya nunjukin state "belum ada target" sampai Sekar isi manual.
+      {id:'tg7',metricKey:'renewal_revenue',period:cm,scope:'team',targetValue:1500000000,targetValueImproved:1620474969,visibleToAgent:true},
+      {id:'tg8',metricKey:'renewal_conversion_pct',period:cm,scope:'team',targetValue:82,targetValueImproved:87,visibleToAgent:true}
     ];
     this.save(defaults);
     return defaults;
@@ -1906,12 +1948,30 @@ function renderOverview(){
 
   // Team & per-agent targets (Jun 2026: 7 active agents; Sunarti & Shevtya join Jul)
   var N_AGENTS=7;
-  var RENEWAL_TARGET=1500000000,RENEWAL_TARGET_IMP=1620474969;
+  // CLM-11 Fase C: 3 angka di bawah (renewal revenue/conversion/upsell revenue) SEKARANG configurable
+  // lewat Targets store (Sekar CRUD, "Kelola Target Configurable") -- bukan konstanta JS lagi. Fallback
+  // ke angka lama persis (nol regresi kalau localStorage belum ke-seed ulang / periode blm dikonfig
+  // Sekar) buat 2 metrik yg emang udah lama ada angkanya; Upsell Revenue nggak ada fallback -- "0 jujur",
+  // belum ada angka target Rupiah real, kartu-nya nunjukin state "belum dikonfig" sampai Sekar isi.
+  var teamTargetsNow=Targets.getAll().filter(function(t){return t.scope==='team'&&t.period===currentMonthKey;});
+  function findTeamTarget(metricKey,fallbackRegular,fallbackImproved){
+    var t=teamTargetsNow.find(function(x){return x.metricKey===metricKey;});
+    // Fallback CUMA buat "belum pernah dikonfig sama sekali" (t nggak ada). Begitu Sekar bikin row-nya,
+    // targetValueImproved:null (dikosongin sengaja) HARUS dihormati apa adanya -- BUKAN balik ke fallback
+    // hardcode, itu bug (Sekar nggak akan pernah bisa "matiin" tier Improved kalau di-treat kayak
+    // belum-dikonfig).
+    if(!t)return{regular:fallbackRegular,improved:fallbackImproved,configured:fallbackRegular!=null};
+    return{regular:t.targetValue,improved:t.targetValueImproved!=null?t.targetValueImproved:null,configured:true};
+  }
+  var rrT=findTeamTarget('renewal_revenue',1500000000,1620474969);
+  var convT=findTeamTarget('renewal_conversion_pct',82,87);
+  var upRevT=findTeamTarget('upsell_revenue_nasional',null,null);
+  var RENEWAL_TARGET=rrT.regular,RENEWAL_TARGET_IMP=rrT.improved;
   var REVIEW_TARGET=400;
   var PER_AGENT_RENEWAL=Math.round(RENEWAL_TARGET/N_AGENTS);
   var PER_AGENT_REVIEW=Math.round(REVIEW_TARGET/N_AGENTS);
   var PER_AGENT_RENEWAL_IMP=Math.round(RENEWAL_TARGET_IMP/N_AGENTS);
-  var convTarget=82,convTargetImp=87;
+  var convTarget=convT.regular,convTargetImp=convT.improved;
 
   var agentSection='';
   if(isSup){
@@ -1965,7 +2025,6 @@ function renderOverview(){
   // hardcode 156/104 yg kebetulan sama kayak angka reference screenshot Muthia (placeholder lama,
   // bukan data riil). "0 jujur" kalau belum ada klaim approved sama sekali, no hardcode fallback.
   var mapsAch=valMaps, appsAch=valApps;
-  var convColor=pRenewal>=convTargetImp?'var(--grn)':(pRenewal>=convTarget?'var(--yel)':'var(--red)');
   function fmtRp(n){
     if(n>=1000000000)return'Rp '+(n/1000000000).toFixed(1).replace('.',',')+'M';
     if(n>=1000000)return'Rp '+(Math.round(n/1000000)).toLocaleString('id-ID')+' jt';
@@ -1981,8 +2040,6 @@ function renderOverview(){
     if(pR>=0.9)return{tier:0,reward:5000000,convBonus:0,      label:'Tier 0 (≥90% Regular)'};
     return{tier:-1,reward:0,convBonus:0,label:'Belum memenuhi'};
   }
-  var renewalPct=Math.round(renewalAch/RENEWAL_TARGET*100);
-  var renewalPctImp=Math.round(renewalAch/RENEWAL_TARGET_IMP*100);
   var mapsPct=Math.min(Math.round(mapsAch/REVIEW_TARGET*100),100);
   var appsPct=Math.min(Math.round(appsAch/REVIEW_TARGET*100),100);
 
@@ -2096,14 +2153,33 @@ function renderOverview(){
   var allTargetsNow=Targets.getAll();
   var visibleTargets=allTargetsNow.filter(function(t){return(t.period===currentMonthKey)&&(isSup||t.visibleToAgent);});
   var configurableTargetSection='';
-  function targetCard(label,actual,unit,targetVal,extraNote){
-    var pct=unit==='%'?actual:(targetVal?Math.round(actual/targetVal*100):0);
+  // CLM-11 Fase C: dipakai bareng targetCard() DI SINI dan 3 kartu "Target Tim Bulan Ini" di bawah --
+  // 1 tempat render 2-tier bar (Regular wajib, Improved opsional) biar konsisten, bukan duplikat markup.
+  function render2TierBars(actual,unit,tgtRegular,tgtImproved){
+    var pct=unit==='%'?actual:(tgtRegular?Math.round(actual/tgtRegular*100):0);
     var clr=pct>=100?'var(--grn)':(pct>=70?'var(--yel)':'var(--red)');
+    var hasImp=tgtImproved!=null;
+    var html='<div style="font-size:11px;color:var(--tx3)">'+(hasImp?'vs Regular':'Target:')+' <span style="color:var(--tx2);font-weight:600">'+fmtMetricVal(tgtRegular,unit)+'</span> <span style="color:'+clr+';font-weight:700">('+pct+'%)</span></div>'
+      +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+Math.min(pct,100)+'%;background:'+clr+'"></div></div>';
+    if(hasImp){
+      var pctImp=unit==='%'?actual:(tgtImproved?Math.round(actual/tgtImproved*100):0);
+      var clrImp=pctImp>=100?'var(--grn)':'var(--blu)';
+      html+='<div style="font-size:11px;color:var(--tx3);margin-top:5px">vs Improved <span style="color:var(--tx2);font-weight:600">'+fmtMetricVal(tgtImproved,unit)+'</span> <span style="color:'+clrImp+';font-weight:700">('+pctImp+'%)</span></div>'
+        +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+Math.min(pctImp,100)+'%;background:'+clrImp+'"></div></div>';
+    }
+    return html;
+  }
+  function targetCard(label,actual,unit,targetVal,extraNote,targetValImproved){
+    // 1-tier (mayoritas kartu existing, sblm Fase C): headline number diwarnain sesuai pct, PERSIS
+    // perilaku lama -- no regresi visual. 2-tier (Improved keisi): headline netral, warna pindah ke
+    // masing2 bar sendiri (Regular/Improved punya makna beda, nggak bisa direpresentasiin 1 warna).
+    var hasImp=targetValImproved!=null;
+    var pct1=unit==='%'?actual:(targetVal?Math.round(actual/targetVal*100):0);
+    var clr1=pct1>=100?'var(--grn)':(pct1>=70?'var(--yel)':'var(--red)');
     return'<div class="card">'
       +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+label+'</div>'
-      +'<div style="font-size:22px;font-weight:800;color:'+clr+'">'+fmtMetricVal(actual,unit)+'</div>'
-      +'<div style="font-size:11px;color:var(--tx3)">Target: '+fmtMetricVal(targetVal,unit)+' <span style="color:'+clr+';font-weight:700">('+pct+'%)</span></div>'
-      +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+Math.min(pct,100)+'%;background:'+clr+'"></div></div>'
+      +'<div style="font-size:22px;font-weight:800;color:'+(hasImp?'var(--tx)':clr1)+'">'+fmtMetricVal(actual,unit)+'</div>'
+      +'<div style="margin-top:4px">'+render2TierBars(actual,unit,targetVal,hasImp?targetValImproved:null)+'</div>'
       +(extraNote||'')
       +'</div>';
   }
@@ -2133,7 +2209,7 @@ function renderOverview(){
       // scope==='team'
       var resTeam=computeTargetActual(t,recs);
       if(hotLeadsNoData(resTeam))return targetCard(meta.label+' <span style="font-size:9px;color:var(--tx3)">(Team)</span>','—','','','<div style="font-size:11px;color:var(--tx3);margin-top:4px">Belum ada Hot Leads bulan ini</div>');
-      return targetCard(meta.label+' <span style="font-size:9px;color:var(--tx3)">(Team)</span>',resTeam.actual,resTeam.unit,resTeam.effectiveTarget);
+      return targetCard(meta.label+' <span style="font-size:9px;color:var(--tx3)">(Team)</span>',resTeam.actual,resTeam.unit,resTeam.effectiveTarget,null,resTeam.effectiveTargetImproved);
     }).join('');
     configurableTargetSection='<div class="ov-section"><div class="ov-section-title">🎯 Progres vs Target ('+currentMonthKey+' 26)</div><div class="grid4">'+progCards+'</div></div>';
   }
@@ -2152,6 +2228,9 @@ function renderOverview(){
       }else{
         var resT=computeTargetActual(t,recs);
         targetDisp=fmtMetricVal(t.targetValue,resT.unit);
+        // CLM-11 Fase C: tampilin tier Improved di tabel kelola kalau diisi, biar Sekar bisa cek sekilas
+        // tanpa buka modal edit tiap kali.
+        if(resT.effectiveTargetImproved!=null)targetDisp+=' <span style="color:var(--tx3)">/ Improved '+fmtMetricVal(resT.effectiveTargetImproved,resT.unit)+'</span>';
         actualDisp=fmtMetricVal(resT.actual,resT.unit);
       }
       return'<tr><td>'+meta.label+'</td><td>'+(meta.family==='activity'?'Activity':'Outcome')+'</td><td>'+scopeLabel+'</td><td>'+t.period+' 26</td>'
@@ -2200,57 +2279,74 @@ function renderOverview(){
     +'<div class="form-row" style="margin-bottom:8px;gap:6px">'+utTabsHtml+'</div>'
     +utBody+'</div>';
 
-  // ── Targets HTML (revenue/insentif — legacy Fase 2, biarkan apa adanya) ──
-  // upsell diitung LIVE dari FinancialsStore (v1 lock: count+attach, bukan Rupiah), lihat computeUpsellCountAttach
-  var upsellTeamFin=computeUpsellCountAttach(recs,currentMonthKey);
+  // CLM-11 Fase C: Attach Rate per Agen -- Sekar-only (sama gating kayak Kelola Target), breakdown
+  // per-orang dari formula v2 Opsi B yg sama dipakai kartu Upselling di atas.
+  var attachPerAgentSection='';
+  if(isSup){
+    var utDataForAttach=UpsellTeamStore.getMonth(currentMonthKey);
+    var attachRows=AGENTS.map(function(ag){
+      var ar=computePersonalAttachRate(currentMonthKey,ag);
+      if(!ar.synced)return'<tr><td>'+ag+'</td><td colspan="3" class="empty">Belum ada data</td></tr>';
+      return'<tr><td>'+ag+'</td><td>'+ar.denom+'</td><td>'+ar.dealCount+'</td><td>'+ar.pct+'%</td></tr>';
+    }).join('');
+    attachPerAgentSection='<div class="ov-section"><div class="ov-section-title">📊 Attach Rate per Agen ('+currentMonthKey+' 26)</div>'
+      +(!utDataForAttach
+        ?'<div class="card empty">Belum ada data — klik "📥 Sync Upsell Tim" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div>'
+        :'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+          +'<thead><tr><th>Agen</th><th>Renewal</th><th>Deal Upsell</th><th>Attach Rate</th></tr></thead>'
+          +'<tbody>'+attachRows+'</tbody></table></div></div>')
+      +'</div>';
+  }
+
+  // ── Targets HTML (revenue/insentif) ──
+  // CLM-11 Fase C: Upselling card ganti dari COUNT+attach (v1 lock lama) ke REVENUE Rupiah 2-tier,
+  // SAMA POLA Renewal Revenue -- deal-count/attach TETAP ada di metrik terpisah "Upsell Conversion"
+  // (Attach Rate) di panel "Progres vs Target" generik, nggak hilang cuma pindah tempat.
+  var upsellRevView=computeUpsellTeamView(currentMonthKey,'CLM_CC');
+  // CLM-11 Fase C: Projection closing = run-rate. currentMonthKey SELALU bulan berjalan REAL (dari
+  // new Date().getMonth()), jadi "hari berjalan" = tanggal hari ini aman dipakai langsung -- kartu ini
+  // cuma pernah nunjukin bulan yg lagi jalan, nggak ada mode "lihat bulan lain" di sini.
+  var todayDate=new Date();
+  var dayOfMonth=todayDate.getDate();
+  var daysInMonth=new Date(2026,todayDate.getMonth()+1,0).getDate();
+  function runRateProjection(mtdAmount){
+    return dayOfMonth?Math.round(mtdAmount/dayOfMonth*daysInMonth):0;
+  }
   var targetsSection='<div class="ov-section"><div class="ov-section-title">🎯 Target Tim Bulan Ini</div>'
     +'<div class="grid4" style="margin-bottom:4px">'
     // Renewal
     +'<div class="card">'
     +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">💰 Renewal Revenue</div>'
     +'<div style="font-size:11px;color:var(--tx3)">Pencapaian '+currentMonthKey+' 26</div>'
-    +'<div style="font-size:18px;font-weight:700;color:var(--grn)">'+fmtRp(renewalAch)+'</div>'
-    +'<div style="margin-top:6px">'
-    +'<div style="font-size:10px;color:var(--tx3)">vs Regular <span style="color:var(--tx2);font-weight:600">'+fmtRp(RENEWAL_TARGET)+'</span></div>'
-    +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+Math.min(renewalPct,100)+'%;background:var(--grn)"></div></div>'
-    +'<div style="font-size:10px;color:var(--tx2);margin-top:1px">'+renewalPct+'%</div>'
-    +'</div>'
-    +'<div style="margin-top:5px">'
-    +'<div style="font-size:10px;color:var(--tx3)">vs Improved <span style="color:var(--tx2);font-weight:600">'+fmtRp(RENEWAL_TARGET_IMP)+'</span></div>'
-    +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+Math.min(renewalPctImp,100)+'%;background:var(--blu)"></div></div>'
-    +'<div style="font-size:10px;color:var(--tx2);margin-top:1px">'+renewalPctImp+'%</div>'
-    +'</div>'
-    +'<div style="font-size:10px;color:var(--tx2);margin-top:5px">'+renewal+' outlet renewal</div>'
+    +'<div style="font-size:18px;font-weight:700;color:var(--tx)">'+fmtRp(renewalAch)+'</div>'
+    +'<div style="margin-top:6px">'+render2TierBars(renewalAch,'Rp',RENEWAL_TARGET,RENEWAL_TARGET_IMP)+'</div>'
+    +'<div style="font-size:10px;color:var(--tx2);margin-top:5px">📈 Proyeksi closing (run-rate): <strong>'+fmtRp(runRateProjection(renewalAch))+'</strong></div>'
+    +'<div style="font-size:10px;color:var(--tx2);margin-top:2px">'+renewal+' outlet renewal</div>'
     +'<div onclick="var n=this.nextElementSibling;n.style.display=n.style.display===\'none\'?\'\':\'none\'" style="cursor:pointer;font-size:11px;color:var(--pri);margin-top:6px;user-select:none">▸ Detail Renewal</div>'
     +'<div style="display:none;margin-top:4px">'+buildDetailList('renewal','grn')+'</div>'
     +'</div>'
-    // Upselling — v1 LOCKED: COUNT+attach (BUKAN Rupiah), live dari FinancialsStore. Fix 6 Jul (Ryry AC-G4).
+    // Upselling — CLM-11 Fase C: Rupiah revenue 2-tier (view Total Nasional CLM+CC), ganti dari
+    // count+attach v1 lock lama (Ryry AC-G4, 6 Jul).
     +'<div class="card">'
     +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">📈 Upselling ('+currentMonthKey+' 26)</div>'
-    +(upsellTeamFin.synced
-      ?('<div style="font-size:11px;color:var(--tx3)">Deal ber-upsell</div>'
-        +'<div style="font-size:18px;font-weight:700;color:var(--blu)">'+upsellTeamFin.count+' deal</div>'
-        +'<div style="margin-top:6px">'
-        +'<div style="font-size:10px;color:var(--tx3)">Attach rate</div>'
-        +'<div style="font-size:22px;font-weight:800;color:var(--tx)">'+upsellTeamFin.attachPct+'%</div>'
-        +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+upsellTeamFin.attachPct+'%;background:var(--blu)"></div></div>'
-        +'</div>'
-        +'<div style="font-size:10px;color:var(--tx2);margin-top:5px">'+upsellTeamFin.count+' dari '+upsellTeamFin.denom+' deal renewal</div>')
-      :'<div class="empty" style="font-size:11px;padding:8px 0">Belum ada data — klik "📥 Sync Financials" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div>')
+    +(!upsellRevView.synced
+      ?'<div class="empty" style="font-size:11px;padding:8px 0">Belum ada data — klik "📥 Sync Upsell Tim" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div>'
+      :!upRevT.configured
+        ?('<div style="font-size:11px;color:var(--tx3)">Pencapaian '+currentMonthKey+' 26 (Nasional CLM+CC)</div>'
+          +'<div style="font-size:18px;font-weight:700;color:var(--tx)">'+fmtRp(upsellRevView.revenue)+'</div>'
+          +'<div class="empty" style="font-size:11px;padding:6px 0;margin-top:4px">Belum ada target diset — Sekar bisa tambah lewat "⚙️ Kelola Target Configurable" (pilih metrik Upsell Revenue Nasional CLM+CC)</div>')
+        :('<div style="font-size:11px;color:var(--tx3)">Pencapaian '+currentMonthKey+' 26 (Nasional CLM+CC)</div>'
+          +'<div style="font-size:18px;font-weight:700;color:var(--tx)">'+fmtRp(upsellRevView.revenue)+'</div>'
+          +'<div style="margin-top:6px">'+render2TierBars(upsellRevView.revenue,'Rp',upRevT.regular,upRevT.improved)+'</div>'
+          +'<div style="font-size:10px;color:var(--tx2);margin-top:5px">📈 Proyeksi closing (run-rate): <strong>'+fmtRp(runRateProjection(upsellRevView.revenue))+'</strong></div>'
+          +'<div style="font-size:10px;color:var(--tx2);margin-top:2px">'+upsellRevView.dealCount+' deal ber-upsell</div>'))
     +'</div>'
     // Conversion
     +'<div class="card">'
     +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">🎯 Konversi Renewal</div>'
-    +'<div style="display:flex;align-items:baseline;gap:6px"><div style="font-size:26px;font-weight:800;color:'+convColor+'">'+pRenewal+'%</div>'
+    +'<div style="display:flex;align-items:baseline;gap:6px"><div style="font-size:26px;font-weight:800;color:var(--tx)">'+pRenewal+'%</div>'
     +'<div style="font-size:13px;color:var(--tx3)">aktual</div></div>'
-    +'<div style="margin-top:5px">'
-    +'<div style="font-size:10px;color:var(--tx3)">Target Regular: <strong>'+convTarget+'%</strong></div>'
-    +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+Math.min(pRenewal/convTarget*100,100)+'%;background:'+convColor+'"></div></div>'
-    +'</div>'
-    +'<div style="margin-top:4px">'
-    +'<div style="font-size:10px;color:var(--tx3)">Target Improved: <strong>'+convTargetImp+'%</strong></div>'
-    +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+Math.min(pRenewal/convTargetImp*100,100)+'%;background:'+(pRenewal>=convTargetImp?'var(--grn)':'var(--org)')+'"></div></div>'
-    +'</div>'
+    +'<div style="margin-top:5px">'+render2TierBars(pRenewal,'%',convTarget,convTargetImp)+'</div>'
     +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+renewal+' renewal dari '+total+' outlet</div>'
     +'<div onclick="var n=this.nextElementSibling;n.style.display=n.style.display===\'none\'?\'\':\'none\'" style="cursor:pointer;font-size:11px;color:var(--pri);margin-top:6px;user-select:none">▸ Detail Tidak Renewal</div>'
     +'<div style="display:none;margin-top:4px">'+buildDetailList('churn','red')+'</div>'
@@ -2328,6 +2424,7 @@ function renderOverview(){
     +agentTargetSection
     +configurableTargetSection
     +upsellTeamSection
+    +attachPerAgentSection
     +monthlySummarySection
     +backlogSection
     +agentSection;
@@ -3219,6 +3316,7 @@ function openTargetModal(id){
     return'<option value="'+m+'"'+(isSel?' selected':'')+'>'+m+' 26</option>';
   }).join('');
   document.getElementById('target-value-inp').value=t?t.targetValue:100;
+  document.getElementById('target-value-improved-inp').value=(t&&t.targetValueImproved!=null)?t.targetValueImproved:'';
   document.getElementById('target-default-inp').value=t?t.targetValue:10;
   document.getElementById('target-visible-chk').checked=t?!!t.visibleToAgent:true;
   var scopeSel=document.getElementById('target-scope-sel');
@@ -3259,6 +3357,10 @@ function saveTarget(){
   }else{
     payload.targetValue=parseFloat(document.getElementById('target-value-inp').value)||0;
     payload.personalOverrides={};
+    // CLM-11 Fase C: tier Improved opsional -- kosong = null (1-tier), diisi = 2-tier. Cuma relevan
+    // scope team (3 kartu "Target Tim Bulan Ini"), tapi disimpen generik di skema (lihat computeTargetActual).
+    var impRaw=document.getElementById('target-value-improved-inp').value;
+    payload.targetValueImproved=impRaw!==''?(parseFloat(impRaw)||0):null;
   }
   if(targetEditId)Targets.update(targetEditId,payload);
   else Targets.add(payload);
