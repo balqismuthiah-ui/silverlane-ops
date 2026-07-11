@@ -669,6 +669,67 @@ function computeUpsellTeamView(period,viewKey){
   return{synced:true,revenue:revenue,dealCount:dealCount,renewalCount:renewalCount,attachPct:renewalCount?Math.round(dealCount/renewalCount*100):0,byType:byType};
 }
 
+// CLM-11 Fase C: Daily view -- bucket classification per baris renewalsRaw/upsellRaw (field `region`
+// dari GAS, kolom INV_Region mentah). Rule CONFIRMED Rahul (11 Jul, write-test data Jul real, lihat
+// memory spec-clm11): literal "Ops" (37.4% baris, dominan) = tim CLM & CC, literal "CX" (cuma 1.1%) =
+// tim TC -- GABUNGAN keduanya = SEMUA transaksi lewat agent (roster "Agent CX" CLM+CC+TC), makanya
+// di-treat SATU bucket "CX". "Self Onboard" = SO. SISANYA (Telesales/Metro/Sumatera/Jabar-Banten/
+// blank/dst) = "Sales" -- BARU, sebelumnya nggak pernah di-track (Rahul: "bagus juga kalau dimasukin").
+function dailyViewBucketOf(region){
+  if(region==='Ops'||region==='CX')return'CX';
+  if(region==='Self Onboard')return'SO';
+  return'SALES';
+}
+var DAILY_VIEW_BUCKETS={NASIONAL:{label:'Nasional',color:'var(--pri)'},CX:{label:'CX',color:'var(--grn)'},SO:{label:'Self Onboard',color:'var(--blu)'},SALES:{label:'Sales',color:'var(--org)'}};
+// Seri KUMULATIF harian (running total, bukan per-hari) per bucket dari raw rows -- kumulatif dipilih
+// biar tren "MTD berjalan" gampang dibaca (naik terus), bukan zig-zag harian yg susah dibandingin.
+// Return {NASIONAL:[...],CX:[...],SO:[...],SALES:[...]}, index 0 = hari 1.
+function buildDailyCumulativeSeries(rawRows,daysInMonth){
+  var daily={NASIONAL:new Array(daysInMonth).fill(0),CX:new Array(daysInMonth).fill(0),SO:new Array(daysInMonth).fill(0),SALES:new Array(daysInMonth).fill(0)};
+  (rawRows||[]).forEach(function(r){
+    if(!r.paidDate)return;
+    var day=parseInt(r.paidDate.slice(8,10),10);
+    if(!day||day<1||day>daysInMonth)return;
+    var bucket=dailyViewBucketOf(r.region);
+    daily.NASIONAL[day-1]+=r.subtotal;
+    daily[bucket][day-1]+=r.subtotal;
+  });
+  Object.keys(daily).forEach(function(k){
+    var running=0;
+    for(var i=0;i<daysInMonth;i++){running+=daily[k][i];daily[k][i]=running;}
+  });
+  return daily;
+}
+// SVG chart ringan (app ini emang dependency-free, no Chart.js/D3) -- 2 polyline: bulan lalu (penuh,
+// putus-putus abu) vs bulan ini (solid berwarna, CUMA sampai hari ini -- TIDAK diproyeksiin ke hari
+// depan biar nggak menyesatkan/keliatan kayak data beneran).
+function renderDailyTrendSVG(curSeries,prevSeries,daysInPrev,dayOfMonthNow,color){
+  var W=680,H=200,padL=46,padR=10,padT=10,padB=22;
+  var plotW=W-padL-padR,plotH=H-padT-padB;
+  var maxDays=Math.max(daysInPrev,dayOfMonthNow);
+  var maxVal=0;
+  for(var i=0;i<daysInPrev;i++)maxVal=Math.max(maxVal,prevSeries[i]);
+  for(var i=0;i<dayOfMonthNow;i++)maxVal=Math.max(maxVal,curSeries[i]);
+  if(maxVal<=0)maxVal=1;
+  function xAt(day){return maxDays>1?(padL+(day-1)/(maxDays-1)*plotW):padL;}
+  function yAt(val){return padT+plotH-(val/maxVal)*plotH;}
+  var prevPts=[];
+  for(var d=1;d<=daysInPrev;d++)prevPts.push(xAt(d)+','+yAt(prevSeries[d-1]));
+  var curPts=[];
+  for(var d=1;d<=dayOfMonthNow;d++)curPts.push(xAt(d)+','+yAt(curSeries[d-1]));
+  var grid='',labels='';
+  for(var d=1;d<=maxDays;d+=5){
+    var x=xAt(d);
+    grid+='<line x1="'+x+'" y1="'+padT+'" x2="'+x+'" y2="'+(padT+plotH)+'" stroke="var(--bdr)" stroke-width="1"/>';
+    labels+='<text x="'+x+'" y="'+(H-6)+'" font-size="9" fill="var(--tx3)" text-anchor="middle">'+d+'</text>';
+  }
+  return'<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:200px;display:block">'
+    +grid+labels
+    +(prevPts.length>1?'<polyline points="'+prevPts.join(' ')+'" fill="none" stroke="var(--tx3)" stroke-width="2" stroke-dasharray="4,3"/>':'')
+    +(curPts.length>1?'<polyline points="'+curPts.join(' ')+'" fill="none" stroke="'+color+'" stroke-width="2.5"/>':'')
+    +'</svg>';
+}
+
 // CLM-10 §1: Invoice Tracker -- join row mentah "Data" tab ke nama agen (short name, SAMA persis
 // yg dipake r.assignedAgent di seluruh app, mis. "Erizka"). Composite LOCKED (Ubay, 9 Jul):
 // PRIMARY local-part email (strip @domain, case-fold -- nangkep .com/.id keterlanjuran-daftar TANPA
@@ -1545,6 +1606,8 @@ var GC_NEEDCHECK_KATEGORI='Need check Get Contact'; // CLM-09: samain persis str
 var GAS_URL='https://script.google.com/macros/s/AKfycbx6SYfl0O6D3RgMkzZpT17_OxuuClhaOitq9ILa1ryYCX-qlznSz0d9iw4q8bGS68WqWQ/exec';
 var syncMonthFilter='';
 var upsellTeamViewSel='CLM'; // CLM-10 §3: view aktif Multi-team Upsell Tracker (CLM/CLM_CC/TC/TOTAL_CX)
+var dailyViewBucketSel='NASIONAL'; // CLM-11 Fase C: bucket aktif Daily view (NASIONAL/CX/SO/SALES)
+var dailyViewMetricSel='renewal'; // CLM-11 Fase C: metrik aktif Daily view (renewal/upsell revenue)
 // CLM-10 §1: Invoice Tracker state -- invAgentFilter cuma relevan buat leader (pola sama wsAgentFilter)
 var invSearch='',invStatusFilter=[],invAgentFilter=[];
 var invPage=0;
@@ -1921,6 +1984,13 @@ function renderOverview(){
   // CLM-11 A1: funnel MoM — cohort bulan-ini vs bulan-lalu (mismatch tahun BUKAN dicover, lihat memory
   // "A1 YoY structural nggak bisa jalan" — cohortMonths BUKAN tahun-aware, cuma valid buat adjacent-month).
   var prevMonthKey=MONTH_KEYS[(new Date().getMonth()+11)%12];
+  // CLM-11 Fase C: dipakai bareng buat Projection run-rate DAN Daily view (bucket trend chart) --
+  // currentMonthKey SELALU bulan berjalan REAL, jadi "hari berjalan" = tanggal hari ini aman dipakai
+  // langsung, nggak ada mode "lihat bulan lain" di panel-panel yg makai variabel ini.
+  var todayDate=new Date();
+  var dayOfMonth=todayDate.getDate();
+  var daysInMonth=new Date(2026,todayDate.getMonth()+1,0).getDate();
+  var daysInPrevMonth=new Date(2026,(todayDate.getMonth()+11)%12+1,0).getDate();
   var funnelHasCohortData=myRecs.some(function(r){return!!(r.cohortMonths||r.bulan);});
   var funnelNow=computeFunnelBreakdown(myRecs,funnelHasCohortData?currentMonthKey:null);
   var funnelPrev=funnelHasCohortData?computeFunnelBreakdown(myRecs,prevMonthKey):null;
@@ -2279,6 +2349,53 @@ function renderOverview(){
     +'<div class="form-row" style="margin-bottom:8px;gap:6px">'+utTabsHtml+'</div>'
     +utBody+'</div>';
 
+  // CLM-11 Fase C: Daily view -- dashboard-native (BUKAN matrix 31-kolom Excel), trend chart bulan-ini
+  // (solid, cuma sampai hari ini) vs bulan-lalu (putus-putus, penuh) per bucket Nasional/CX/SO/Sales,
+  // + tabel ringkas semua bucket sekaligus dgn delta Rp "di titik hari yang sama" (bukan cuma %).
+  var dvCurUT=UpsellTeamStore.getMonth(currentMonthKey);
+  var dvPrevUT=UpsellTeamStore.getMonth(prevMonthKey);
+  var dailyViewSection='';
+  if(!dvCurUT){
+    dailyViewSection='<div class="ov-section"><div class="ov-section-title">📅 Daily View ('+currentMonthKey+' 26)</div>'
+      +'<div class="card empty">Belum ada data — klik "📥 Sync Upsell Tim" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div></div>';
+  }else{
+    var dvMetricField=dailyViewMetricSel==='upsell'?'upsellRaw':'renewalsRaw';
+    var dvCurSeries=buildDailyCumulativeSeries(dvCurUT[dvMetricField],daysInMonth);
+    var dvPrevSeries=dvPrevUT?buildDailyCumulativeSeries(dvPrevUT[dvMetricField],daysInPrevMonth):null;
+    var dvBucketTabsHtml=Object.keys(DAILY_VIEW_BUCKETS).map(function(k){
+      var cls=k===dailyViewBucketSel?'btn-pri':'btn-sec';
+      return'<button class="btn '+cls+'" style="padding:4px 10px;font-size:11px" data-act="daily-view-bucket" data-bucket="'+k+'">'+DAILY_VIEW_BUCKETS[k].label+'</button>';
+    }).join('');
+    var dvMetricTabsHtml=['renewal','upsell'].map(function(m){
+      var cls=m===dailyViewMetricSel?'btn-pri':'btn-sec';
+      return'<button class="btn '+cls+'" style="padding:4px 10px;font-size:11px" data-act="daily-view-metric" data-metric="'+m+'">'+(m==='renewal'?'Renewal':'Upsell')+'</button>';
+    }).join('');
+    var dvChartHtml=renderDailyTrendSVG(dvCurSeries[dailyViewBucketSel],dvPrevSeries?dvPrevSeries[dailyViewBucketSel]:new Array(daysInPrevMonth).fill(0),daysInPrevMonth,dayOfMonth,DAILY_VIEW_BUCKETS[dailyViewBucketSel].color);
+    // Tabel ringkas: SEMUA bucket sekaligus (nggak cuma yg lagi dipilih di chart), delta Rp "di titik
+    // hari yang sama" -- bandingin kumulatif s.d. hari ke-X bulan ini vs kumulatif s.d. hari ke-X yg
+    // SAMA bulan lalu (bukan bulan lalu penuh, biar apple-to-apple).
+    var sameDayIdx=Math.min(dayOfMonth,daysInPrevMonth)-1;
+    var dvRows=Object.keys(DAILY_VIEW_BUCKETS).map(function(k){
+      var curVal=dvCurSeries[k][dayOfMonth-1]||0;
+      var prevVal=(dvPrevSeries&&sameDayIdx>=0)?(dvPrevSeries[k][sameDayIdx]||0):0;
+      var deltaRp=curVal-prevVal;
+      var deltaPct=prevVal?Math.round(deltaRp/prevVal*100):(curVal>0?100:0);
+      var deltaColor=deltaRp>=0?'var(--grn)':'var(--red)';
+      return'<tr><td>'+DAILY_VIEW_BUCKETS[k].label+'</td><td>'+fmtRp(curVal)+'</td><td>'+fmtRp(prevVal)+'</td>'
+        +'<td style="color:'+deltaColor+'">'+(deltaRp>=0?'+':'')+fmtRp(deltaRp)+' ('+(deltaPct>=0?'+':'')+deltaPct+'%)</td></tr>';
+    }).join('');
+    dailyViewSection='<div class="ov-section"><div class="ov-section-title">📅 Daily View ('+currentMonthKey+' 26 vs '+prevMonthKey+' 26)</div>'
+      +'<div class="card">'
+      +'<div class="form-row" style="margin-bottom:8px;gap:6px">'+dvMetricTabsHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvBucketTabsHtml+'</div>'
+      +dvChartHtml
+      +'<div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--tx3)"><span>▬ '+currentMonthKey+' 26 (s.d. hari ini)</span><span>┄ '+prevMonthKey+' 26 (penuh)</span></div>'
+      +'</div>'
+      +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap"><table class="summary-tbl">'
+      +'<thead><tr><th>Bucket</th><th>'+currentMonthKey+' 26 (s.d. hari ke-'+dayOfMonth+')</th><th>'+prevMonthKey+' 26 (s.d. hari ke-'+Math.min(dayOfMonth,daysInPrevMonth)+')</th><th>Selisih</th></tr></thead>'
+      +'<tbody>'+dvRows+'</tbody></table></div></div>'
+      +'</div>';
+  }
+
   // CLM-11 Fase C: Attach Rate per Agen -- Sekar-only (sama gating kayak Kelola Target), breakdown
   // per-orang dari formula v2 Opsi B yg sama dipakai kartu Upselling di atas.
   var attachPerAgentSection='';
@@ -2303,12 +2420,6 @@ function renderOverview(){
   // SAMA POLA Renewal Revenue -- deal-count/attach TETAP ada di metrik terpisah "Upsell Conversion"
   // (Attach Rate) di panel "Progres vs Target" generik, nggak hilang cuma pindah tempat.
   var upsellRevView=computeUpsellTeamView(currentMonthKey,'CLM_CC');
-  // CLM-11 Fase C: Projection closing = run-rate. currentMonthKey SELALU bulan berjalan REAL (dari
-  // new Date().getMonth()), jadi "hari berjalan" = tanggal hari ini aman dipakai langsung -- kartu ini
-  // cuma pernah nunjukin bulan yg lagi jalan, nggak ada mode "lihat bulan lain" di sini.
-  var todayDate=new Date();
-  var dayOfMonth=todayDate.getDate();
-  var daysInMonth=new Date(2026,todayDate.getMonth()+1,0).getDate();
   function runRateProjection(mtdAmount){
     return dayOfMonth?Math.round(mtdAmount/dayOfMonth*daysInMonth):0;
   }
@@ -2424,6 +2535,7 @@ function renderOverview(){
     +agentTargetSection
     +configurableTargetSection
     +upsellTeamSection
+    +dailyViewSection
     +attachPerAgentSection
     +monthlySummarySection
     +backlogSection
@@ -4680,7 +4792,10 @@ function syncUpsellTeamOnly(monthParam){
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
       if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
-      UpsellTeamStore.setMonth(mon,{roster:json.roster||[],renewals:json.renewals||[],upsell:json.upsell||[]});
+      // CLM-11 Fase C (Daily view): tambah renewalsRaw/upsellRaw -- SEBELUMNYA GAS nggak ngasih field
+      // ini sama sekali, sekarang udah ada (lihat gas_full_clm07_auth.md), tapi handler ini masih
+      // literally cherry-pick 3 field lama doang, bakal DIAM-DIAM BUANG field baru kalau nggak ditambah.
+      UpsellTeamStore.setMonth(mon,{roster:json.roster||[],renewals:json.renewals||[],upsell:json.upsell||[],renewalsRaw:json.renewalsRaw||[],upsellRaw:json.upsellRaw||[]});
       renderTab(currentTab);
       toast('Upsell Tim '+mon+' tersimpan: '+(json.upsell?json.upsell.length:0)+' baris agregat',5000);
     }).catch(function(err){
@@ -4895,6 +5010,8 @@ tabContent.addEventListener('click',function(e){
     else if(act==='toggle-agent-status')toggleAgentStatus(agid);
     else if(act==='edit-target')openTargetModal(id);
     else if(act==='upsell-team-view'){upsellTeamViewSel=btn.dataset.view;renderTab('overview');}
+    else if(act==='daily-view-bucket'){dailyViewBucketSel=btn.dataset.bucket;renderTab('overview');}
+    else if(act==='daily-view-metric'){dailyViewMetricSel=btn.dataset.metric;renderTab('overview');}
     else if(act==='reassign-invoice')openInvReassignModal(id);
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab('overview');}}
     else if(act==='toggle-wl'){
