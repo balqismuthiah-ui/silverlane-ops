@@ -440,6 +440,12 @@ tr:hover td{background:var(--sur2)}
         <input type="number" id="target-default-inp" min="0" placeholder="Contoh: 10">
         <label style="margin-top:6px">Override per Agen (opsional — kosongkan utk pakai default)</label>
         <div id="target-override-rows"></div>
+        <div id="target-sku-gate-wrap" style="display:none">
+          <label style="margin-top:6px">Min Komitmen (bulan, opsional — kosongkan = tanpa syarat)</label>
+          <input type="number" id="target-sku-mincommit-inp" min="0" placeholder="Contoh: 12">
+          <label style="margin-top:6px">Min Nilai per Deal (Rp, opsional — kosongkan = tanpa syarat)</label>
+          <input type="number" id="target-sku-minvalue-inp" min="0" placeholder="Contoh: 500000">
+        </div>
       </div>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">
         <input type="checkbox" id="target-visible-chk" style="width:auto;margin:0" checked>
@@ -581,6 +587,14 @@ const TARGET_METRICS={
   'upsell_revenue_nasional':{family:'outcome',label:'Upsell Revenue (Nasional CLM+CC)'},
   'renewal_conversion_pct':{family:'outcome',label:'Konversi Renewal (%)'}
 };
+// CLM-11 Fase D2: lookup metadata generik buat SEMUA metricKey, termasuk 'sku:<addonType>' dinamis
+// yg SENGAJA nggak masuk TARGET_METRICS statis (SKU category nambah terus, bukan fixed list -- lihat
+// memory). Dipakai gantiin akses `TARGET_METRICS[t.metricKey]||{...}` langsung di tempat2 render.
+function targetMetricMeta(metricKey){
+  if(TARGET_METRICS[metricKey])return TARGET_METRICS[metricKey];
+  if(metricKey.indexOf('sku:')===0)return{family:'outcome',label:metricKey.slice(4)+' (SKU)'};
+  return{family:'?',label:metricKey};
+}
 // CLM-04 Fase 2: 5 metrik duit — join Outlet_ID (case, scope-filtered) -> FinancialsStore (per bulan).
 // GAS nyediain per-outlet netRevenue/skuQty/isUpsell; scope Team/Personal filter case DULU (recs udah
 // di-filter caller), baru ambil financials row yg Outlet_ID-nya ADA di scope itu.
@@ -866,6 +880,37 @@ function levenshtein(a,b){
   }
   return dp[m][n];
 }
+// CLM-11 B1: fuzzy-match creatorName (billing, tanpa email) -> nama agen. Awalnya inner closure di
+// computePersonalBillingCount doang; ditarik jadi shared function CLM-11 Fase D2 krn computeSkuTargetCount
+// butuh join yg SAMA PERSIS (bukan duplikat ~20 baris logic matching yg sama).
+// QA fix ronde 2 (Ryry) — threshold <=2 kelonggaran buat token PENDEK (5-6 huruf): "rizki" (nama
+// ASING, "Rizki Febriansyah", bukan salah satu 8 agen) vs "erizka" = distance 2, false-positive
+// ke-absorb ke Erizka padahal beda orang. Diperketat <=1 (masih nutup "fauziayah"~"fauziyah"=1)
+// + tie-break: kalau >1 agen KEBETULAN sama-sama dalam threshold, return null (unmatched) daripada
+// asal ambil bestDist pertama -- "0 jujur" lebih aman drpd nge-geser ke agen yang salah.
+function matchAgentFuzzy(creatorName,agents){
+  var direct=invMatchAgentName({creatorName:creatorName,creatorEmail:null},agents);
+  if(direct)return direct;
+  var tokens=String(creatorName||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if(!tokens.length)return null;
+  var FUZZY_THRESHOLD=1;
+  var candidates=[]; // {name,dist} tiap agen yg dalam threshold (bukan cuma bestDist tunggal)
+  agents.forEach(function(ag){
+    var agToken=normLocalPart(ag.email).split('.')[0];
+    if(!agToken)return;
+    var bestForAgent=99;
+    tokens.forEach(function(tok){
+      var dist=levenshtein(tok,agToken);
+      if(dist<bestForAgent)bestForAgent=dist;
+    });
+    if(bestForAgent<=FUZZY_THRESHOLD)candidates.push({name:ag.name,dist:bestForAgent});
+  });
+  if(!candidates.length)return null;
+  candidates.sort(function(a,b){return a.dist-b.dist;});
+  // Ambigu: >1 agen beda punya jarak SAMA-SAMA minimum -> unmatched, jangan nebak.
+  if(candidates.length>1&&candidates[1].dist===candidates[0].dist)return null;
+  return candidates[0].name;
+}
 // CLM-11 B1: renewal_count/upsell_approved_count Personal-scope — ganti sumber ke ground-truth
 // billing CLM-10 (tab RENEWAL/UPSELL join ke agen via UpsellTeamStore), BUKAN lagi response.category/
 // CLM-03 approval flag. TIDAK ubah invMatchAgentName shared (Invoice Tracker §1 udah QA-approved+
@@ -877,36 +922,8 @@ function computePersonalBillingCount(metricKey,period,agentName){
   var fin=period?UpsellTeamStore.getMonth(period):null;
   if(!fin||!fin.roster||!fin.roster.length)return{actual:0,unit:'count',synced:false};
   var agents=AgentsConfig.getAll();
-  // QA fix ronde 2 (Ryry) — threshold <=2 kelonggaran buat token PENDEK (5-6 huruf): "rizki" (nama
-  // ASING, "Rizki Febriansyah", bukan salah satu 8 agen) vs "erizka" = distance 2, false-positive
-  // ke-absorb ke Erizka padahal beda orang. Diperketat <=1 (masih nutup "fauziayah"~"fauziyah"=1)
-  // + tie-break: kalau >1 agen KEBETULAN sama-sama dalam threshold, return null (unmatched) daripada
-  // asal ambil bestDist pertama -- "0 jujur" lebih aman drpd nge-geser ke agen yang salah.
-  function matchAgentFuzzy(creatorName){
-    var direct=invMatchAgentName({creatorName:creatorName,creatorEmail:null},agents);
-    if(direct)return direct;
-    var tokens=String(creatorName||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if(!tokens.length)return null;
-    var FUZZY_THRESHOLD=1;
-    var candidates=[]; // {name,dist} tiap agen yg dalam threshold (bukan cuma bestDist tunggal)
-    agents.forEach(function(ag){
-      var agToken=normLocalPart(ag.email).split('.')[0];
-      if(!agToken)return;
-      var bestForAgent=99;
-      tokens.forEach(function(tok){
-        var dist=levenshtein(tok,agToken);
-        if(dist<bestForAgent)bestForAgent=dist;
-      });
-      if(bestForAgent<=FUZZY_THRESHOLD)candidates.push({name:ag.name,dist:bestForAgent});
-    });
-    if(!candidates.length)return null;
-    candidates.sort(function(a,b){return a.dist-b.dist;});
-    // Ambigu: >1 agen beda punya jarak SAMA-SAMA minimum -> unmatched, jangan nebak.
-    if(candidates.length>1&&candidates[1].dist===candidates[0].dist)return null;
-    return candidates[0].name;
-  }
   function matchesAgent(creatorName){
-    return matchAgentFuzzy(creatorName)===agentName;
+    return matchAgentFuzzy(creatorName,agents)===agentName;
   }
   if(metricKey==='renewal_count'){
     var cnt=(fin.renewals||[]).filter(function(r){return matchesAgent(r.creatorName);}).reduce(function(s,r){return s+r.count;},0);
@@ -917,6 +934,26 @@ function computePersonalBillingCount(metricKey,period,agentName){
     return{actual:cnt2,unit:'count',synced:true};
   }
   return{actual:0,unit:'count',synced:false};
+}
+// CLM-11 Fase D2: Upsell per-SKU Target achievement -- pola arsitektur SAMA PERSIS
+// computePersonalBillingCount (B1) di atas, reuse fuzzy-match join yg sama (matchAgentFuzzy).
+// Beda dari B1: (a) filter tambahan per addonType (SKU spesifik, bukan semua upsell), (b) gating
+// OPSIONAL minCommitmentMonths/minValuePerDeal dievaluasi PER-BARIS deal (bukan agregat) -- kalau
+// salah satu/dua-duanya diisi, baris cuma ke-hitung ke progress KALAU qty>=minCommitmentMonths DAN
+// subtotal>=minValuePerDeal (LOCK brief Muthia: deal yg gagal gating TETAP masuk total revenue di
+// tempat lain, cuma nggak ke-hitung progress qty-target SKU ini doang).
+function computeSkuTargetCount(addonType,period,agentName,minCommitmentMonths,minValuePerDeal){
+  var fin=period?UpsellTeamStore.getMonth(period):null;
+  if(!fin||!fin.upsellRaw||!fin.upsellRaw.length)return{actual:0,unit:'count',synced:false};
+  var agents=AgentsConfig.getAll();
+  var cnt=fin.upsellRaw.filter(function(r){
+    if(r.addonType!==addonType)return false;
+    if(matchAgentFuzzy(r.creatorName,agents)!==agentName)return false;
+    if(minCommitmentMonths!=null&&!(r.qty>=minCommitmentMonths))return false;
+    if(minValuePerDeal!=null&&!(r.subtotal>=minValuePerDeal))return false;
+    return true;
+  }).length;
+  return{actual:cnt,unit:'count',synced:true};
 }
 // CLM-11 Fase C: Attach Rate per-agen -- formula v2 Opsi B PERSIS (numerator=semua deal upsell,
 // denominator=renewal count), cuma di-slice per orang lewat REUSE computePersonalBillingCount 2x
@@ -945,6 +982,16 @@ function computeTargetActual(target,allRecs,agentName){
       var overrides0=target.personalOverrides||{};
       res0.effectiveTarget=(overrides0[agentName]!=null)?overrides0[agentName]:target.targetValue;
       return res0;
+    }
+    // CLM-11 Fase D2: Upsell per-SKU Target -- metricKey konvensi 'sku:<addonType>' (dinamis, BUKAN
+    // masuk TARGET_METRICS statis krn SKU category nambah terus -- lihat memory). Pola bypass SAMA
+    // PERSIS B1 di atas (butuh UpsellTeamStore, bukan `recs` CRM biasa).
+    if(agentName&&target.metricKey.indexOf('sku:')===0){
+      var addonType=target.metricKey.slice(4);
+      var resSku=computeSkuTargetCount(addonType,period,agentName,target.minCommitmentMonths,target.minValuePerDeal);
+      var overridesSku=target.personalOverrides||{};
+      resSku.effectiveTarget=(overridesSku[agentName]!=null)?overridesSku[agentName]:target.targetValue;
+      return resSku;
     }
     var scopeRecs=agentName?periodRecs.filter(function(r){return r.assignedAgent===agentName;}):periodRecs;
     var res=computeMetricRaw(target.metricKey,scopeRecs,period);
@@ -2255,7 +2302,7 @@ function renderOverview(){
   }
   if(visibleTargets.length){
     var progCards=visibleTargets.map(function(t){
-      var meta=TARGET_METRICS[t.metricKey]||{label:t.metricKey};
+      var meta=targetMetricMeta(t.metricKey);
       var scopeTag='<span style="font-size:9px;color:var(--tx3)"> ('+(t.scope==='personal'?'Personal':'Team')+')</span>';
       // AC-B3-4: hot_leads_conversion + denom 0 (bulan/agen tanpa hot leads sama sekali) -> "—"
       // jujur, BUKAN "0%" yg ambigu sama "genuinely 0% conversion padahal ada Hot Leads".
@@ -2286,7 +2333,7 @@ function renderOverview(){
   // Panel kelola target (Sekar only) — semua target semua periode, CRUD
   if(isSup){
     var mgmtRows=allTargetsNow.map(function(t){
-      var meta=TARGET_METRICS[t.metricKey]||{label:t.metricKey,family:'?'};
+      var meta=targetMetricMeta(t.metricKey);
       var scopeLabel=t.scope==='personal'?'Personal':'Team';
       var targetDisp,actualDisp;
       if(t.scope==='personal'){
@@ -3418,10 +3465,16 @@ function openTargetModal(id){
   var t=id?Targets.getAll().find(function(x){return x.id===id;}):null;
   document.getElementById('target-modal-title').textContent=id?'Edit Target':'Tambah Target';
   var metricSel=document.getElementById('target-metric-sel');
-  metricSel.innerHTML=Object.keys(TARGET_METRICS).map(function(k){
+  var baseMetricOptions=Object.keys(TARGET_METRICS).map(function(k){
     var m=TARGET_METRICS[k];
     return'<option value="'+k+'"'+(t&&t.metricKey===k?' selected':'')+'>'+(m.family==='activity'?'[Activity] ':'[Outcome] ')+m.label+'</option>';
   }).join('');
+  var skuTypes=getDistinctSkuTypes();
+  var skuMetricOptions=skuTypes.length?('<optgroup label="Upsell per-SKU (Personal)">'+skuTypes.map(function(st){
+    var key='sku:'+st;
+    return'<option value="'+key+'"'+(t&&t.metricKey===key?' selected':'')+'>'+st+'</option>';
+  }).join('')+'</optgroup>'):'';
+  metricSel.innerHTML=baseMetricOptions+skuMetricOptions;
   var periodSel=document.getElementById('target-period-sel');
   periodSel.innerHTML=MONTH_KEYS.map(function(m){
     var isSel=t?(t.period===m):(MONTH_KEYS[new Date().getMonth()]===m);
@@ -3434,8 +3487,20 @@ function openTargetModal(id){
   var scopeSel=document.getElementById('target-scope-sel');
   scopeSel.value=t?(t.scope||'team'):'team';
   renderTargetOverrideRows(t&&t.personalOverrides||{});
+  document.getElementById('target-sku-mincommit-inp').value=(t&&t.minCommitmentMonths!=null)?t.minCommitmentMonths:'';
+  document.getElementById('target-sku-minvalue-inp').value=(t&&t.minValuePerDeal!=null)?t.minValuePerDeal:'';
   toggleTargetScopeWrap();
   openModal('target-modal');
+}
+// CLM-11 Fase D2: distinct addonType lintas semua bulan tersinkron di UpsellTeamStore, dipakai
+// buat optgroup dinamis di dropdown Metrik (SKU category dinamis, nambah terus -- bukan katalog statis).
+function getDistinctSkuTypes(){
+  var all=UpsellTeamStore.getAll();
+  var set={};
+  Object.keys(all).forEach(function(m){
+    (all[m].upsell||[]).forEach(function(u){if(u.addonType)set[u.addonType]=true;});
+  });
+  return Object.keys(set).sort();
 }
 function renderTargetOverrideRows(overrides){
   var wrap=document.getElementById('target-override-rows');
@@ -3448,9 +3513,17 @@ function renderTargetOverrideRows(overrides){
   }).join('');
 }
 function toggleTargetScopeWrap(){
-  var isPersonal=document.getElementById('target-scope-sel').value==='personal';
+  var metricKey=document.getElementById('target-metric-sel').value;
+  var isSku=metricKey.indexOf('sku:')===0;
+  var scopeSel=document.getElementById('target-scope-sel');
+  // CLM-11 Fase D2: target per-SKU selalu scope personal (reuse render "Progres vs Target" existing
+  // yang udah nampilin breakdown per-agen -- itu udah jadi "matrix agen x SKU" yg diminta, nol UI baru).
+  scopeSel.disabled=isSku;
+  if(isSku)scopeSel.value='personal';
+  var isPersonal=scopeSel.value==='personal';
   document.getElementById('target-team-wrap').style.display=isPersonal?'none':'';
   document.getElementById('target-personal-wrap').style.display=isPersonal?'':'none';
+  document.getElementById('target-sku-gate-wrap').style.display=isSku?'':'none';
 }
 function saveTarget(){
   var metricKey=document.getElementById('target-metric-sel').value;
@@ -3466,6 +3539,12 @@ function saveTarget(){
       if(inp.value!=='')overrides[inp.dataset.agent]=parseFloat(inp.value)||0;
     });
     payload.personalOverrides=overrides;
+    if(metricKey.indexOf('sku:')===0){
+      var mcRaw=document.getElementById('target-sku-mincommit-inp').value;
+      payload.minCommitmentMonths=mcRaw!==''?(parseFloat(mcRaw)||0):null;
+      var mvRaw=document.getElementById('target-sku-minvalue-inp').value;
+      payload.minValuePerDeal=mvRaw!==''?(parseFloat(mvRaw)||0):null;
+    }
   }else{
     payload.targetValue=parseFloat(document.getElementById('target-value-inp').value)||0;
     payload.personalOverrides={};
@@ -5319,6 +5398,7 @@ document.getElementById('tpl-save-btn').addEventListener('click',saveTpl);
 document.getElementById('agent-save-btn').addEventListener('click',saveAgent);
 document.getElementById('target-save-btn').addEventListener('click',saveTarget);
 document.getElementById('target-scope-sel').addEventListener('change',toggleTargetScopeWrap);
+document.getElementById('target-metric-sel').addEventListener('change',toggleTargetScopeWrap);
 
 // Bulk modal save
 document.getElementById('bulk-save-btn').addEventListener('click',function(){
