@@ -430,10 +430,24 @@ tr:hover td{background:var(--sur2)}
         <option value="personal">Personal (target per-agen, default sama rata + bisa override)</option>
       </select>
       <div id="target-team-wrap">
-        <label>Nilai Target Regular (Team)</label>
-        <input type="number" id="target-value-inp" min="0" placeholder="Contoh: 100">
-        <label style="margin-top:6px">Nilai Target Improved (opsional — stretch goal, kosongkan kalau cuma 1 level)</label>
-        <input type="number" id="target-value-improved-inp" min="0" placeholder="Contoh: 120">
+        <div id="target-team-flat-wrap">
+          <label>Nilai Target Regular (Team)</label>
+          <input type="number" id="target-value-inp" min="0" placeholder="Contoh: 100">
+          <label style="margin-top:6px">Nilai Target Improved (opsional — stretch goal, kosongkan kalau cuma 1 level)</label>
+          <input type="number" id="target-value-improved-inp" min="0" placeholder="Contoh: 120">
+        </div>
+        <div id="target-mrr-paket-wrap" style="display:none">
+          <label>Target MRR Starter Basic (Rp)</label>
+          <input type="number" id="target-mrr-basic-inp" min="0" placeholder="Contoh: 50000">
+          <label style="margin-top:6px">Target MRR Starter (Rp)</label>
+          <input type="number" id="target-mrr-starter-inp" min="0" placeholder="Contoh: 80000">
+          <label style="margin-top:6px">Target MRR Advance (Rp)</label>
+          <input type="number" id="target-mrr-advance-inp" min="0" placeholder="Contoh: 150000">
+          <label style="margin-top:6px">Target MRR Enterprise / Prime (Rp)</label>
+          <input type="number" id="target-mrr-enterprise-inp" min="0" placeholder="Contoh: 300000">
+          <label style="margin-top:6px">Target MRR Prime Plus (Rp)</label>
+          <input type="number" id="target-mrr-primeplus-inp" min="0" placeholder="Contoh: 500000">
+        </div>
       </div>
       <div id="target-personal-wrap" style="display:none">
         <div id="target-personal-flat-wrap">
@@ -455,8 +469,6 @@ tr:hover td{background:var(--sur2)}
           <input type="number" id="target-tier2-inp" min="0" placeholder="Contoh: 25000000">
           <label style="margin-top:6px">Tier 3 (Rp, di atas sini masuk gate ARPU)</label>
           <input type="number" id="target-tier3-inp" min="0" placeholder="Contoh: 43000000">
-          <label style="margin-top:6px">Jumlah Evidence Hardware buat naik Hijau di Tier 1-2 (opsional — kosongkan = nonaktif)</label>
-          <input type="number" id="target-tier-hwthreshold-inp" min="0" placeholder="Contoh: 10">
           <label style="margin-top:6px">Threshold Renewal ARPU di atas Tier 3 (Rp, opsional — kosongkan = selalu Hijau)</label>
           <input type="number" id="target-tier-arputhreshold-inp" min="0" placeholder="Contoh: 1500000">
         </div>
@@ -601,17 +613,28 @@ const TARGET_METRICS={
   'upsell_revenue_nasional':{family:'outcome',label:'Upsell Revenue (Nasional CLM+CC)'},
   'renewal_conversion_pct':{family:'outcome',label:'Konversi Renewal (%)'},
   // CLM-11 Fase F2: 4-tier warna Upsell Revenue per-agen (Merah/Orange/Hijau/Biru) -- SELALU scope
-  // personal (paksa di toggleTargetScopeWrap, sama pola sku:). Field tier1/tier2/tier3/
-  // hardwareEvidenceThreshold/arpuThreshold DISIMPEN LANGSUNG di Target row (bukan targetValue biasa),
-  // dibaca lewat bypass khusus di computeTargetActual -> computeUpsellTierColor.
-  'upsell_revenue_tier':{family:'outcome',label:'Upsell Revenue Tier (Hardware+ARPU gate)'}
+  // personal (paksa di toggleTargetScopeWrap, sama pola sku:). Field tier1/tier2/tier3/arpuThreshold
+  // DISIMPEN LANGSUNG di Target row (bukan targetValue biasa), dibaca lewat bypass khusus di
+  // computeTargetActual -> computeUpsellTierColor. REVISI 12 Jul: Hardware/Tablet DIKELUARIN dari sini,
+  // pindah ke metric independen 'bundle:tablet' (lihat computeBundleAchievement) -- tier ini sekarang
+  // murni Rupiah+ARPU.
+  'upsell_revenue_tier':{family:'outcome',label:'Upsell Revenue Tier (ARPU gate)'},
+  // CLM-11 Fase F: MRR Renewal per-paket -- SELALU scope team (paket bukan konsep per-agen). 5 field
+  // target Rupiah (mrrTargetStarterBasic/Starter/Advance/Enterprise/PrimePlus) disimpen langsung di
+  // Target row, dibaca lewat bypass di computeTargetActual -> computeMrrPerPaketActual.
+  'mrr_per_paket':{family:'outcome',label:'MRR Renewal per Paket'}
 };
 // CLM-11 Fase D2: lookup metadata generik buat SEMUA metricKey, termasuk 'sku:<addonType>' dinamis
 // yg SENGAJA nggak masuk TARGET_METRICS statis (SKU category nambah terus, bukan fixed list -- lihat
 // memory). Dipakai gantiin akses `TARGET_METRICS[t.metricKey]||{...}` langsung di tempat2 render.
+var BUNDLE_LABELS={'tablet':'Hardware / Tablet'};
 function targetMetricMeta(metricKey){
   if(TARGET_METRICS[metricKey])return TARGET_METRICS[metricKey];
   if(metricKey.indexOf('sku:')===0)return{family:'outcome',label:metricKey.slice(4)+' (SKU)'};
+  // CLM-11 Fase F (revisi): Hardware/Tablet DIPINDAH KELUAR dari tier F2 ke sini, convention
+  // 'bundle:<key>' (beda dari 'sku:' krn achievement-nya BOOLEAN OR-fallback billing/evidence,
+  // bukan qty count murni dari 1 sumber -- lihat computeBundleAchievement).
+  if(metricKey.indexOf('bundle:')===0)return{family:'outcome',label:(BUNDLE_LABELS[metricKey.slice(7)]||metricKey.slice(7))+' (Bundle)'};
   return{family:'?',label:metricKey};
 }
 // CLM-04 Fase 2: 5 metrik duit — join Outlet_ID (case, scope-filtered) -> FinancialsStore (per bulan).
@@ -1007,7 +1030,8 @@ function computeHardwareEvidenceApprovedCount(recs,agentName){
 // achieved lewat 10 evidence approved terus LAST MINUTE ada 1 deal tablet nyusul, angkanya keliatan
 // "TURUN" dari 10 jadi 1 -- padahal sama sekali BUKAN regresi, dua-duanya cuma bukti independen dari
 // 1 hal yg SAMA (target hardware achieved). billingCount & evidenceCount TETAP diekspos terpisah
-// (buat audit/tampilan detail + F2 butuh evidenceCount mentah buat threshold >=10), tapi 'achieved'
+// (buat audit/tampilan detail — dikonsumsi computeBundleAchievement, 'bundle:tablet', BUKAN lagi F2
+// sejak revisi 12 Jul yg misahin hardware keluar dari tier Rupiah), tapi 'achieved'
 // sendiri SELALU exists-check (billing>0 ATAU evidence>0), TIDAK PERNAH dijumlah/dikurangi/dibanding.
 // Jadi urutan kejadian (evidence duluan vs billing duluan, atau DUA-DUANYA ada bareng) nggak pernah
 // nge-cancel atau nambah 'achieved' -- begitu true, TETAP true apa pun kombinasi bukti berikutnya.
@@ -1042,30 +1066,29 @@ function computeRenewalArpuPersonal(period,agentName){
   var sum=rows.reduce(function(s,r){return s+r.subtotal;},0);
   return{arpu:rows.length?Math.round(sum/rows.length):0,count:rows.length,synced:true};
 }
-// CLM-11 Fase F2: 4-tier warna Upsell Revenue per-agen. `target` = Target row dgn field tier1/tier2/
-// tier3/hardwareEvidenceThreshold/arpuThreshold (semua configurable, pola sama minCommitmentMonths/
-// minValuePerDeal di D2). LOCKED Rahul:
+// CLM-11 Fase F2 (REVISI 12 Jul — Rahul minta pisah): 4-tier warna Upsell Revenue per-agen, MURNI
+// Rupiah+ARPU sekarang. Hardware/Tablet DIKELUARIN dari sini (dulu jadi "bump" tier1-2 -> hijau kalau
+// evidence>=threshold) -- dipindah jadi metric independen sendiri di "Upsell per-SKU", convention
+// 'bundle:tablet' (lihat computeBundleAchievement), evidence-fallback TETAP dipakai di sana (persis
+// F1's computeHardwareTabletGate, cuma beda konsumen). `target` = Target row dgn field
+// tier1/tier2/tier3/arpuThreshold. LOCKED Rahul:
 //   < tier1                -> Merah
-//   >=tier1 <tier2         -> Orange, KECUALI evidenceCount>=hardwareEvidenceThreshold -> Hijau
+//   >=tier1 <tier2         -> Orange
 //   >=tier2 <tier3         -> Hijau penuh
 //   >=tier3                -> ARPU>=arpuThreshold ? Hijau : Biru (biru jg dipakai insentif terpisah,
 //                             di luar scope dashboard -- jangan disamain sama tier lain)
-// hardwareEvidenceThreshold/arpuThreshold null = gate nonaktif (>=tier2 tetep hijau tanpa syarat
-// tambahan; >=tier3 selalu hijau tanpa cek ARPU) -- "0 jujur" drpd nebak angka default.
+// arpuThreshold null = gate nonaktif (>=tier3 selalu hijau tanpa cek ARPU) -- "0 jujur" drpd nebak
+// angka default.
 function computeUpsellTierColor(target,period,recs,agentName){
   var rev=computeUpsellRevenuePersonal(period,agentName);
-  var gate=computeHardwareTabletGate(period,recs,agentName);
   var arpu=computeRenewalArpuPersonal(period,agentName);
   var t1=target.tier1||0,t2=target.tier2||0,t3=target.tier3||0;
-  var hwThreshold=target.hardwareEvidenceThreshold;
   var arpuThreshold=target.arpuThreshold;
   var color,tierLabel;
   if(rev.actual<t1){
     color='merah';tierLabel='< Tier 1';
   }else if(rev.actual<t2){
-    var hwBump=(hwThreshold!=null&&gate.evidenceCount>=hwThreshold);
-    color=hwBump?'hijau':'orange';
-    tierLabel=hwBump?'Tier 1-2 (naik via '+gate.evidenceCount+' evidence hardware)':'Tier 1-2';
+    color='orange';tierLabel='Tier 1-2';
   }else if(rev.actual<t3){
     color='hijau';tierLabel='Tier 2-3';
   }else{
@@ -1073,7 +1096,56 @@ function computeUpsellTierColor(target,period,recs,agentName){
     color=arpuOk?'hijau':'biru';
     tierLabel='>= Tier 3'+(arpuOk?'':' (ARPU Rp'+arpu.arpu.toLocaleString('id-ID')+' di bawah threshold)');
   }
-  return{revenue:rev.actual,color:color,tierLabel:tierLabel,hardwareEvidenceCount:gate.evidenceCount,hardwareBillingCount:gate.billingCount,hardwareSource:gate.source,arpu:arpu.arpu,arpuCount:arpu.count,synced:rev.synced};
+  return{revenue:rev.actual,color:color,tierLabel:tierLabel,arpu:arpu.arpu,arpuCount:arpu.count,synced:rev.synced};
+}
+// CLM-11 Fase F (revisi 12 Jul): Hardware/Tablet achievement, convention 'bundle:<key>' -- reuse F1's
+// computeHardwareTabletGate (hybrid billing-OR-evidence, boolean achieved) TAPI diekspos sbg actual
+// 0/1 vs target 1, biar nyambung ke render generik personal-scope existing (progress bar/pct/matrix
+// "Upsell per-SKU") TANPA kartu bespoke baru. actual TIDAK PERNAH >1 -- ini bukan qty count kayak sku:,
+// cuma "sudah achieved atau belum" (achieved sekali = 1 selamanya, ga bisa 2x/lebih dari 1 sumber+lainnya).
+function computeBundleAchievement(bundleKey,period,recs,agentName){
+  if(bundleKey==='tablet'){
+    var gate=computeHardwareTabletGate(period,recs,agentName);
+    return{actual:gate.achieved?1:0,synced:gate.synced,billingCount:gate.billingCount,evidenceCount:gate.evidenceCount,source:gate.source};
+  }
+  return{actual:0,synced:false};
+}
+// CLM-11 Fase F: MRR per-paket Renewal -- breakdown 5 tier dari kolom "Paket" (RENEWAL, verified
+// read-only 12 Jul: nilai bersih Basic/Starter/Advance/Prime, TANPA suffix continue/upgrade/downgrade
+// kayak productPackage). Kolom itu CUMA 4 nilai -- "Prime" nggak otomatis kebedain Enterprise vs Prime
+// Plus, jadi buat baris "Prime" doang di-cross-check ke productPackage (KLOPOS) via join Outlet_ID
+// (RENEWAL) <-> ID Outlet (KLOPOS, r.id). Fallback ke Enterprise (Prime) kalau nggak ketemu match
+// (keputusan Rahul 12 Jul: Prime Plus tetap dipisah, evidence tetap dipakai di hardware terpisah --
+// nggak nyentuh gate F1/F2 di atas).
+var MRR_PAKET_TIERS=['Starter Basic','Starter','Advance','Enterprise (Prime)','Prime Plus'];
+var MRR_PAKET_FIELD_MAP={'Starter Basic':'mrrTargetStarterBasic','Starter':'mrrTargetStarter','Advance':'mrrTargetAdvance','Enterprise (Prime)':'mrrTargetEnterprise','Prime Plus':'mrrTargetPrimePlus'};
+function normalizePaketBucket(paketRaw,outletId,recsByOutletId){
+  var p=(paketRaw||'').trim();
+  if(p==='Basic')return'Starter Basic';
+  if(p==='Starter')return'Starter';
+  if(p==='Advance')return'Advance';
+  if(p==='Prime'){
+    var rec=recsByOutletId[outletId];
+    if(rec&&rec.productPackage){
+      var stripped=rec.productPackage.replace(/\s+(continue|upgrade|downgrade)\s*$/i,'').trim();
+      if(stripped==='Prime Plus')return'Prime Plus';
+    }
+    return'Enterprise (Prime)';
+  }
+  return null; // blank/anomali (mis. "Upgrade" 4 baris) -- exclude dari MRR, bukan nebak bucket-nya
+}
+function computeMrrPerPaketActual(period,recs){
+  var fin=period?UpsellTeamStore.getMonth(period):null;
+  if(!fin||!fin.renewalsRaw||!fin.renewalsRaw.length)return{synced:false,byPaket:{}};
+  var recsByOutletId={};
+  recs.forEach(function(r){if(r.id)recsByOutletId[r.id]=r;});
+  var sums={};
+  MRR_PAKET_TIERS.forEach(function(t){sums[t]=0;});
+  fin.renewalsRaw.forEach(function(r){
+    var bucket=normalizePaketBucket(r.paket,r.outletId,recsByOutletId);
+    if(bucket)sums[bucket]+=r.subtotal;
+  });
+  return{synced:true,byPaket:sums};
 }
 // CLM-11 Fase C: Attach Rate per-agen -- formula v2 Opsi B PERSIS (numerator=semua deal upsell,
 // denominator=renewal count), cuma di-slice per orang lewat REUSE computePersonalBillingCount 2x
@@ -1094,6 +1166,25 @@ function computePersonalAttachRate(period,agentName){
 function computeTargetActual(target,allRecs,agentName){
   var period=target.period;
   var periodRecs=period?allRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(period)>=0;}):allRecs;
+  // CLM-11 Fase F: MRR per-paket -- SELALU team-scope, byPaket bukan single-value, jadi bypass di
+  // paling awal (sebelum cek personal/team) kayak sku:/upsell_revenue_tier di bawah.
+  if(target.metricKey==='mrr_per_paket'){
+    var resMrr=computeMrrPerPaketActual(period,allRecs);
+    var targetsMrr={};
+    var sumTarget=0,sumActual=0;
+    MRR_PAKET_TIERS.forEach(function(tierName){
+      var fieldKey=MRR_PAKET_FIELD_MAP[tierName];
+      var tv=target[fieldKey]||0;
+      targetsMrr[tierName]=tv;
+      sumTarget+=tv;
+      sumActual+=(resMrr.byPaket[tierName]||0);
+    });
+    resMrr.targets=targetsMrr;
+    resMrr.actual=sumActual;
+    resMrr.effectiveTarget=sumTarget;
+    resMrr.unit='Rp';
+    return resMrr;
+  }
   if(target.scope==='personal'){
     // CLM-11 B1: renewal_count/upsell_approved_count Personal -> ground-truth billing (di atas).
     // AC-B1-3: scope TEAM (di bawah, blok terpisah) TETAP taxonomy-manual lama, TIDAK disentuh.
@@ -1112,6 +1203,16 @@ function computeTargetActual(target,allRecs,agentName){
       var overridesSku=target.personalOverrides||{};
       resSku.effectiveTarget=(overridesSku[agentName]!=null)?overridesSku[agentName]:target.targetValue;
       return resSku;
+    }
+    // CLM-11 Fase F (revisi 12 Jul): Hardware/Tablet dipindah keluar dari upsell_revenue_tier (F2) ke
+    // sini, convention 'bundle:<key>' -- butuh `allRecs` FULL sama alasan upsell_revenue_tier di bawah
+    // (evidence join lewat agentCredit, bukan assignedAgent).
+    if(agentName&&target.metricKey.indexOf('bundle:')===0){
+      var bundleKey=target.metricKey.slice(7);
+      var resBundle=computeBundleAchievement(bundleKey,period,allRecs,agentName);
+      var overridesBundle=target.personalOverrides||{};
+      resBundle.effectiveTarget=(overridesBundle[agentName]!=null)?overridesBundle[agentName]:(target.targetValue||1);
+      return resBundle;
     }
     // CLM-11 Fase F2: 4-tier warna Upsell Revenue -- butuh `allRecs` FULL (bukan periodRecs/scopeRecs
     // yg di-filter assignedAgent), krn computeHardwareEvidenceApprovedCount join lewat agentCredit
@@ -2495,6 +2596,22 @@ function renderOverview(){
           +'<div style="font-size:11px;color:var(--tx3);margin-top:4px">'+rMe.tierLabel+'</div>'
           +'</div>';
       }
+      // CLM-11 Fase F: MRR per-paket -- 5 baris (Starter Basic/Starter/Advance/Enterprise/Prime Plus),
+      // masing2 Target vs Actual APA ADANYA (nggak netting upgrade/downgrade, keputusan Rahul 12 Jul:
+      // "target 80rb, achieved 70rb, yaudah masih underperformed"). Team-wide (bukan per-agen), jadi
+      // 1 kartu buat semua viewer (nggak ada cabang isSup terpisah kayak tier).
+      if(t.metricKey==='mrr_per_paket'){
+        var rMrr=computeTargetActual(t,recs);
+        var mrrRowsHtml=MRR_PAKET_TIERS.map(function(tierName){
+          var tgt=rMrr.targets[tierName]||0;
+          var act=rMrr.byPaket[tierName]||0;
+          var ok=act>=tgt;
+          var badgeCls=ok?'badge-grn':'badge-red';
+          var badgeLabel=ok?'tercapai':'underperform';
+          return'<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:3px 0;border-bottom:1px solid var(--bdr)"><span>'+tierName+'</span><span style="text-align:right"><span style="color:var(--tx3)">'+fmtMetricVal(tgt,'Rp')+' → </span><strong>'+fmtMetricVal(act,'Rp')+'</strong> <span class="badge '+badgeCls+'" style="font-size:9px">'+badgeLabel+'</span></span></div>';
+        }).join('');
+        return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+meta.label+scopeTag+'</div>'+mrrRowsHtml+(rMrr.synced?'':'<div style="font-size:11px;color:var(--tx3);margin-top:4px">Belum ada data financials bulan ini</div>')+'</div>';
+      }
       if(t.scope==='personal'&&isSup){
         // Sekar lihat breakdown per-agen (bukan 1 angka gabungan — personal emang per-orang)
         var rowsHtml=AGENTS.map(function(ag){
@@ -2530,6 +2647,12 @@ function renderOverview(){
         // Tampilin ringkasan tier threshold-nya di kolom Target, arahin ke kartu di atas buat Aktual.
         targetDisp='T1:'+fmtMetricVal(t.tier1||0,'Rp')+' T2:'+fmtMetricVal(t.tier2||0,'Rp')+' T3:'+fmtMetricVal(t.tier3||0,'Rp');
         actualDisp='lihat kartu per-agen di atas';
+      }else if(t.metricKey==='mrr_per_paket'){
+        // CLM-11 Fase F: 5 nilai terpisah per-paket, bukan 1 angka -- sama alasan tier di atas, jangan
+        // digabung jadi 1 total yg nyampur beda paket (misleading).
+        var resMrrRow=computeTargetActual(t,recs);
+        targetDisp=MRR_PAKET_TIERS.map(function(tn){return tn.split(' ')[0]+':'+fmtMetricVal(resMrrRow.targets[tn]||0,'Rp');}).join(' · ');
+        actualDisp='lihat kartu di atas';
       }else if(t.scope==='personal'){
         var unitP=computeTargetActual(t,recs,AGENTS[0]).unit;
         targetDisp='default '+fmtMetricVal(t.targetValue,unitP);
@@ -3664,7 +3787,15 @@ function openTargetModal(id){
     return'<option value="'+k+'"'+(t&&t.metricKey===k?' selected':'')+'>'+(m.family==='activity'?'[Activity] ':'[Outcome] ')+m.label+'</option>';
   }).join('');
   var skuTypes=getDistinctSkuTypes();
-  var skuMetricOptions=skuTypes.length?('<optgroup label="Upsell per-SKU (Personal)">'+skuTypes.map(function(st){
+  // CLM-11 Fase F (revisi 12 Jul): Hardware/Tablet convention 'bundle:tablet' -- FIXED (bukan dinamis
+  // kayak sku:, cuma 1 bundle-key yg ada sejauh ini) tapi tetep di optgroup yg sama biar nempel
+  // konseptual sesuai request Rahul ("hardware masuk ke Upsell per SKU").
+  var bundleKeys=Object.keys(BUNDLE_LABELS);
+  var bundleMetricOptions=bundleKeys.map(function(bk){
+    var key='bundle:'+bk;
+    return'<option value="'+key+'"'+(t&&t.metricKey===key?' selected':'')+'>'+BUNDLE_LABELS[bk]+'</option>';
+  }).join('');
+  var skuMetricOptions=(skuTypes.length||bundleKeys.length)?('<optgroup label="Upsell per-SKU (Personal)">'+bundleMetricOptions+skuTypes.map(function(st){
     var key='sku:'+st;
     return'<option value="'+key+'"'+(t&&t.metricKey===key?' selected':'')+'>'+st+'</option>';
   }).join('')+'</optgroup>'):'';
@@ -3686,8 +3817,12 @@ function openTargetModal(id){
   document.getElementById('target-tier1-inp').value=(t&&t.tier1!=null)?t.tier1:'';
   document.getElementById('target-tier2-inp').value=(t&&t.tier2!=null)?t.tier2:'';
   document.getElementById('target-tier3-inp').value=(t&&t.tier3!=null)?t.tier3:'';
-  document.getElementById('target-tier-hwthreshold-inp').value=(t&&t.hardwareEvidenceThreshold!=null)?t.hardwareEvidenceThreshold:'';
   document.getElementById('target-tier-arputhreshold-inp').value=(t&&t.arpuThreshold!=null)?t.arpuThreshold:'';
+  document.getElementById('target-mrr-basic-inp').value=(t&&t.mrrTargetStarterBasic!=null)?t.mrrTargetStarterBasic:'';
+  document.getElementById('target-mrr-starter-inp').value=(t&&t.mrrTargetStarter!=null)?t.mrrTargetStarter:'';
+  document.getElementById('target-mrr-advance-inp').value=(t&&t.mrrTargetAdvance!=null)?t.mrrTargetAdvance:'';
+  document.getElementById('target-mrr-enterprise-inp').value=(t&&t.mrrTargetEnterprise!=null)?t.mrrTargetEnterprise:'';
+  document.getElementById('target-mrr-primeplus-inp').value=(t&&t.mrrTargetPrimePlus!=null)?t.mrrTargetPrimePlus:'';
   toggleTargetScopeWrap();
   openModal('target-modal');
 }
@@ -3714,13 +3849,20 @@ function renderTargetOverrideRows(overrides){
 function toggleTargetScopeWrap(){
   var metricKey=document.getElementById('target-metric-sel').value;
   var isSku=metricKey.indexOf('sku:')===0;
+  // CLM-11 Fase F (revisi 12 Jul): 'bundle:tablet' -- SAMA POLA sku: (personal, target-personal-flat-
+  // wrap default+override), TAPI TANPA target-sku-gate-wrap (nggak ada minCommitment/minValue di sini).
+  var isBundle=metricKey.indexOf('bundle:')===0;
   // CLM-11 Fase F2: 4-tier Upsell Revenue -- sama kayak sku:, selalu scope personal (per-agen).
   var isTier=metricKey==='upsell_revenue_tier';
+  // CLM-11 Fase F: MRR per-paket -- kebalikan isSku/isTier, selalu scope TEAM (paket bukan konsep
+  // per-agen, tapi tetep butuh field custom sendiri, bukan flat target-value-inp biasa).
+  var isMrr=metricKey==='mrr_per_paket';
   var scopeSel=document.getElementById('target-scope-sel');
   // CLM-11 Fase D2: target per-SKU selalu scope personal (reuse render "Progres vs Target" existing
   // yang udah nampilin breakdown per-agen -- itu udah jadi "matrix agen x SKU" yg diminta, nol UI baru).
-  scopeSel.disabled=isSku||isTier;
-  if(isSku||isTier)scopeSel.value='personal';
+  scopeSel.disabled=isSku||isBundle||isTier||isMrr;
+  if(isSku||isBundle||isTier)scopeSel.value='personal';
+  if(isMrr)scopeSel.value='team';
   var isPersonal=scopeSel.value==='personal';
   document.getElementById('target-team-wrap').style.display=isPersonal?'none':'';
   document.getElementById('target-personal-wrap').style.display=isPersonal?'':'none';
@@ -3729,6 +3871,9 @@ function toggleTargetScopeWrap(){
   // field flat itu pas tier-mode aktif (nggak relevan, threshold-nya beda konsep dari 1 angka target).
   document.getElementById('target-tier-gate-wrap').style.display=isTier?'':'none';
   document.getElementById('target-personal-flat-wrap').style.display=isTier?'none':'';
+  // CLM-11 Fase F: 5 field MRR per-paket gantiin target-value-inp/improved flat pas metric ini aktif.
+  document.getElementById('target-mrr-paket-wrap').style.display=isMrr?'':'none';
+  document.getElementById('target-team-flat-wrap').style.display=isMrr?'none':'';
 }
 function saveTarget(){
   var metricKey=document.getElementById('target-metric-sel').value;
@@ -3754,11 +3899,18 @@ function saveTarget(){
       payload.tier1=parseFloat(document.getElementById('target-tier1-inp').value)||0;
       payload.tier2=parseFloat(document.getElementById('target-tier2-inp').value)||0;
       payload.tier3=parseFloat(document.getElementById('target-tier3-inp').value)||0;
-      var hwRaw=document.getElementById('target-tier-hwthreshold-inp').value;
-      payload.hardwareEvidenceThreshold=hwRaw!==''?(parseFloat(hwRaw)||0):null;
       var arpuRaw=document.getElementById('target-tier-arputhreshold-inp').value;
       payload.arpuThreshold=arpuRaw!==''?(parseFloat(arpuRaw)||0):null;
     }
+  }else if(metricKey==='mrr_per_paket'){
+    // CLM-11 Fase F: 5 field Rupiah gantiin targetValue tunggal -- disimpen langsung di Target row,
+    // dibaca lewat bypass MRR_PAKET_FIELD_MAP di computeTargetActual (bukan targetValue/Improved biasa).
+    payload.mrrTargetStarterBasic=parseFloat(document.getElementById('target-mrr-basic-inp').value)||0;
+    payload.mrrTargetStarter=parseFloat(document.getElementById('target-mrr-starter-inp').value)||0;
+    payload.mrrTargetAdvance=parseFloat(document.getElementById('target-mrr-advance-inp').value)||0;
+    payload.mrrTargetEnterprise=parseFloat(document.getElementById('target-mrr-enterprise-inp').value)||0;
+    payload.mrrTargetPrimePlus=parseFloat(document.getElementById('target-mrr-primeplus-inp').value)||0;
+    payload.personalOverrides={};
   }else{
     payload.targetValue=parseFloat(document.getElementById('target-value-inp').value)||0;
     payload.personalOverrides={};
