@@ -1158,6 +1158,26 @@ function computePersonalAttachRate(period,agentName){
   if(!ren.synced)return{pct:0,denom:0,dealCount:0,synced:false};
   return{pct:ren.actual?Math.round(ups.actual/ren.actual*100):0,denom:ren.actual,dealCount:ups.actual,synced:true};
 }
+// CLM-11 Fase F3: MTD per-agen comparison (Renewal & Upsell), bulan-ini vs bulan-lalu -- REVISI dari
+// Daily View (Fase C, breakdown per-BUCKET Nasional/CX/SO/Sales) yang BUKAN per-agen. Reuse
+// renewalsRaw/upsellRaw (udah include creatorName per baris sejak Fase C) + matchAgentFuzzy (join yg
+// sama B1/D2/F2) -- NOL GAS patch baru, murni agregasi+tabel frontend (confirmed "cheap" per scoping
+// Ubay 12 Jul). Coexist sama Daily View trend chart (bukan pengganti): chart buat tren/pace, tabel
+// ini buat perbandingan presisi antar-agen (compare langsung siapa lebih tinggi/rendah bulan ini).
+function computeAgentMtdCompare(fieldArr,agentName,curPeriod,prevPeriod){
+  var curFin=curPeriod?UpsellTeamStore.getMonth(curPeriod):null;
+  var prevFin=prevPeriod?UpsellTeamStore.getMonth(prevPeriod):null;
+  var agents=AgentsConfig.getAll();
+  function agg(fin){
+    if(!fin||!fin[fieldArr]||!fin[fieldArr].length)return{revenue:0,count:0,synced:false};
+    var rows=fin[fieldArr].filter(function(r){return matchAgentFuzzy(r.creatorName,agents)===agentName;});
+    return{revenue:rows.reduce(function(s,r){return s+r.subtotal;},0),count:rows.length,synced:true};
+  }
+  var cur=agg(curFin),prev=agg(prevFin);
+  var revGrowth=(prev.synced&&prev.revenue)?Math.round((cur.revenue-prev.revenue)/prev.revenue*100):null;
+  var cntGrowth=(prev.synced&&prev.count)?Math.round((cur.count-prev.count)/prev.count*100):null;
+  return{cur:cur,prev:prev,revGrowth:revGrowth,cntGrowth:cntGrowth};
+}
 // Team vs Personal = DUA SCOPE INDEPENDEN (keputusan Muthia 3 Jul) — bukan 1 angka yg auto-split per viewer.
 // - scope 'team': actual dihitung dari SEMUA record tim, target = targetValue (1 angka agregat).
 // - scope 'personal': actual dihitung dari record milik SATU agen (agentName wajib diisi), target =
@@ -2779,6 +2799,44 @@ function renderOverview(){
       +'</div>';
   }
 
+  // CLM-11 Fase F3: MTD per-agen (Renewal & Upsell) -- Sekar-only, sama gating attachPerAgentSection.
+  // 2 sub-tabel (Renewal, Upsell) coexist dalam 1 section, masing2 kolom bulan-lalu vs bulan-ini
+  // (Rp+Deal) + growth% -- buat compare performa agen vs agen langsung, TERPISAH dari Daily View
+  // trend chart di atas (yang breakdown-nya per-bucket Nasional/CX/SO/Sales, bukan per-agen).
+  var agentMtdSection='';
+  if(isSup){
+    var mtdCurUT=UpsellTeamStore.getMonth(currentMonthKey);
+    function mtdGrowthHtml(g){
+      if(g==null)return'<span style="color:var(--tx3)">—</span>';
+      var clr=g>=0?'var(--grn)':'var(--red)';
+      return'<span style="color:'+clr+'">'+(g>=0?'+':'')+g+'%</span>';
+    }
+    function mtdRowsHtml(fieldArr){
+      return AGENTS.map(function(ag){
+        var c=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,prevMonthKey);
+        return'<tr><td>'+ag+'</td>'
+          +'<td>'+fmtRp(c.prev.revenue)+'</td>'
+          +'<td>'+fmtRp(c.cur.revenue)+'</td>'
+          +'<td>'+mtdGrowthHtml(c.revGrowth)+'</td>'
+          +'<td>'+c.prev.count+'</td>'
+          +'<td>'+c.cur.count+'</td>'
+          +'<td>'+mtdGrowthHtml(c.cntGrowth)+'</td>'
+          +'</tr>';
+      }).join('');
+    }
+    function mtdTableHtml(title,fieldArr){
+      return'<div style="margin-bottom:14px"><div style="font-size:11px;font-weight:700;color:var(--tx3);margin-bottom:4px">'+title+'</div>'
+        +'<div class="tbl-wrap"><table class="summary-tbl">'
+        +'<thead><tr><th>Agen</th><th>'+prevMonthKey+' Rp</th><th>'+currentMonthKey+' Rp</th><th>Growth Rp</th><th>'+prevMonthKey+' Deal</th><th>'+currentMonthKey+' Deal</th><th>Growth Deal</th></tr></thead>'
+        +'<tbody>'+mtdRowsHtml(fieldArr)+'</tbody></table></div></div>';
+    }
+    agentMtdSection='<div class="ov-section"><div class="ov-section-title">📊 MTD per-Agen ('+prevMonthKey+' vs '+currentMonthKey+' 26)</div>'
+      +(!mtdCurUT
+        ?'<div class="card empty">Belum ada data — klik "📥 Sync Upsell Tim" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div>'
+        :'<div class="card">'+mtdTableHtml('💰 Renewal','renewalsRaw')+mtdTableHtml('📈 Upsell','upsellRaw')+'</div>')
+      +'</div>';
+  }
+
   // ── Targets HTML (revenue/insentif) ──
   // CLM-11 Fase C: Upselling card ganti dari COUNT+attach (v1 lock lama) ke REVENUE Rupiah 2-tier,
   // SAMA POLA Renewal Revenue -- deal-count/attach TETAP ada di metrik terpisah "Upsell Conversion"
@@ -2901,6 +2959,7 @@ function renderOverview(){
     +upsellTeamSection
     +dailyViewSection
     +attachPerAgentSection
+    +agentMtdSection
     +monthlySummarySection
     +backlogSection
     +agentSection;
