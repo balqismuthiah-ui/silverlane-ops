@@ -1552,10 +1552,48 @@ var Targets={
     this.save(defaults);
     return defaults;
   },
-  add:function(t){var all=this.getAll();all.push(Object.assign({},t,{id:uid()}));this.save(all);},
-  update:function(id,t){var all=this.getAll();var i=all.findIndex(function(x){return x.id===id;});if(i>=0){all[i]=Object.assign({},t,{id:id});this.save(all);}},
-  delete:function(id){this.save(this.getAll().filter(function(x){return x.id!==id;}));}
+  // CLM-11 Fase E: dulu murni localStorage (nggak keliatan lintas akun leader). Sekarang
+  // optimistic-local (tetap instan, tetap kepakai kalau offline/GAS gagal) + push ke GAS
+  // (`upsertTarget`/`deleteTarget`, upsert-by-id per-bulan) di background. Gagal sync = toast
+  // peringatan (tersimpan lokal doang), BUKAN blocking/rollback -- konsisten sama toleransi
+  // "concurrent edit dianggap nggak akan kejadian" yg udah dikonfirmasi Rahul.
+  add:function(t){
+    var withId=Object.assign({},t,{id:uid()});
+    var all=this.getAll();all.push(withId);this.save(all);
+    _gasPost({action:'upsertTarget',target:withId}).catch(function(err){
+      toast('Target tersimpan lokal, tapi gagal sync ke server: '+err.message,5000);
+    });
+    return withId;
+  },
+  update:function(id,t){
+    var all=this.getAll();var i=all.findIndex(function(x){return x.id===id;});
+    var withId=Object.assign({},t,{id:id});
+    if(i>=0){all[i]=withId;this.save(all);}
+    _gasPost({action:'upsertTarget',target:withId}).catch(function(err){
+      toast('Target tersimpan lokal, tapi gagal sync ke server: '+err.message,5000);
+    });
+  },
+  delete:function(id){
+    var all=this.getAll();
+    var target=all.find(function(x){return x.id===id;});
+    this.save(all.filter(function(x){return x.id!==id;}));
+    if(target){
+      _gasPost({action:'deleteTarget',id:id,period:target.period}).catch(function(err){
+        toast('Target terhapus lokal, tapi gagal sync ke server: '+err.message,5000);
+      });
+    }
+  }
 };
+// CLM-11 Fase E: tarik Targets lintas-akun leader dari GAS (PropertiesService per-bulan). Best-effort
+// background -- gagal (offline/timeout) diam-diam, cache lokal (localStorage) tetap dipakai apa adanya.
+function syncTargetsFromServer(){
+  if(!Auth.getToken())return;
+  _gasGet('targets').then(function(json){
+    if(!json||json.ok===false)return;
+    Targets.save(json.data||[]);
+    renderTab(currentTab);
+  }).catch(function(){});
+}
 
 // ── TEMPLATES STORE ────────────────────────────────────────────────────────
 var Templates={
@@ -5469,6 +5507,9 @@ function startApp(){
   // piggyback on-load doang (bukan freshness-gated kayak KLOPOS -- sheet manually-curated, nggak
   // perlu presisi 3x/hari). Tombol manual "Sync GC Watchlist" tetap ada buat refresh kapan aja.
   setTimeout(syncGcWatchlist,3200);
+  // CLM-11 Fase E: tarik Targets lintas-akun leader on-load (jarang berubah, cukup sync-on-load +
+  // sync abis aksi sendiri di Targets.add/update/delete -- BUKAN polling agresif kayak responsesDelta).
+  setTimeout(syncTargetsFromServer,2200);
   // CLM-08: auto-poll respons agen lain -- on-load (staggered dikit dari freshness biar nggak
   // barengan) + tiap 5 menit selama halaman kebuka (visibility-gated -- lihat startRespPolling).
   setTimeout(pollResponsesDelta,1800);
