@@ -622,7 +622,7 @@ const TARGET_METRICS={
   // CLM-11 Fase F: MRR Renewal per-paket -- SELALU scope team (paket bukan konsep per-agen). 5 field
   // target Rupiah (mrrTargetStarterBasic/Starter/Advance/Enterprise/PrimePlus) disimpen langsung di
   // Target row, dibaca lewat bypass di computeTargetActual -> computeMrrPerPaketActual.
-  'mrr_per_paket':{family:'outcome',label:'MRR Renewal per Paket'}
+  'mrr_per_paket':{family:'outcome',label:'MRR Renewal per Paket (CX)'}
 };
 // CLM-11 Fase D2: lookup metadata generik buat SEMUA metricKey, termasuk 'sku:<addonType>' dinamis
 // yg SENGAJA nggak masuk TARGET_METRICS statis (SKU category nambah terus, bukan fixed list -- lihat
@@ -1168,6 +1168,12 @@ function computeMrrPerPaketActual(period,recs){
   var agg={};
   MRR_PAKET_TIERS.forEach(function(t){agg[t]={rev:0,qty:0};});
   fin.data.forEach(function(f){
+    // QA round 3 (operator, 13 Jul): MRR per paket = CX-ONLY (exclude Self Onboard) -- definisi sheet
+    // Performance operator, verified read-only: CX-only 68.622/85.010/156.208/354.917 vs sheet
+    // 64.082/81.194/155.039/360.436 (selisih tinggal drift 2 hari data) vs semua-channel yg 30-40%
+    // lebih tinggi. Field `region` baru di GAS v50; data cache pra-v50 belum punya field itu ->
+    // f.region undefined LOLOS filter (perilaku lama, kebenerin sendiri begitu re-sync financials).
+    if(f.region==='Self Onboard')return;
     var bucket=normalizePaketBucket(f.paket,f.outletId,recsByOutletId);
     if(bucket){agg[bucket].rev+=(f.netRevenue||0);agg[bucket].qty+=(f.skuQty||0);}
   });
