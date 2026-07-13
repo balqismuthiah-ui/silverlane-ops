@@ -3699,7 +3699,8 @@ function renderInvoiceSummary(){
   var catFilterHtml=renderMultiSelect('invsumCat','Kategori',catOpts,invsumCat);
   var agentFilterHtml=isSup?renderMultiSelect('invsumAgent','Agen',AGENTS.map(function(n){return{value:n,label:n};}),invsumAgent):'';
   var statusOptsArr=INVSUM_MATRICES.map(function(m){return{value:m.key,label:m.label};});
-  var statusFilterHtml=renderMultiSelect('invsumStatus','Status',statusOptsArr,invsumStatusSel);
+  // filterName WAJIB = nama var state (handler .msel-opt generik nulis ke window[filterName]).
+  var statusFilterHtml=renderMultiSelect('invsumStatusSel','Status',statusOptsArr,invsumStatusSel);
   var monthOpts=months.map(function(mk){var y=mk.slice(0,4),mi=parseInt(mk.slice(5,7),10)-1;return'<option value="'+mk+'"'+(mk===invsumMonth?' selected':'')+'>'+MONTH_KEYS[mi]+' '+y+'</option>';}).join('');
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📆 Invoice Summary '+(isSup?'— Semua Agen':'— Saya ('+me+')')+'</div>'
@@ -6086,7 +6087,7 @@ var MSEL_REFRESH={
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
   invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
   blastAgentFilter:refreshBlastBody,
-  invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');},invsumStatus:function(){renderTab('invsummary');}
+  invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');},invsumStatusSel:function(){renderTab('invsummary');}
 };
 // CLM-11 Fase G6: Pilih semua / Kosongkan buat panel multi-select. selectAll=true -> centang semua
 // opsi (window[name] = semua value di panel); false -> kosongin (=[], sama makna "Semua X" default).
