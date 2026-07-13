@@ -2051,7 +2051,10 @@ var syncMonthFilter='';
 var dailyViewBucketSel='NASIONAL'; // CLM-11 Fase C (rev. QA round 2): bucket aktif Daily view (NASIONAL/CLM/CC/TC/SALES, roster-team-based)
 var dailyViewMetricSel='renewal'; // CLM-11 Fase C: metrik aktif Daily view (renewal/upsell revenue)
 // CLM-10 §1: Invoice Tracker state -- invAgentFilter cuma relevan buat leader (pola sama wsAgentFilter)
-var invSearch='',invStatusFilter=[],invAgentFilter=[];
+// invCreatorFilter (13 Jul, feedback operator): filter by PEMBUAT invoice (creatorName) -- beda dari
+// invAgentFilter (agentName hasil join/tag). Dipake buat gampangin cari invoice buatan leader yg
+// kandidat Tag Ulang (yg agentName-nya masih "belum teridentifikasi", jadi nggak kefilter di Agen).
+var invSearch='',invStatusFilter=[],invAgentFilter=[],invCreatorFilter=[];
 var invPage=0;
 var invDay=''; // 'hari H' buat metrik #1 (dibuat) & #4 (terbayar) -- kosong = pakai hari ini saat render
 // CLM-11 A4: filter Bulan + rentang tanggal -- ngontrol BARIS TABEL (invBasePool/invFilteredRows)
@@ -3393,6 +3396,10 @@ function invBasePool(enriched,me,isSup){
 function invFilteredRows(enriched,me,isSup){
   var pool=invBasePool(enriched,me,isSup);
   if(invStatusFilter.length)pool=pool.filter(function(r){return invStatusFilter.indexOf(r.statusDetail)>=0;});
+  // 13 Jul: filter Pembuat (creatorName) -- de-facto leader-only (dropdown-nya cuma dirender buat
+  // leader, agent nggak pernah bisa nyetel; default [] = no-op). By creatorName mentah dari Data
+  // Invoice CX (BUKAN agentName hasil join/tag).
+  if(invCreatorFilter.length)pool=pool.filter(function(r){return invCreatorFilter.indexOf(r.creatorName||'')>=0;});
   // CLM-11 A4: filter Bulan + rentang tanggal by createdDate -- dimensi independen dari invDay.
   if(invBulanFilter.length)pool=pool.filter(function(r){
     if(!r.createdDate)return false;
@@ -3410,7 +3417,9 @@ function invFilteredRows(enriched,me,isSup){
   });
   if(!invSearch)return pool;
   var s=invSearch.toLowerCase();
-  return pool.filter(function(r){return r.invCode.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s);});
+  // 13 Jul: search box juga match creatorName (pembuat) -- biar bisa ketik nama buat cari cepet, bukan
+  // cuma No. Invoice/Outlet. agentName (hasil tag) juga ikut biar konsisten sama kolom yg keliatan.
+  return pool.filter(function(r){return r.invCode.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s)||String(r.creatorName||'').toLowerCase().includes(s)||String(r.agentName||'').toLowerCase().includes(s);});
 }
 var invCountText='';
 function invStatusBadge(s){
@@ -3485,6 +3494,15 @@ function renderInvoiceTracker(){
   var statusOpts=['PAID','APPROVED-INVOICE','APPROVED-PROFORMA','VALIDATED-INVOICE','EXPIRED-INVOICE','VOID-INVOICE'].map(function(s){return{value:s,label:s};});
   var statusFilterHtml=renderMultiSelect('invStatusFilter','Status Invoice',statusOpts,invStatusFilter);
   var agentFilterHtml=isSup?renderMultiSelect('invAgentFilter','Agen',AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}),invAgentFilter):'';
+  // 13 Jul: filter Pembuat -- distinct creatorName dari data invoice riil (bukan roster; pembuat bisa
+  // leader/sales/CC/TC lain di luar 8 agen). Leader-only. Dipake gampangin cari kandidat Tag Ulang.
+  var creatorFilterHtml='';
+  if(isSup){
+    var creatorSet={};
+    (InvoiceTrackerStore.get().data||[]).forEach(function(r){var c=(r.creatorName||'').trim();if(c)creatorSet[c]=true;});
+    var creatorOpts=Object.keys(creatorSet).sort().map(function(c){return{value:c,label:c};});
+    creatorFilterHtml=renderMultiSelect('invCreatorFilter','Pembuat',creatorOpts,invCreatorFilter);
+  }
   // CLM-11 A4: filter Bulan (by createdDate) -- opsi diambil dari MONTH_KEYS statis (bukan cohortMonths
   // records KLOPOS, ini dataset Invoice Tracker terpisah), + filter Start/End Date custom range.
   var bulanFilterHtml=renderMultiSelect('invBulanFilter','Bulan (Dibuat)',MONTH_KEYS.map(function(m){return{value:m,label:m+' 26'};}),invBulanFilter);
@@ -3504,9 +3522,10 @@ function renderInvoiceTracker(){
     +'<div class="grid4" id="inv-metrics">'+metricsHtml+'</div>'
     +'</div>'
     +'<div class="frow" style="margin-top:12px">'
-    +'<input class="fsearch" type="search" id="inv-search" placeholder="🔍 Cari No. Invoice / Nama Outlet..." value="'+invSearch+'">'
+    +'<input class="fsearch" type="search" id="inv-search" placeholder="🔍 Cari No. Invoice / Outlet / Nama Pembuat / Agen..." value="'+invSearch+'">'
     +statusFilterHtml
     +(agentFilterHtml||'')
+    +(creatorFilterHtml||'')
     +bulanFilterHtml
     // CLM-11 A4: rentang tanggal custom -- filter BARIS TABEL doang, terpisah dari date-picker
     // "Tanggal" di atas (invDay, cuma ngontrol 2 metric card, TIDAK nyentuh baris tabel).
@@ -5890,7 +5909,7 @@ var MSEL_REFRESH={
   mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
-  invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
+  invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
   blastAgentFilter:refreshBlastBody
 };
 // Buka/tutup panel multi-select: klik trigger toggle + tutup panel lain yg lagi kebuka; klik di
