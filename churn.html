@@ -6337,25 +6337,30 @@ function startApp(){
   document.getElementById('theme-btn').textContent=savedTheme==='dark'?'☀️':'🌙';
   rebuildGcFlagMap(); // CLM-09: isi awal dari cache localStorage (kalau ada) sebelum render pertama
   renderTab('overview');
+  // GATE 3 mitigasi #1 (13 Jul, Ubay): jitter random 0-8dtk ke SEMUA fetch on-load yg nembak GAS. Tanpa
+  // ini, 11 user buka dashboard barengan pas shift-start = burst ~22 eksekusi simultan (mepet limit 30
+  // "simultaneous executions"). Random per-page-load bikin tiap browser nembak di offset beda -> burst
+  // ke-spread jadi ~5-8 concurrent. Nol UX cost (delay <8dtk, data cached udah tampil duluan).
+  function jms(base){return base+Math.floor(Math.random()*8000);}
   // CLM-08: ganti heuristik lama "stale >8 jam" (sync sia-sia kalau DB belum berubah) dengan cek
   // freshness RIIL ke server -- auto full-sync (semua bulan) HANYA kalau DB beneran refresh sejak
   // terakhir kita sync. Non-blocking: renderTab di atas udah nampilin data cached duluan.
-  setTimeout(checkFreshnessAndAutoSync,1200);
+  setTimeout(checkFreshnessAndAutoSync,jms(1200));
   // Kirim ulang antrean write-back respons yang sempat gagal (offline queue)
-  setTimeout(wbFlush,2500);
+  setTimeout(wbFlush,jms(2500));
   // CLM-09: GC Watchlist -- sync ringan (~4rb row phone-only, jauh lebih murah dari full 35k KLOPOS),
   // piggyback on-load doang (bukan freshness-gated kayak KLOPOS -- sheet manually-curated, nggak
   // perlu presisi 3x/hari). Tombol manual "Sync GC Watchlist" tetap ada buat refresh kapan aja.
-  setTimeout(syncGcWatchlist,3200);
+  setTimeout(syncGcWatchlist,jms(3200));
   // CLM-11 Fase E: tarik Targets lintas-akun leader on-load (jarang berubah, cukup sync-on-load +
   // sync abis aksi sendiri di Targets.add/update/delete -- BUKAN polling agresif kayak responsesDelta).
-  setTimeout(syncTargetsFromServer,2200);
+  setTimeout(syncTargetsFromServer,jms(2200));
   // QA round 3 lanjutan: auto-sync financials+upsellteam bulan berjalan (silent, throttle 30 menit
   // internal -- lihat autoSyncFinancialsStores). Staggered paling akhir, payload-nya paling gede.
-  setTimeout(autoSyncFinancialsStores,4200);
+  setTimeout(autoSyncFinancialsStores,jms(4200));
   // CLM-08: auto-poll respons agen lain -- on-load (staggered dikit dari freshness biar nggak
   // barengan) + tiap 5 menit selama halaman kebuka (visibility-gated -- lihat startRespPolling).
-  setTimeout(pollResponsesDelta,1800);
+  setTimeout(pollResponsesDelta,jms(1800));
   startRespPolling();
   if(!window._respVisibilityWired){
     window._respVisibilityWired=true;
@@ -6371,7 +6376,10 @@ function startApp(){
 // di-start/stop ulang dari visibilitychange handler tanpa duplikasi logic guard interval.
 function startRespPolling(){
   if(window._respPollIntervalId)clearInterval(window._respPollIntervalId);
-  window._respPollIntervalId=setInterval(pollResponsesDelta,5*60*1000);
+  // GATE 3 mitigasi #2 (13 Jul, Ubay): interval poll 5->10 menit. responsesDelta itu penyumbang JUMLAH
+  // eksekusi GAS terbesar (visible-tab × ~11 user × jam kerja) -- 10 menit motong count ~50% + turunin
+  // peluang overlap steady-state. Trade-off: respons agen lain nongol s.d. 10 menit (dari 5), acceptable.
+  window._respPollIntervalId=setInterval(pollResponsesDelta,10*60*1000);
 }
 function stopRespPolling(){
   if(window._respPollIntervalId){clearInterval(window._respPollIntervalId);window._respPollIntervalId=null;}
