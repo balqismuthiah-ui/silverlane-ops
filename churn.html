@@ -213,6 +213,10 @@ tr:hover td{background:var(--sur2)}
 .msel-opt-row{display:flex;align-items:center;gap:6px;padding:5px 6px;font-size:12px;color:var(--tx);white-space:nowrap;cursor:pointer;border-radius:4px}
 .msel-opt-row:hover{background:var(--sur2)}
 .msel-opt-row input{margin:0}
+/* CLM-11 Fase G6: tombol Pilih semua / Kosongkan di header panel dropdown collapsible */
+.msel-tools{display:flex;gap:6px;padding:2px 4px 6px;border-bottom:1px solid var(--bdr);margin-bottom:4px}
+.msel-tools button{flex:1;font-size:11px;padding:4px 6px;border:1px solid var(--bdr);border-radius:4px;background:var(--sur2);color:var(--tx2);cursor:pointer}
+.msel-tools button:hover{background:var(--sur);color:var(--tx)}
 /* AGENT INLINE INPUTS */
 .ag-inp{padding:3px 6px;border:1px solid var(--bdr);border-radius:3px;background:var(--sur2);color:var(--tx);font-size:12px;outline:none}
 .ag-inp:focus{border-color:var(--pri)}
@@ -1127,15 +1131,18 @@ function computeUpsellTierColor(target,period,recs,agentName){
   }
   return{revenue:rev.actual,color:color,tierLabel:tierLabel,arpu:arpu.arpu,arpuCount:arpu.count,synced:rev.synced};
 }
-// CLM-11 Fase F (revisi 12 Jul): Hardware/Tablet achievement, convention 'bundle:<key>' -- reuse F1's
-// computeHardwareTabletGate (hybrid billing-OR-evidence, boolean achieved) TAPI diekspos sbg actual
-// 0/1 vs target 1, biar nyambung ke render generik personal-scope existing (progress bar/pct/matrix
-// "Upsell per-SKU") TANPA kartu bespoke baru. actual TIDAK PERNAH >1 -- ini bukan qty count kayak sku:,
-// cuma "sudah achieved atau belum" (achieved sekali = 1 selamanya, ga bisa 2x/lebih dari 1 sumber+lainnya).
+// CLM-11 Fase G7 (13 Jul, request Ubay): Hardware/Tablet achievement 'bundle:<key>' DIUBAH dari
+// boolean (actual 0/1 vs target fix 1) jadi QTY-CONFIGURABLE -- actual = billingTabletCount +
+// evidenceApprovedCount (dijumlah beneran), target = qty bebas (default 1, bisa 10). Ubay butuh set
+// target kayak "10 evidence hardware approved" buat agen yg nggak ada deal hardware di billing.
+// MEMBALIK keputusan F1 lama "jangan jumlahin billing+evidence" -- itu buat achievement BOOLEAN (biar
+// angka nggak keliatan regres pas ganti sumber); buat target AKTIVITAS qty, dijumlah justru yg dimau.
+// Caveat (operator OK): kalau 1 agen jual tablet DAN submit evidence event yg SAMA -> double-count,
+// tapi de-facto eksklusif per-agen (yg jual -> billing, yg nggak -> ngumpulin evidence), acceptable.
 function computeBundleAchievement(bundleKey,period,recs,agentName){
   if(bundleKey==='tablet'){
     var gate=computeHardwareTabletGate(period,recs,agentName);
-    return{actual:gate.achieved?1:0,synced:gate.synced,billingCount:gate.billingCount,evidenceCount:gate.evidenceCount,source:gate.source};
+    return{actual:gate.billingCount+gate.evidenceCount,synced:gate.synced,billingCount:gate.billingCount,evidenceCount:gate.evidenceCount,source:gate.source};
   }
   return{actual:0,synced:false};
 }
@@ -1949,6 +1956,33 @@ function syncTargetsFromServer(){
     renderTab(currentTab);
   }).catch(function(){});
 }
+// CLM-11 Fase G1 (13 Jul, request Ubay): urutan kartu "Progres vs Target" bisa diatur leader lewat
+// tombol ▲/▼ di tabel Kelola Target. `sortOrder` (int) jadi field per-target, dipersist ke GAS (biar
+// konsisten lintas akun leader). Target legacy tanpa sortOrder -> dianggap 1e9 (tetap di urutan seed
+// existing via stable-sort, nol perubahan visual sampai leader reorder). Reorder cuma nyentuh
+// same-period group (1 bulan = 1 grup mandiri), swap sama tetangga terdekat di grup.
+function targetSortCmp(a,b){
+  var pa=MONTH_KEYS.indexOf(a.period),pb=MONTH_KEYS.indexOf(b.period);
+  if(pa!==pb)return pa-pb;
+  var sa=(a.sortOrder==null)?1e9:a.sortOrder,sb=(b.sortOrder==null)?1e9:b.sortOrder;
+  return sa-sb;
+}
+function reorderTarget(id,dir){
+  if(!Auth.isSuperior())return;
+  var all=Targets.getAll();
+  var t=all.find(function(x){return x.id===id;});if(!t)return;
+  var group=all.filter(function(x){return x.period===t.period;});
+  group.sort(function(a,b){var sa=(a.sortOrder==null)?1e9:a.sortOrder,sb=(b.sortOrder==null)?1e9:b.sortOrder;return sa-sb;});
+  var before=group.map(function(g){return g.sortOrder;});
+  group.forEach(function(g,i){g.sortOrder=i;}); // normalisasi sekuensial 0..n-1 (objek identik ke `all`)
+  var pos=group.findIndex(function(x){return x.id===id;});
+  var swp=(dir<0)?pos-1:pos+1;
+  if(swp>=0&&swp<group.length){var a=group[pos],b=group[swp];var tmp=a.sortOrder;a.sortOrder=b.sortOrder;b.sortOrder=tmp;}
+  Targets.save(all);
+  // Push cuma yg sortOrder-nya beneran berubah (hemat call GAS) -- objek group[i] identik, before[i] valid.
+  group.forEach(function(g,i){if(before[i]!==g.sortOrder){_gasPost({action:'upsertTarget',target:g}).catch(function(){});}});
+  renderTab('overview');
+}
 
 // ── TEMPLATES STORE ────────────────────────────────────────────────────────
 var Templates={
@@ -2276,9 +2310,11 @@ function renderMultiSelect(filterName,baseTitle,options,selected){
     var v=String(o.value).replace(/"/g,'&quot;'),lb=String(o.label).replace(/"/g,'&quot;');
     return'<label class="msel-opt-row"><input type="checkbox" class="msel-opt" data-filter="'+filterName+'" data-label="'+lb+'" value="'+v+'"'+(selSet.has(o.value)?' checked':'')+'>'+o.label+'</label>';
   }).join('');
+  // CLM-11 Fase G6: header Pilih semua / Kosongkan -- cuma kalau ada opsi (kalau kosong nggak guna).
+  var tools=options.length?('<div class="msel-tools"><button type="button" data-msel-all="'+filterName+'">Pilih semua</button><button type="button" data-msel-clear="'+filterName+'">Kosongkan</button></div>'):'';
   return'<div class="msel" data-msel="'+filterName+'">'
     +'<button type="button" class="msel-trigger" data-msel-trigger="'+filterName+'" data-basetitle="'+baseTitle+'">'+summary+'</button>'
-    +'<div class="msel-panel">'+(rows||'<div style="padding:6px;font-size:12px;color:var(--tx3)">— tidak ada opsi —</div>')+'</div>'
+    +'<div class="msel-panel">'+tools+(rows||'<div style="padding:6px;font-size:12px;color:var(--tx3)">— tidak ada opsi —</div>')+'</div>'
     +'</div>';
 }
 
@@ -2711,6 +2747,7 @@ function renderOverview(){
       +'</div>';
   }
   if(visibleTargets.length){
+    visibleTargets=visibleTargets.slice().sort(targetSortCmp); // CLM-11 Fase G1: honor urutan leader
     var progCards=visibleTargets.map(function(t){
       var meta=targetMetricMeta(t.metricKey);
       var scopeTag='<span style="font-size:9px;color:var(--tx3)"> ('+(t.scope==='personal'?'Personal':'Team')+')</span>';
@@ -2795,7 +2832,12 @@ function renderOverview(){
   }
   // Panel kelola target (Sekar only) — semua target semua periode, CRUD
   if(isSup){
-    var mgmtRows=allTargetsNow.map(function(t){
+    // CLM-11 Fase G1: urut per (periode, sortOrder) biar row 1-bulan kontigu -> ▲/▼ swap tetangga
+    // yg keliatan sebelahan. First/last per grup periode buat disable tombol di ujung.
+    var sortedMgmt=allTargetsNow.slice().sort(targetSortCmp);
+    var mgmtRows=sortedMgmt.map(function(t,mi){
+      var isFirstInPeriod=(mi===0)||(sortedMgmt[mi-1].period!==t.period);
+      var isLastInPeriod=(mi===sortedMgmt.length-1)||(sortedMgmt[mi+1].period!==t.period);
       var meta=targetMetricMeta(t.metricKey);
       var scopeLabel=t.scope==='personal'?'Personal':'Team';
       var targetDisp,actualDisp;
@@ -2830,6 +2872,8 @@ function renderOverview(){
         +'<td>'+actualDisp+'</td>'
         +'<td>'+(t.visibleToAgent?'✓':'—')+'</td>'
         +'<td><div class="row-tools">'
+        +'<button class="action-btn ab-view" data-act="target-up" data-id="'+t.id+'" title="Naikkan urutan"'+(isFirstInPeriod?' disabled style="opacity:.3;cursor:default"':'')+'>▲</button>'
+        +'<button class="action-btn ab-view" data-act="target-down" data-id="'+t.id+'" title="Turunkan urutan"'+(isLastInPeriod?' disabled style="opacity:.3;cursor:default"':'')+'>▼</button>'
         +'<button class="action-btn ab-edit" data-act="edit-target" data-id="'+t.id+'">✏</button>'
         +'<button class="action-btn ab-wl" data-act="del-target" data-id="'+t.id+'">✕</button>'
         +'</div></td></tr>';
@@ -5733,6 +5777,8 @@ tabContent.addEventListener('click',function(e){
     }
     else if(act==='toggle-agent-status')toggleAgentStatus(agid);
     else if(act==='edit-target')openTargetModal(id);
+    else if(act==='target-up'){if(!btn.disabled)reorderTarget(id,-1);}
+    else if(act==='target-down'){if(!btn.disabled)reorderTarget(id,1);}
     else if(act==='daily-view-metric'){dailyViewMetricSel=btn.dataset.metric;renderTab('overview');}
     else if(act==='reassign-invoice')openInvReassignModal(id);
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab('overview');}}
@@ -5912,10 +5958,31 @@ var MSEL_REFRESH={
   invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
   blastAgentFilter:refreshBlastBody
 };
+// CLM-11 Fase G6: Pilih semua / Kosongkan buat panel multi-select. selectAll=true -> centang semua
+// opsi (window[name] = semua value di panel); false -> kosongin (=[], sama makna "Semua X" default).
+// Panel tetep kebuka (tombol di dalam .msel-panel), cuma refresh tbody/results via MSEL_REFRESH.
+function applyMselSelectAll(name,selectAll){
+  var trg=document.querySelector('[data-msel-trigger="'+name+'"]');
+  if(!trg)return;
+  var panel=trg.parentElement.querySelector('.msel-panel');
+  if(!panel)return;
+  var opts=panel.querySelectorAll('.msel-opt');
+  var vals=[];
+  opts.forEach(function(c){c.checked=selectAll;if(selectAll)vals.push(c.value);});
+  window[name]=selectAll?vals:[];
+  var baseTitle=trg.dataset.basetitle;
+  trg.textContent=(!selectAll||vals.length===0)?('Semua '+baseTitle)
+    :vals.length===1?(opts[0]?opts[0].dataset.label:vals[0])
+    :baseTitle+' ('+vals.length+')';
+  if(MSEL_REFRESH[name])MSEL_REFRESH[name]();
+}
 // Buka/tutup panel multi-select: klik trigger toggle + tutup panel lain yg lagi kebuka; klik di
 // luar panel manapun nutup semua. Level document (bukan tabContent) krn butuh nangkep klik DI LUAR
 // #tab-content juga (mis. klik ke area kosong halaman).
 document.addEventListener('click',function(e){
+  var mAll=e.target.closest('[data-msel-all]'),mClr=e.target.closest('[data-msel-clear]');
+  if(mAll){applyMselSelectAll(mAll.dataset.mselAll,true);return;}
+  if(mClr){applyMselSelectAll(mClr.dataset.mselClear,false);return;}
   var trg=e.target.closest('[data-msel-trigger]');
   if(trg){
     var wrap=trg.closest('.msel');
