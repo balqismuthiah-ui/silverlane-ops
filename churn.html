@@ -5360,12 +5360,14 @@ function gcWatchlistBadge(phone){
 // CLM-04 Fase 2: sync-down financials per bulan dari GAS (?action=financials&month=X) -> FinancialsStore.
 // GAS balikin per-Outlet_ID teragregasi + mrr agregat 1 bulan; disimpan mentah per bulan, join
 // Outlet_ID->case->agen dihitung LIVE saat compute_metric (computeFinancialsMetric), bukan di sini.
-function syncFinancialsOnly(monthParam){
+// QA round 3 lanjutan (operator, 13 Jul): param `silent` buat jalur AUTO-SYNC on-load (lihat
+// autoSyncFinancialsStores) -- tanpa toast/spam UI, error diem2 (non-kritis, tombol manual tetep ada).
+function syncFinancialsOnly(monthParam,silent){
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
-  if(!mon){toast('Pilih bulan dulu di "Sync Bulan" sebelum sync financials');return;}
+  if(!mon){if(!silent)toast('Pilih bulan dulu di "Sync Bulan" sebelum sync financials');return;}
   var btn=document.getElementById('sync-financials-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  toast('Mengambil data financials ('+mon+')…',4000);
+  if(btn&&!silent){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+  if(!silent)toast('Mengambil data financials ('+mon+')…',4000);
 
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
@@ -5378,12 +5380,12 @@ function syncFinancialsOnly(monthParam){
       if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
       FinancialsStore.setMonth(mon,{mrr:json.mrr||0,data:json.data||[]});
       renderTab(currentTab);
-      toast('Financials '+mon+' tersimpan: '+(json.total||0)+' outlet renewal',5000);
+      if(!silent)toast('Financials '+mon+' tersimpan: '+(json.total||0)+' outlet renewal',5000);
     }).catch(function(err){
-      toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync financials: '+err.message,5000);
+      if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync financials: '+err.message,5000);
     }).then(function(){
       var b=document.getElementById('sync-financials-btn');
-      if(b){b.disabled=false;b.textContent='📥 Sync Financials';}
+      if(b&&!silent){b.disabled=false;b.textContent='📥 Sync Financials';}
     });
 }
 
@@ -5391,12 +5393,12 @@ function syncFinancialsOnly(monthParam){
 // -> UpsellTeamStore. Key bulan = 3-huruf (currentMonthKey), SAMA pola kayak syncFinancialsOnly
 // (BUKAN full "Jan-26" kayak grossnet lama -- tab RENEWAL/UPSELL cuma tahun 2026, nggak butuh
 // exact-match multi-tahun).
-function syncUpsellTeamOnly(monthParam){
+function syncUpsellTeamOnly(monthParam,silent){
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
-  if(!mon){toast('Pilih bulan dulu di "Sync Bulan" sebelum sync Upsell Tim');return;}
+  if(!mon){if(!silent)toast('Pilih bulan dulu di "Sync Bulan" sebelum sync Upsell Tim');return;}
   var btn=document.getElementById('sync-upsellteam-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  toast('Mengambil data Upsell Tim ('+mon+')…',4000);
+  if(btn&&!silent){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+  if(!silent)toast('Mengambil data Upsell Tim ('+mon+')…',4000);
 
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
@@ -5412,13 +5414,31 @@ function syncUpsellTeamOnly(monthParam){
       // literally cherry-pick 3 field lama doang, bakal DIAM-DIAM BUANG field baru kalau nggak ditambah.
       UpsellTeamStore.setMonth(mon,{roster:json.roster||[],renewals:json.renewals||[],upsell:json.upsell||[],renewalsRaw:json.renewalsRaw||[],upsellRaw:json.upsellRaw||[]});
       renderTab(currentTab);
-      toast('Upsell Tim '+mon+' tersimpan: '+(json.upsell?json.upsell.length:0)+' baris agregat',5000);
+      if(!silent)toast('Upsell Tim '+mon+' tersimpan: '+(json.upsell?json.upsell.length:0)+' baris agregat',5000);
     }).catch(function(err){
-      toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Upsell Tim: '+err.message,5000);
+      if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Upsell Tim: '+err.message,5000);
     }).then(function(){
       var b=document.getElementById('sync-upsellteam-btn');
-      if(b){b.disabled=false;b.textContent='📥 Sync Upsell Tim';}
+      if(b&&!silent){b.disabled=false;b.textContent='📥 Sync Upsell Tim';}
     });
+}
+
+// QA round 3 lanjutan (operator, 13 Jul): AUTO-SYNC financials+upsellteam bulan berjalan on-load --
+// sebelum ini DUA-DUANYA murni manual (tombol tab Master), padahal semua kartu Overview baru
+// (MRR per-paket/Daily View/MTD per-agen/tier) ngandelin store ini; 2 leader yg sync di menit beda
+// liat angka beda (bukan bug, snapshot -- kasus Muthia-vs-Ryanza 13 Jul). Throttle 30 menit via
+// localStorage biar nggak ngehajar GAS tiap refresh (data harian nggak butuh lebih fresh dari itu;
+// tombol manual tetep ada buat force kapan aja). Pola on-load sama GC Watchlist, silent (no toast).
+var FIN_UT_AUTOSYNC_TS_KEY='fin_ut_autosync_ts_v1';
+function autoSyncFinancialsStores(){
+  try{
+    var last=parseInt(localStorage.getItem(FIN_UT_AUTOSYNC_TS_KEY)||'0',10);
+    if(Date.now()-last<30*60*1000)return;
+    localStorage.setItem(FIN_UT_AUTOSYNC_TS_KEY,String(Date.now()));
+  }catch(e){}
+  var mon=MONTH_KEYS[new Date().getMonth()];
+  syncFinancialsOnly(mon,true);
+  setTimeout(function(){syncUpsellTeamOnly(mon,true);},2500);
 }
 
 // CLM-10 §1: sync-down Invoice Tracker (Data Invoice CX, GAS ?action=invoicetracker) -> Invoice
@@ -6008,6 +6028,9 @@ function startApp(){
   // CLM-11 Fase E: tarik Targets lintas-akun leader on-load (jarang berubah, cukup sync-on-load +
   // sync abis aksi sendiri di Targets.add/update/delete -- BUKAN polling agresif kayak responsesDelta).
   setTimeout(syncTargetsFromServer,2200);
+  // QA round 3 lanjutan: auto-sync financials+upsellteam bulan berjalan (silent, throttle 30 menit
+  // internal -- lihat autoSyncFinancialsStores). Staggered paling akhir, payload-nya paling gede.
+  setTimeout(autoSyncFinancialsStores,4200);
   // CLM-08: auto-poll respons agen lain -- on-load (staggered dikit dari freshness biar nggak
   // barengan) + tiap 5 menit selama halaman kebuka (visibility-gated -- lihat startRespPolling).
   setTimeout(pollResponsesDelta,1800);
