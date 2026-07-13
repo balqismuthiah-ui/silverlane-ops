@@ -4337,6 +4337,11 @@ function saveTarget(){
     payload.targetValueImproved=impRaw!==''?(parseFloat(impRaw)||0):null;
   }
   if(targetEditId){
+    // CLM-11 Fase G1: payload dibangun dari field modal doang (nggak ada input sortOrder). Tanpa carry
+    // ini, ngedit target BAKAL ngehapus urutan reorder-nya (Targets.update = Object.assign replace utuh)
+    // -- putusin rantai sortOrder. Pertahanin nilai existing.
+    var existingT=Targets.getAll().find(function(x){return x.id===targetEditId;});
+    if(existingT&&existingT.sortOrder!=null)payload.sortOrder=existingT.sortOrder;
     Targets.update(targetEditId,payload);
     toast('Target disimpan');
   }else{
