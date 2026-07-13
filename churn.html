@@ -1168,12 +1168,14 @@ function computeMrrPerPaketActual(period,recs){
   var agg={};
   MRR_PAKET_TIERS.forEach(function(t){agg[t]={rev:0,qty:0};});
   fin.data.forEach(function(f){
-    // QA round 3 (operator, 13 Jul): MRR per paket = CX-ONLY (exclude Self Onboard) -- definisi sheet
-    // Performance operator, verified read-only: CX-only 68.622/85.010/156.208/354.917 vs sheet
-    // 64.082/81.194/155.039/360.436 (selisih tinggal drift 2 hari data) vs semua-channel yg 30-40%
-    // lebih tinggi. Field `region` baru di GAS v50; data cache pra-v50 belum punya field itu ->
-    // f.region undefined LOLOS filter (perilaku lama, kebenerin sendiri begitu re-sync financials).
-    if(f.region==='Self Onboard')return;
+    // QA round 3 rev.2 (operator, 13 Jul): MRR per paket = region Ops/CX DOANG -- validasi angka
+    // per-region vs sheet operator: Basic 8.522.964/133 & Prime 52.172.758/147 match PERSIS di
+    // Ops(+CX), Starter/Advance beda <0,2% (murni drift tag region antar-waktu-hitung). rev.1
+    // (cuma exclude Self Onboard) masih ngikutin baris Telesales/Metro/nama-daerah = region SALES,
+    // bikin angka 4-6% lebih tinggi dari sheet. Konsisten semantik lama: Ops/CX=CX, SO=SO, sisanya
+    // Sales. Field `region` dari GAS v50; cache pra-v50 tanpa field itu -> f.region undefined LOLOS
+    // (fallback perilaku lama, kebenerin sendiri begitu re-sync financials).
+    if(f.region!==undefined&&f.region!=='Ops'&&f.region!=='CX')return;
     var bucket=normalizePaketBucket(f.paket,f.outletId,recsByOutletId);
     if(bucket){agg[bucket].rev+=(f.netRevenue||0);agg[bucket].qty+=(f.skuQty||0);}
   });
