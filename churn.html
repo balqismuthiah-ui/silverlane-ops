@@ -285,6 +285,7 @@ tr:hover td{background:var(--sur2)}
     <button class="ntab" data-tab="watchlist">🚫 Watchlist GC</button>
     <button class="ntab" data-tab="klopos">📅 KLOPOS Daily</button>
     <button class="ntab" data-tab="invoice">🧾 Invoice Tracker</button>
+    <button class="ntab" data-tab="invsummary">📆 Invoice Summary</button>
     <button class="ntab" data-tab="konfigakun">⚙️ Konfigurasi Akun</button>
   </div>
 
@@ -2094,6 +2095,12 @@ var invDay=''; // 'hari H' buat metrik #1 (dibuat) & #4 (terbayar) -- kosong = p
 // CLM-11 A4: filter Bulan + rentang tanggal -- ngontrol BARIS TABEL (invBasePool/invFilteredRows)
 // DOANG, terpisah total dari invDay (yang cuma ngontrol 2 metric card tanggal-spesifik di atas).
 var invBulanFilter=[],invStartDate='',invEndDate='';
+// CLM-11 Fase G (Batch B): tab Invoice Summary — matrix agen×hari per status pembayaran.
+// invsumCat/invsumAgent = multi-select collapsible (reuse renderMultiSelect + G6). invsumMonth = 1
+// bulan (native select, default bulan berjalan). invsumMatrix = status aktif (pill). invsumUnit =
+// rp|qty (5 status punya 2 varian; 'created' qty-only). Sumbu tanggal HYBRID (keputusan operator 13
+// Jul): 'paid' = Paid Date, sisanya = Created Date.
+var invsumCat=[],invsumAgent=[],invsumMonth='',invsumMatrix='created',invsumUnit='qty';
 var syncInProgress=false;
 
 // ── CLM-01 SYNC STATE (cadence + rate-limit) ────────────────────────────────
@@ -3584,6 +3591,129 @@ function renderInvoiceTracker(){
     +'<tbody id="inv-tbody">'+invRowsHtml+'</tbody></table></div></div>';
 }
 
+// ── TAB: INVOICE SUMMARY (CLM-11 Fase G Batch B) ───────────────────────────
+// Matrix agen×hari per status pembayaran. Sumber = InvoiceTrackerStore (nol GAS baru). Field dari
+// getInvoiceTracker: createdDate/paidDate/paymentStatus/statusDetail/creatorName/total/agentName(enrich).
+// Kategori dari prefix INV_Code (NEW/RNW/ADD). Status = current-state mutually-exclusive (hasil
+// reverse-engineer tab "Daily Renewal", 13 Jul): requested/rejected/paid dari INV_Payment_Status,
+// approved/validated dari INV_Status_Detail. Sumbu tanggal HYBRID: 'paid'=Paid Date, sisanya=Created.
+var INVSUM_MATRICES=[
+  {key:'created',  label:'Dibuat',    axis:'created', qtyOnly:true,  match:function(r){return true;}},
+  {key:'requested',label:'Requested', axis:'created', match:function(r){return r.paymentStatus==='REQUESTED-PAYMENT';}},
+  {key:'rejected', label:'Rejected',  axis:'created', match:function(r){return r.paymentStatus==='REJECTED-PAYMENT';}},
+  {key:'approved', label:'Approved',  axis:'created', match:function(r){return r.statusDetail==='APPROVED-INVOICE'||r.statusDetail==='APPROVED-PROFORMA';}},
+  {key:'validated',label:'Validated', axis:'created', match:function(r){return r.statusDetail==='VALIDATED-INVOICE';}},
+  {key:'paid',     label:'Paid',      axis:'paid',    match:function(r){return r.paymentStatus==='PAID';}}
+];
+var INVSUM_CAT_LABEL={NEW:'New',RNW:'Renewal',ADD:'Add On'};
+function invsumCatOf(invCode){var p=String(invCode||'').split('/')[1];return INVSUM_CAT_LABEL[p]?p:'';}
+function renderInvoiceSummary(){
+  var me=Auth.getActive();
+  var isSup=Auth.isSuperior();
+  var d=InvoiceTrackerStore.get();
+  if(!d.data||!d.data.length){
+    document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="card empty">Belum ada data — klik "📥 Sync Invoice Tracker" di tab Master &amp; Assign</div></div>';
+    return;
+  }
+  var enriched=invEnrichedRows();
+  // scope + kategori. Agent cuma lihat baris miliknya; kategori multi (kosong=semua).
+  var pool=enriched.filter(function(r){
+    if(!isSup&&r.agentName!==me)return false;
+    if(invsumCat.length&&invsumCat.indexOf(invsumCatOf(r.invCode))<0)return false;
+    return true;
+  });
+  // bulan tersedia = distinct YYYY-MM dari createdDate + paidDate (biar bulan 'paid' juga kepilih)
+  var mset={};
+  pool.forEach(function(r){var c=localDateStr(r.createdDate);if(c)mset[c.slice(0,7)]=true;var p=localDateStr(r.paidDate);if(p)mset[p.slice(0,7)]=true;});
+  var months=Object.keys(mset).sort().reverse();
+  if(!invsumMonth||months.indexOf(invsumMonth)<0)invsumMonth=months[0]||localDateStr(new Date()).slice(0,7);
+  var year=parseInt(invsumMonth.slice(0,4),10),monthIdx=parseInt(invsumMonth.slice(5,7),10)-1;
+  var todayStr=localDateStr(new Date());
+  var isCurMonth=invsumMonth===todayStr.slice(0,7);
+  var lastDay=isCurMonth?parseInt(todayStr.slice(8,10),10):new Date(year,monthIdx+1,0).getDate();
+  var days=[];for(var dd=1;dd<=lastDay;dd++)days.push(dd);
+  // ── baris agen: leader=roster 8 agen (+ unattributed kalau ada), agent=diri sendiri ──
+  var agentRows;
+  if(isSup){
+    var names=AGENTS.slice();
+    if(invsumAgent.length)names=names.filter(function(n){return invsumAgent.indexOf(n)>=0;});
+    agentRows=names.map(function(n){return{key:n,label:n};});
+    if(!invsumAgent.length&&pool.some(function(r){return !r.agentName;}))agentRows.push({key:'__none__',label:'— belum teridentifikasi'});
+  }else{
+    agentRows=[{key:me,label:me}];
+  }
+  // ── 4 kartu ringkasan (scope bulan terpilih, by created date) ──
+  var mp=pool.filter(function(r){var c=localDateStr(r.createdDate);return c&&c.slice(0,7)===invsumMonth;});
+  var totalRp=mp.reduce(function(s,r){return s+(Number(r.total)||0);},0);
+  var cntUnpaid=mp.filter(function(r){return r.paymentStatus!=='PAID';}).length;
+  var cntSame=mp.filter(function(r){var c=localDateStr(r.createdDate),p=localDateStr(r.paidDate);return c&&p&&c===p;}).length;
+  function card(lbl,big,sub){return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+lbl+'</div><div style="font-size:22px;font-weight:800">'+big+'</div>'+(sub?'<div style="font-size:11px;color:var(--tx3);margin-top:2px">'+sub+'</div>':'')+'</div>';}
+  var cardsHtml=card('Total Deal',fmtRpShort(totalRp),mp.length+' invoice')
+    +card('Invoice Dibuat',mp.length,'bulan ini')
+    +card('Belum Paid',cntUnpaid,'dari '+mp.length+' dibuat')
+    +card('Paid Same-Date',cntSame,'dibayar di hari yang sama');
+  // ── matrix aktif ──
+  var cfg=INVSUM_MATRICES.filter(function(m){return m.key===invsumMatrix;})[0]||INVSUM_MATRICES[0];
+  var unit=cfg.qtyOnly?'qty':invsumUnit;
+  var grid={};agentRows.forEach(function(a){grid[a.key]={};});
+  pool.forEach(function(r){
+    if(!cfg.match(r))return;
+    var dstr=cfg.axis==='paid'?localDateStr(r.paidDate):localDateStr(r.createdDate);
+    if(!dstr)return;
+    if(parseInt(dstr.slice(0,4),10)!==year||parseInt(dstr.slice(5,7),10)-1!==monthIdx)return;
+    var day=parseInt(dstr.slice(8,10),10);
+    var ak=r.agentName||'__none__';
+    if(!grid[ak])return;
+    if(!grid[ak][day])grid[ak][day]={rp:0,qty:0};
+    grid[ak][day].qty++;grid[ak][day].rp+=Number(r.total)||0;
+  });
+  function cellVal(c){if(!c)return unit==='rp'?0:0;return unit==='rp'?c.rp:c.qty;}
+  function cellDisp(v){if(!v)return'<span style="color:var(--tx3)">·</span>';return unit==='rp'?fmtRpShort(v):String(v);}
+  // pill switcher status + toggle unit
+  var pills=INVSUM_MATRICES.map(function(m){
+    var on=m.key===invsumMatrix;
+    return'<button class="btn '+(on?'btn-pri':'btn-sec')+'" style="padding:4px 10px;font-size:11px" data-act="invsum-matrix" data-key="'+m.key+'">'+m.label+'</button>';
+  }).join('');
+  var unitToggle=cfg.qtyOnly?'<span style="font-size:11px;color:var(--tx3);align-self:center">(qty)</span>'
+    :'<button class="btn '+(invsumUnit==='qty'?'btn-pri':'btn-sec')+'" style="padding:4px 10px;font-size:11px" data-act="invsum-unit" data-unit="qty">Qty</button>'
+     +'<button class="btn '+(invsumUnit==='rp'?'btn-pri':'btn-sec')+'" style="padding:4px 10px;font-size:11px" data-act="invsum-unit" data-unit="rp">Rupiah</button>';
+  var axisHint=cfg.axis==='paid'?'sumbu: tanggal <b>bayar</b>':'sumbu: tanggal <b>dibuat</b>';
+  // header hari
+  var headCells=days.map(function(day){return'<td style="padding:6px 8px;text-align:right;white-space:nowrap">'+day+'</td>';}).join('');
+  // baris matrix + total per baris + total kolom
+  var colTotals={};days.forEach(function(day){colTotals[day]=0;});var grandTotal=0;
+  var bodyRows=agentRows.map(function(a){
+    var rowTotal=0;
+    var cells=days.map(function(day){
+      var v=cellVal(grid[a.key][day]);rowTotal+=v;colTotals[day]+=v;
+      return'<td style="padding:6px 8px;text-align:right">'+cellDisp(grid[a.key][day]?v:0)+'</td>';
+    }).join('');
+    grandTotal+=rowTotal;
+    return'<tr style="border-bottom:1px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--card);white-space:nowrap">'+a.label+'</td>'+cells
+      +'<td style="padding:6px 10px;text-align:right;font-weight:700;white-space:nowrap">'+(unit==='rp'?fmtRpShort(rowTotal):rowTotal)+'</td></tr>';
+  }).join('');
+  var totalRowCells=days.map(function(day){return'<td style="padding:6px 8px;text-align:right;font-weight:700">'+(colTotals[day]?(unit==='rp'?fmtRpShort(colTotals[day]):colTotals[day]):'<span style="color:var(--tx3)">·</span>')+'</td>';}).join('');
+  var totalRow='<tr style="border-top:2px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--sur2);font-weight:700">Total</td>'+totalRowCells+'<td style="padding:6px 10px;text-align:right;font-weight:800">'+(unit==='rp'?fmtRpShort(grandTotal):grandTotal)+'</td></tr>';
+  // filter controls
+  var catOpts=Object.keys(INVSUM_CAT_LABEL).map(function(k){return{value:k,label:INVSUM_CAT_LABEL[k]};});
+  var catFilterHtml=renderMultiSelect('invsumCat','Kategori',catOpts,invsumCat);
+  var agentFilterHtml=isSup?renderMultiSelect('invsumAgent','Agen',AGENTS.map(function(n){return{value:n,label:n};}),invsumAgent):'';
+  var monthOpts=months.map(function(mk){var y=mk.slice(0,4),mi=parseInt(mk.slice(5,7),10)-1;return'<option value="'+mk+'"'+(mk===invsumMonth?' selected':'')+'>'+MONTH_KEYS[mi]+' '+y+'</option>';}).join('');
+  document.getElementById('tab-content').innerHTML=
+    '<div class="ov-section"><div class="ov-section-title">📆 Invoice Summary '+(isSup?'— Semua Agen':'— Saya ('+me+')')+'</div>'
+    +'<div class="frow" style="margin-bottom:12px">'
+    +catFilterHtml+(agentFilterHtml||'')
+    +'<select id="invsum-month" style="padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:13px">'+monthOpts+'</select>'
+    +'</div>'
+    +'<div class="grid4">'+cardsHtml+'</div></div>'
+    +'<div class="ov-section"><div class="ov-section-title">Matrix Agen × Hari</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center">'+pills+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center">'+unitToggle+'<span style="font-size:11px;color:var(--tx3);margin-left:6px">'+axisHint+' · '+MONTH_KEYS[monthIdx]+' '+year+(isCurMonth?' (s/d hari ini)':'')+'</span></div>'
+    +'<div class="card" style="padding:0"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +'<thead><tr style="border-bottom:1px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--sur2);color:var(--tx3)">Agen</td>'+headCells+'<td style="padding:6px 10px;text-align:right;color:var(--tx3)">Total</td></tr></thead>'
+    +'<tbody>'+(bodyRows||'')+totalRow+'</tbody></table></div></div></div>';
+}
+
 // ── TAB: RESPONSE ──────────────────────────────────────────────────────────
 function renderResponseResults(){
   var el=document.getElementById('resp-results');
@@ -4359,6 +4489,7 @@ function renderTab(tab){
     case 'watchlist':renderWatchlist();break;
     case 'klopos':renderKlopos();break;
     case 'invoice':renderInvoiceTracker();break;
+    case 'invsummary':renderInvoiceSummary();break;
     case 'konfigakun':renderKonfigurasiAkun();break;
   }
 }
@@ -5780,6 +5911,8 @@ tabContent.addEventListener('click',function(e){
     else if(act==='target-up'){if(!btn.disabled)reorderTarget(id,-1);}
     else if(act==='target-down'){if(!btn.disabled)reorderTarget(id,1);}
     else if(act==='daily-view-metric'){dailyViewMetricSel=btn.dataset.metric;renderTab('overview');}
+    else if(act==='invsum-matrix'){invsumMatrix=btn.dataset.key;renderTab('invsummary');}
+    else if(act==='invsum-unit'){invsumUnit=btn.dataset.unit;renderTab('invsummary');}
     else if(act==='reassign-invoice')openInvReassignModal(id);
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab('overview');}}
     else if(act==='toggle-wl'){
@@ -5956,7 +6089,8 @@ var MSEL_REFRESH={
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
   invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
-  blastAgentFilter:refreshBlastBody
+  blastAgentFilter:refreshBlastBody,
+  invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');}
 };
 // CLM-11 Fase G6: Pilih semua / Kosongkan buat panel multi-select. selectAll=true -> centang semua
 // opsi (window[name] = semua value di panel); false -> kosongin (=[], sama makna "Semua X" default).
@@ -6000,6 +6134,7 @@ tabContent.addEventListener('change',function(e){
   var tgt=e.target;
   // QA round 2 (Ubay): bucket Daily View sekarang dropdown (Semua/CLM/CC/TC/Sales), bukan tombol.
   if(tgt.id==='daily-view-bucket-sel'){dailyViewBucketSel=tgt.value;renderTab('overview');return;}
+  if(tgt.id==='invsum-month'){invsumMonth=tgt.value;renderTab('invsummary');return;}
   if(tgt.classList.contains('blast-chk')){
     if(tgt.checked)csvSelectedIds.add(tgt.dataset.key);
     else csvSelectedIds.delete(tgt.dataset.key);
