@@ -2082,6 +2082,11 @@ var mPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
 var masterCountText=''; // CLM-08: teks counter #master-count, di-set masterRows() sebelum span-nya ada di DOM
 var blastHidePaid=true;
 var blastAgentFilter=[]; // CLM-11 A4: multi-select, leader-only, array kosong = semua agen
+// CLM-05 UX (operator 13 Jul): search outlet/nomor/ID di Blast WABA (cari nomor exploded 1 outlet) +
+// CAP render. Tabel blast di-explode per-nomor (21rb+ baris di scope leader) & DIRENDER SEMUA sekaligus
+// (nggak paged kayak tab lain) → freeze pas render/re-render. Cap DISPLAY ke 500 baris; select-all/
+// tarik-hari-ini/buat-csv tetep data-based (csvSelectedIds) jadi nggak kepotong cap. Search buat nyaring.
+var blastSearch='',BLAST_DISPLAY_CAP=500;
 var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
 var respUpsellFilter=[]; // CLM-08 (4a): work-order queue -- filter klaim upsell by status
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
@@ -3224,7 +3229,7 @@ function masterRows(d){
   var me=Auth.getActive(),isSup=Auth.isSuperior(); // dihitung sekali, bukan per-row (mahal di 35k+ record)
   var s=mSearch.toLowerCase();
   var filtered=d.records.filter(function(r){
-    if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
+    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s))return false;
     // CLM-08 (e): semua filter di bawah multi-select (array) -- OR di dalam 1 filter (match SALAH
     // SATU value terpilih), AND lintas filter (semua filter harus match). Kosong=semua (skip check).
     if(mAgent.length&&!mAgent.some(function(v){return v==='__unassigned__'?!r.assignedAgent:r.assignedAgent===v;}))return false;
@@ -3362,7 +3367,9 @@ function wsFilteredRecs(d,me,isSup){
   }
   if(!wsSearch)return pool;
   var s=wsSearch.toLowerCase();
-  return pool.filter(function(r){return r.id.toLowerCase().includes(s)||r.outletName.toLowerCase().includes(s)||(r.namaMerchant||'').toLowerCase().includes(s);});
+  // CLM-05 UX fix (operator 13 Jul): guard toLowerCase -- ADA record dgn id/outletName null di pool
+  // leader → `r.id.toLowerCase()` throw → seluruh search My Worksheet mati diam2 ("search gak jalan").
+  return pool.filter(function(r){return String(r.id||'').toLowerCase().includes(s)||String(r.outletName||'').toLowerCase().includes(s)||String(r.namaMerchant||'').toLowerCase().includes(s);});
 }
 
 function wsRows(d,me,isSup){
@@ -3764,7 +3771,7 @@ function renderResponseResults(){
   var pool=d.records;
   var s=respSearch.toLowerCase();
   var filtered=pool.filter(function(r){
-    if(s&&!r.id.toLowerCase().includes(s)&&!(r.outletName||'').toLowerCase().includes(s)&&!(r.namaMerchant||'').toLowerCase().includes(s))return false;
+    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s))return false;
     if(respCatFilter.length&&!respCatFilter.some(function(v){return v==='__none__'?!(r.response&&r.response.category):(r.response&&r.response.category===v);}))return false;
     if(respAgentFilter.length&&respAgentFilter.indexOf(r.assignedAgent)<0)return false;
     // CLM-08 (4a): work-order queue -- filter "Klaim Upsell: Menunggu Validasi" biar leader nggak
@@ -3856,11 +3863,24 @@ function blastFilteredRows(){
     recs=recs.filter(function(r){return blastAgentFilter.indexOf(r.assignedAgent)<0;});
   }
   var allRows=buildExplodedRows(recs);
-  return blastHidePaid?allRows.filter(function(row){
+  if(blastHidePaid)allRows=allRows.filter(function(row){
     if(row.record.paymentStatus==='paid')return false;
     if(row.record.response&&PAID_DETAILS.indexOf(row.record.response.detail)>=0)return false;
     return true;
-  }):allRows;
+  });
+  if(blastSearch){
+    var bs=blastSearch.toLowerCase();
+    allRows=allRows.filter(function(row){
+      return String(row.outletName||'').toLowerCase().includes(bs)||String(row.phone||'').toLowerCase().includes(bs)||String(row.outletId||'').toLowerCase().includes(bs);
+    });
+  }
+  return allRows;
+}
+// CLM-05 UX (operator 13 Jul): teks counter tabel blast (mirip #ws-count) -- kasih tau kalau ke-cap.
+function blastCountText(n){
+  return n>BLAST_DISPLAY_CAP
+    ?('Menampilkan '+BLAST_DISPLAY_CAP+' dari '+n+' baris — pakai 🔍 search buat nyaring outlet/nomor tertentu')
+    :('Menampilkan '+n+' baris');
 }
 function blastTableRowsHtml(rows){
   var todayStr=localDateStr(new Date().toISOString());
@@ -3894,8 +3914,11 @@ function blastTableRowsHtml(rows){
   }).join('');
 }
 function refreshBlastBody(){
+  var rows=blastFilteredRows();
   var tb=document.getElementById('blast-tbody');
-  if(tb)tb.innerHTML=blastTableRowsHtml(blastFilteredRows())||'<tr><td colspan="10" class="empty">Belum ada data</td></tr>';
+  if(tb)tb.innerHTML=blastTableRowsHtml(rows.slice(0,BLAST_DISPLAY_CAP))||'<tr><td colspan="10" class="empty">Belum ada data</td></tr>';
+  var cnt=document.getElementById('blast-count');
+  if(cnt)cnt.textContent=blastCountText(rows.length);
 }
 function renderBlast(){
   var isSup=Auth.isSuperior();
@@ -3914,7 +3937,7 @@ function renderBlast(){
       +'</div></td></tr>';
   }).join('');
 
-  var tableRows=blastTableRowsHtml(rows);
+  var tableRows=blastTableRowsHtml(rows.slice(0,BLAST_DISPLAY_CAP));
   var blastAgentOptsArr=AGENTS.map(function(a){return{value:a,label:a};});
 
   document.getElementById('tab-content').innerHTML=
@@ -3965,6 +3988,11 @@ function renderBlast(){
       +renderMultiSelect('blastAgentFilter','Agen',blastAgentOptsArr,blastAgentFilter)
       +'<span style="font-size:11px;color:var(--tx3);align-self:center">Kosongkan = tampilkan semua agen (pilih buat exclude yang lagi libur)</span>'
       +'</div>'):'')
+    // CLM-05 UX (operator 13 Jul): search outlet/nomor/ID (cari nomor exploded 1 outlet) + counter.
+    +'<div class="frow" style="margin-bottom:8px;gap:8px;align-items:center">'
+    +'<input class="fsearch" type="search" id="blast-search" placeholder="🔍 Cari nama outlet / nomor HP / ID..." value="'+blastSearch+'">'
+    +'<span id="blast-count" style="font-size:11px;color:var(--tx3);white-space:nowrap;align-self:center">'+blastCountText(rows.length)+'</span>'
+    +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
     +'<thead><tr><th><input type="checkbox" id="blast-chk-all"></th><th>ID</th><th>Nama Outlet</th><th>Tipe</th><th>Nomor HP</th><th>Agen (Inisial)</th><th>Last Blast</th><th>Expired</th><th>Cadence</th><th>Pembayaran</th></tr></thead>'
     +'<tbody id="blast-tbody">'+(tableRows||'<tr><td colspan="10" class="empty">Belum ada data</td></tr>')+'</tbody>'
@@ -6228,6 +6256,7 @@ tabContent.addEventListener('change',function(e){
 tabContent.addEventListener('input',function(e){
   var tgt=e.target;
   if(tgt.id==='ws-search'){wsSearch=tgt.value;refreshWsBody();}
+  if(tgt.id==='blast-search'){blastSearch=tgt.value;refreshBlastBody();}
   if(tgt.id==='m-search'){mSearch=tgt.value;refreshMasterBody();}
   if(tgt.id==='inv-search'){invSearch=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='inv-day'){invDay=tgt.value;refreshInvoiceBody();}
