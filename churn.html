@@ -2445,6 +2445,18 @@ function buildCsvPhoneRows(records){
   return rows;
 }
 
+// CLM-05 AC-H2 FIX (QA Ryry, 13 Jul): "Sudah Diblast" WAJIB turun dari blastLog (bukti kirim aktual
+// CLARA), BUKAN blastStatus (penanda provisional yg nggak pernah di-set sync CLARA). Bug lama: funnel
+// Overview + kolom "Blasted" per-agen selalu ~0% di SEMUA 12 bulan padahal blast nyata terjadi (282
+// case Jun, 113 Jul via CLARA). Konsisten sama sumber yg dipakai daftar Blast + metrik blast_h-3/h+2/
+// h+8 (computeMetricRaw line ~876): record dianggap keblast kalau ADA >=1 checkpoint di blastLog dgn
+// status != 'failed'; fallback ke blastStatus manual CUMA buat record yg belum pernah kena sync CLARA.
+function recordEverBlasted(r){
+  if(r.blastLog){
+    for(var k in r.blastLog){var bl=r.blastLog[k];if(bl&&bl.status!=='failed')return true;}
+  }
+  return r.blastStatus==='blasted';
+}
 // CLM-11 A1: breakdown funnel di-scope ke 1 cohort-bulan (cohortMonths, bukan tahun -- lihat
 // catatan YoY di memory, cohortMonths BUKAN tahun-aware, jadi cuma MoM adjacent-month yg valid).
 // monthKey null/'' = semua cohort (dipakai fallback kalau data blm ke-tag cohortMonths).
@@ -2453,7 +2465,7 @@ function computeFunnelBreakdown(recsInScope,monthKey){
     return(r.cohortMonths||r.bulan||'').split(',').indexOf(monthKey)>=0;
   }):recsInScope;
   var total=periodRecs.length;
-  var blasted=periodRecs.filter(function(r){return r.blastStatus==='blasted';}).length;
+  var blasted=periodRecs.filter(recordEverBlasted).length;
   var renewal=periodRecs.filter(function(r){return respOutcome(r.response)==='renewal';}).length;
   var tidakRenewal=periodRecs.filter(function(r){return respOutcome(r.response)==='churn';}).length;
   var followUp=periodRecs.filter(function(r){return respOutcome(r.response)==='followup';}).length;
@@ -2512,7 +2524,7 @@ function renderOverview(){
   var funnelPrev=funnelHasCohortData?computeFunnelBreakdown(myRecs,prevMonthKey):null;
 
   var total=myRecs.length;
-  var blasted=myRecs.filter(function(r){return r.blastStatus==='blasted';}).length; // provisional — gated BROADCASTLOG, lihat CLM-05
+  var blasted=myRecs.filter(recordEverBlasted).length; // CLM-05 AC-H2 fix: dari blastLog (CLARA), bukan blastStatus provisional
   var renewal=myRecs.filter(function(r){return respOutcome(r.response)==='renewal';}).length;
   var tidakRenewal=myRecs.filter(function(r){return respOutcome(r.response)==='churn';}).length;
   var followUp=myRecs.filter(function(r){return respOutcome(r.response)==='followup';}).length;
@@ -2572,7 +2584,7 @@ function renderOverview(){
       var aTidak=aRecs.filter(function(r){return respOutcome(r.response)==='churn';}).length;
       var aFu=aRecs.filter(function(r){return respOutcome(r.response)==='followup';}).length;
       var aNo=aTotal-aRenew-aTidak-aFu;
-      var aBlasted=aRecs.filter(function(r){return r.blastStatus==='blasted';}).length;
+      var aBlasted=aRecs.filter(recordEverBlasted).length; // CLM-05 AC-H2 fix: dari blastLog (CLARA)
       var pct=aTotal?Math.round((aRenew/aTotal)*100):0;
       var convClr=pct>=convTargetImp?'var(--grn)':(pct>=convTarget?'var(--yel)':'var(--red)');
       var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',ag);},0);
