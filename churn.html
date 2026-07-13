@@ -2100,7 +2100,7 @@ var invBulanFilter=[],invStartDate='',invEndDate='';
 // bulan (native select, default bulan berjalan). invsumMatrix = status aktif (pill). invsumUnit =
 // rp|qty (5 status punya 2 varian; 'created' qty-only). Sumbu tanggal HYBRID (keputusan operator 13
 // Jul): 'paid' = Paid Date, sisanya = Created Date.
-var invsumCat=[],invsumAgent=[],invsumMonth='',invsumMatrix='created',invsumUnit='qty';
+var invsumCat=[],invsumAgent=[],invsumMonth='',invsumStatusSel=['created'];
 var syncInProgress=false;
 
 // ── CLM-01 SYNC STATE (cadence + rate-limit) ────────────────────────────────
@@ -3648,70 +3648,68 @@ function renderInvoiceSummary(){
   var cntUnpaid=mp.filter(function(r){return r.paymentStatus!=='PAID';}).length;
   var cntSame=mp.filter(function(r){var c=localDateStr(r.createdDate),p=localDateStr(r.paidDate);return c&&p&&c===p;}).length;
   function card(lbl,big,sub){return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+lbl+'</div><div style="font-size:22px;font-weight:800">'+big+'</div>'+(sub?'<div style="font-size:11px;color:var(--tx3);margin-top:2px">'+sub+'</div>':'')+'</div>';}
-  var cardsHtml=card('Total Deal',fmtRpShort(totalRp),mp.length+' invoice')
+  var cardsHtml=card('Total Deal',fmtRpFull(totalRp),mp.length+' invoice')
     +card('Invoice Dibuat',mp.length,'bulan ini')
     +card('Belum Paid',cntUnpaid,'dari '+mp.length+' dibuat')
     +card('Paid Same-Date',cntSame,'dibayar di hari yang sama');
-  // ── matrix aktif ──
-  var cfg=INVSUM_MATRICES.filter(function(m){return m.key===invsumMatrix;})[0]||INVSUM_MATRICES[0];
-  var unit=cfg.qtyOnly?'qty':invsumUnit;
-  var grid={};agentRows.forEach(function(a){grid[a.key]={};});
-  pool.forEach(function(r){
-    if(!cfg.match(r))return;
-    var dstr=cfg.axis==='paid'?localDateStr(r.paidDate):localDateStr(r.createdDate);
-    if(!dstr)return;
-    if(parseInt(dstr.slice(0,4),10)!==year||parseInt(dstr.slice(5,7),10)-1!==monthIdx)return;
-    var day=parseInt(dstr.slice(8,10),10);
-    var ak=r.agentName||'__none__';
-    if(!grid[ak])return;
-    if(!grid[ak][day])grid[ak][day]={rp:0,qty:0};
-    grid[ak][day].qty++;grid[ak][day].rp+=Number(r.total)||0;
-  });
-  function cellVal(c){if(!c)return unit==='rp'?0:0;return unit==='rp'?c.rp:c.qty;}
-  function cellDisp(v){if(!v)return'<span style="color:var(--tx3)">·</span>';return unit==='rp'?fmtRpShort(v):String(v);}
-  // pill switcher status + toggle unit
-  var pills=INVSUM_MATRICES.map(function(m){
-    var on=m.key===invsumMatrix;
-    return'<button class="btn '+(on?'btn-pri':'btn-sec')+'" style="padding:4px 10px;font-size:11px" data-act="invsum-matrix" data-key="'+m.key+'">'+m.label+'</button>';
-  }).join('');
-  var unitToggle=cfg.qtyOnly?'<span style="font-size:11px;color:var(--tx3);align-self:center">(qty)</span>'
-    :'<button class="btn '+(invsumUnit==='qty'?'btn-pri':'btn-sec')+'" style="padding:4px 10px;font-size:11px" data-act="invsum-unit" data-unit="qty">Qty</button>'
-     +'<button class="btn '+(invsumUnit==='rp'?'btn-pri':'btn-sec')+'" style="padding:4px 10px;font-size:11px" data-act="invsum-unit" data-unit="rp">Rupiah</button>';
-  var axisHint=cfg.axis==='paid'?'sumbu: tanggal <b>bayar</b>':'sumbu: tanggal <b>dibuat</b>';
-  // header hari
+  // ── header hari (dipake semua tabel) ──
   var headCells=days.map(function(day){return'<td style="padding:6px 8px;text-align:right;white-space:nowrap">'+day+'</td>';}).join('');
-  // baris matrix + total per baris + total kolom
-  var colTotals={};days.forEach(function(day){colTotals[day]=0;});var grandTotal=0;
-  var bodyRows=agentRows.map(function(a){
-    var rowTotal=0;
-    var cells=days.map(function(day){
-      var v=cellVal(grid[a.key][day]);rowTotal+=v;colTotals[day]+=v;
-      return'<td style="padding:6px 8px;text-align:right">'+cellDisp(grid[a.key][day]?v:0)+'</td>';
+  // helper: 1 tabel matrix buat (cfg, unit). Rupiah = NOMINAL LENGKAP (fmtRpFull, nggak diringkas).
+  function invsumTableHtml(cfg,unit){
+    var grid={};agentRows.forEach(function(a){grid[a.key]={};});
+    pool.forEach(function(r){
+      if(!cfg.match(r))return;
+      var dstr=cfg.axis==='paid'?localDateStr(r.paidDate):localDateStr(r.createdDate);
+      if(!dstr)return;
+      if(parseInt(dstr.slice(0,4),10)!==year||parseInt(dstr.slice(5,7),10)-1!==monthIdx)return;
+      var day=parseInt(dstr.slice(8,10),10);
+      var ak=r.agentName||'__none__';
+      if(!grid[ak])return;
+      if(!grid[ak][day])grid[ak][day]={rp:0,qty:0};
+      grid[ak][day].qty++;grid[ak][day].rp+=Number(r.total)||0;
+    });
+    var fmt=function(v){return unit==='rp'?fmtRpFull(v):String(v);};
+    var colTotals={};days.forEach(function(day){colTotals[day]=0;});var grand=0;
+    var body=agentRows.map(function(a){
+      var rt=0;
+      var cells=days.map(function(day){
+        var c=grid[a.key][day];var v=c?(unit==='rp'?c.rp:c.qty):0;rt+=v;colTotals[day]+=v;
+        return'<td style="padding:6px 8px;text-align:right;white-space:nowrap">'+(v?fmt(v):'<span style="color:var(--tx3)">·</span>')+'</td>';
+      }).join('');
+      grand+=rt;
+      return'<tr style="border-bottom:1px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--card);white-space:nowrap">'+a.label+'</td>'+cells+'<td style="padding:6px 10px;text-align:right;font-weight:700;white-space:nowrap">'+fmt(rt)+'</td></tr>';
     }).join('');
-    grandTotal+=rowTotal;
-    return'<tr style="border-bottom:1px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--card);white-space:nowrap">'+a.label+'</td>'+cells
-      +'<td style="padding:6px 10px;text-align:right;font-weight:700;white-space:nowrap">'+(unit==='rp'?fmtRpShort(rowTotal):rowTotal)+'</td></tr>';
+    var totCells=days.map(function(day){return'<td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap">'+(colTotals[day]?fmt(colTotals[day]):'<span style="color:var(--tx3)">·</span>')+'</td>';}).join('');
+    var totRow='<tr style="border-top:2px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--sur2);font-weight:700">Total</td>'+totCells+'<td style="padding:6px 10px;text-align:right;font-weight:800;white-space:nowrap">'+fmt(grand)+'</td></tr>';
+    return'<div style="font-size:11px;font-weight:700;color:var(--tx3);margin:10px 0 4px;text-transform:uppercase;letter-spacing:.5px">'+(unit==='rp'?'Rupiah':'Qty')+'</div>'
+      +'<div class="card" style="padding:0"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+      +'<thead><tr style="border-bottom:1px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--sur2);color:var(--tx3)">Agen</td>'+headCells+'<td style="padding:6px 10px;text-align:right;color:var(--tx3)">Total</td></tr></thead>'
+      +'<tbody>'+body+totRow+'</tbody></table></div></div>';
+  }
+  // status yang dirender: kosong = semua; else sesuai pilihan (urut INVSUM_MATRICES). Tiap status =
+  // 2 tabel TERPISAH (Qty + Rupiah), kecuali 'Dibuat' yang qty-only.
+  var chosen=INVSUM_MATRICES.filter(function(m){return !invsumStatusSel.length||invsumStatusSel.indexOf(m.key)>=0;});
+  var matrixBlocks=chosen.map(function(cfg){
+    var axisHint=cfg.axis==='paid'?'sumbu: tanggal <b>bayar</b>':'sumbu: tanggal <b>dibuat</b>';
+    var tables=invsumTableHtml(cfg,'qty')+(cfg.qtyOnly?'':invsumTableHtml(cfg,'rp'));
+    return'<div class="ov-section"><div class="ov-section-title">'+cfg.label+' <span style="font-size:11px;font-weight:400;color:var(--tx3)">('+axisHint+')</span></div>'+tables+'</div>';
   }).join('');
-  var totalRowCells=days.map(function(day){return'<td style="padding:6px 8px;text-align:right;font-weight:700">'+(colTotals[day]?(unit==='rp'?fmtRpShort(colTotals[day]):colTotals[day]):'<span style="color:var(--tx3)">·</span>')+'</td>';}).join('');
-  var totalRow='<tr style="border-top:2px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--sur2);font-weight:700">Total</td>'+totalRowCells+'<td style="padding:6px 10px;text-align:right;font-weight:800">'+(unit==='rp'?fmtRpShort(grandTotal):grandTotal)+'</td></tr>';
   // filter controls
   var catOpts=Object.keys(INVSUM_CAT_LABEL).map(function(k){return{value:k,label:INVSUM_CAT_LABEL[k]};});
   var catFilterHtml=renderMultiSelect('invsumCat','Kategori',catOpts,invsumCat);
   var agentFilterHtml=isSup?renderMultiSelect('invsumAgent','Agen',AGENTS.map(function(n){return{value:n,label:n};}),invsumAgent):'';
+  var statusOptsArr=INVSUM_MATRICES.map(function(m){return{value:m.key,label:m.label};});
+  var statusFilterHtml=renderMultiSelect('invsumStatus','Status',statusOptsArr,invsumStatusSel);
   var monthOpts=months.map(function(mk){var y=mk.slice(0,4),mi=parseInt(mk.slice(5,7),10)-1;return'<option value="'+mk+'"'+(mk===invsumMonth?' selected':'')+'>'+MONTH_KEYS[mi]+' '+y+'</option>';}).join('');
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📆 Invoice Summary '+(isSup?'— Semua Agen':'— Saya ('+me+')')+'</div>'
     +'<div class="frow" style="margin-bottom:12px">'
-    +catFilterHtml+(agentFilterHtml||'')
+    +catFilterHtml+(agentFilterHtml||'')+statusFilterHtml
     +'<select id="invsum-month" style="padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:13px">'+monthOpts+'</select>'
+    +'<span style="font-size:11px;color:var(--tx3);align-self:center">'+MONTH_KEYS[monthIdx]+' '+year+(isCurMonth?' (s/d hari ini)':'')+'</span>'
     +'</div>'
     +'<div class="grid4">'+cardsHtml+'</div></div>'
-    +'<div class="ov-section"><div class="ov-section-title">Matrix Agen × Hari</div>'
-    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center">'+pills+'</div>'
-    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center">'+unitToggle+'<span style="font-size:11px;color:var(--tx3);margin-left:6px">'+axisHint+' · '+MONTH_KEYS[monthIdx]+' '+year+(isCurMonth?' (s/d hari ini)':'')+'</span></div>'
-    +'<div class="card" style="padding:0"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
-    +'<thead><tr style="border-bottom:1px solid var(--bdr)"><td style="padding:6px 10px;position:sticky;left:0;background:var(--sur2);color:var(--tx3)">Agen</td>'+headCells+'<td style="padding:6px 10px;text-align:right;color:var(--tx3)">Total</td></tr></thead>'
-    +'<tbody>'+(bodyRows||'')+totalRow+'</tbody></table></div></div></div>';
+    +(matrixBlocks||'<div class="ov-section"><div class="card empty">Pilih minimal 1 status di filter</div></div>');
 }
 
 // ── TAB: RESPONSE ──────────────────────────────────────────────────────────
@@ -5911,8 +5909,6 @@ tabContent.addEventListener('click',function(e){
     else if(act==='target-up'){if(!btn.disabled)reorderTarget(id,-1);}
     else if(act==='target-down'){if(!btn.disabled)reorderTarget(id,1);}
     else if(act==='daily-view-metric'){dailyViewMetricSel=btn.dataset.metric;renderTab('overview');}
-    else if(act==='invsum-matrix'){invsumMatrix=btn.dataset.key;renderTab('invsummary');}
-    else if(act==='invsum-unit'){invsumUnit=btn.dataset.unit;renderTab('invsummary');}
     else if(act==='reassign-invoice')openInvReassignModal(id);
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab('overview');}}
     else if(act==='toggle-wl'){
@@ -6090,7 +6086,7 @@ var MSEL_REFRESH={
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
   invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
   blastAgentFilter:refreshBlastBody,
-  invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');}
+  invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');},invsumStatus:function(){renderTab('invsummary');}
 };
 // CLM-11 Fase G6: Pilih semua / Kosongkan buat panel multi-select. selectAll=true -> centang semua
 // opsi (window[name] = semua value di panel); false -> kosongin (=[], sama makna "Semua X" default).
