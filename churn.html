@@ -424,6 +424,13 @@ tr:hover td{background:var(--sur2)}
       <select id="target-metric-sel"></select>
       <label>Periode (Bulan)</label>
       <select id="target-period-sel"></select>
+      <div id="target-bulk-months-wrap" style="display:none">
+        <label style="margin-top:6px">Terapkan sekaligus ke bulan lain (opsional — bulan di atas selalu ikut)</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;margin:2px 0">
+          <input type="checkbox" id="target-bulk-all-chk" style="width:auto;margin:0"><span>Pilih semua bulan</span>
+        </label>
+        <div id="target-bulk-months" style="display:flex;flex-wrap:wrap;gap:4px 10px"></div>
+      </div>
       <label>Scope</label>
       <select id="target-scope-sel">
         <option value="team">Team (1 angka agregat, progress = jumlah kontribusi semua agen)</option>
@@ -622,7 +629,13 @@ const TARGET_METRICS={
   // CLM-11 Fase F: MRR Renewal per-paket -- SELALU scope team (paket bukan konsep per-agen). 5 field
   // target Rupiah (mrrTargetStarterBasic/Starter/Advance/Enterprise/PrimePlus) disimpen langsung di
   // Target row, dibaca lewat bypass di computeTargetActual -> computeMrrPerPaketActual.
-  'mrr_per_paket':{family:'outcome',label:'MRR Renewal per Paket (CX)'}
+  'mrr_per_paket':{family:'outcome',label:'MRR Renewal per Paket (CX)'},
+  // 13 Jul (request Ubay, sempat ditunda): Review Maps/PlayStore jadi Target Configurable -- gantiin
+  // hardcode REVIEW_TARGET=400 di card Rating & Review (fallback 400 tetep dipertahanin selama belum
+  // dikonfig). Actual = klaim APPROVED via upsellApprovedCount (kredit ke agentCredit, pola sama
+  // hardware) -- scope team & personal dua2nya didukung (bypass di computeTargetActual).
+  'review_maps':{family:'outcome',label:'Review Google Maps (approved)'},
+  'review_playstore':{family:'outcome',label:'Review PlayStore (approved)'}
 };
 // CLM-11 Fase D2: lookup metadata generik buat SEMUA metricKey, termasuk 'sku:<addonType>' dinamis
 // yg SENGAJA nggak masuk TARGET_METRICS statis (SKU category nambah terus, bukan fixed list -- lihat
@@ -1251,6 +1264,21 @@ function computeTargetActual(target,allRecs,agentName){
     resMrr.effectiveTarget=sumTarget;
     resMrr.unit='Rp';
     return resMrr;
+  }
+  // 13 Jul: Review Maps/PlayStore -- klaim APPROVED via upsellApprovedCount, kredit ke agentCredit
+  // (BUKAN assignedAgent, sama alasan hardware/tier: siapa yg dapet kredit klaim != siapa pemilik
+  // case). Pakai allRecs FULL, bukan periodRecs -- klaim nempel di record & nggak month-scoped,
+  // konsisten persis sama card "Rating & Review" existing (B2) yg juga ngitung semua record.
+  if(target.metricKey==='review_maps'||target.metricKey==='review_playstore'){
+    var platRev=target.metricKey==='review_maps'?'maps':'playstore';
+    var cntRev=0;
+    if(target.scope==='personal'&&agentName){
+      allRecs.forEach(function(r){cntRev+=upsellApprovedCount(r,platRev,agentName);});
+      var ovrRev=target.personalOverrides||{};
+      return{actual:cntRev,unit:'',denom:0,effectiveTarget:(ovrRev[agentName]!=null)?ovrRev[agentName]:target.targetValue};
+    }
+    allRecs.forEach(function(r){cntRev+=upsellApprovedCount(r,platRev);});
+    return{actual:cntRev,unit:'',denom:0,effectiveTarget:target.targetValue,effectiveTargetImproved:(target.targetValueImproved!=null)?target.targetValueImproved:null};
   }
   if(target.scope==='personal'){
     // CLM-11 B1: renewal_count/upsell_approved_count Personal -> ground-truth billing (di atas).
@@ -2444,9 +2472,13 @@ function renderOverview(){
   var convT=findTeamTarget('renewal_conversion_pct',82,87);
   var upRevT=findTeamTarget('upsell_revenue_nasional',null,null);
   var RENEWAL_TARGET=rrT.regular,RENEWAL_TARGET_IMP=rrT.improved;
-  var REVIEW_TARGET=400;
+  // 13 Jul: target review configurable per platform (metric review_maps/review_playstore, scope team)
+  // -- fallback 400 = perilaku hardcode lama, tetep jalan selama Sekar belum bikin row target-nya.
+  var REVIEW_TARGET_MAPS=findTeamTarget('review_maps',400,null).regular;
+  var REVIEW_TARGET_APPS=findTeamTarget('review_playstore',400,null).regular;
   var PER_AGENT_RENEWAL=Math.round(RENEWAL_TARGET/N_AGENTS);
-  var PER_AGENT_REVIEW=Math.round(REVIEW_TARGET/N_AGENTS);
+  var PER_AGENT_REVIEW_MAPS=Math.round(REVIEW_TARGET_MAPS/N_AGENTS);
+  var PER_AGENT_REVIEW_APPS=Math.round(REVIEW_TARGET_APPS/N_AGENTS);
   var PER_AGENT_RENEWAL_IMP=Math.round(RENEWAL_TARGET_IMP/N_AGENTS);
   var convTarget=convT.regular,convTargetImp=convT.improved;
 
@@ -2471,7 +2503,7 @@ function renderOverview(){
         +'<td><span class="badge badge-red">'+aTidak+'</span></td>'
         +'<td><span class="badge badge-yel">'+aFu+'</span></td>'
         +'<td><span class="badge badge-gray">'+aNo+'</span></td>'
-        +'<td><span style="font-size:11px;color:var(--tx2)">📍'+aMaps+'/'+PER_AGENT_REVIEW+' &nbsp;📱'+aApps+'/'+PER_AGENT_REVIEW+'</span></td>'
+        +'<td><span style="font-size:11px;color:var(--tx2)">📍'+aMaps+'/'+PER_AGENT_REVIEW_MAPS+' &nbsp;📱'+aApps+'/'+PER_AGENT_REVIEW_APPS+'</span></td>'
         +'<td style="color:'+convClr+'">'+pct+'%<div class="prog-bar"><div class="prog-fill" style="width:'+Math.min(pct/convTargetImp*100,100)+'%;background:'+convClr+'"></div></div>'
         +'<div style="font-size:10px;color:var(--tx3)">R:'+convTarget+'% / I:'+convTargetImp+'%</div></td></tr>';
     }).join('');
@@ -2517,8 +2549,8 @@ function renderOverview(){
     if(pR>=0.9)return{tier:0,reward:5000000,convBonus:0,      label:'Tier 0 (≥90% Regular)'};
     return{tier:-1,reward:0,convBonus:0,label:'Belum memenuhi'};
   }
-  var mapsPct=Math.min(Math.round(mapsAch/REVIEW_TARGET*100),100);
-  var appsPct=Math.min(Math.round(appsAch/REVIEW_TARGET*100),100);
+  var mapsPct=Math.min(REVIEW_TARGET_MAPS?Math.round(mapsAch/REVIEW_TARGET_MAPS*100):0,100);
+  var appsPct=Math.min(REVIEW_TARGET_APPS?Math.round(appsAch/REVIEW_TARGET_APPS*100):0,100);
 
   // ── Detail breakdown (from myRecs) ────────────────────────────────────
   var catDetailMap={};
@@ -2574,8 +2606,8 @@ function renderOverview(){
     var myMaps=allRecs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',me);},0);
     var myApps=allRecs.reduce(function(s,r){return s+upsellApprovedCount(r,'playstore',me);},0);
     var myUpsellFin=computeUpsellCountAttach(myRecs,currentMonthKey);
-    var myMapsPct=Math.min(PER_AGENT_REVIEW?Math.round(myMaps/PER_AGENT_REVIEW*100):0,100);
-    var myAppsPct=Math.min(PER_AGENT_REVIEW?Math.round(myApps/PER_AGENT_REVIEW*100):0,100);
+    var myMapsPct=Math.min(PER_AGENT_REVIEW_MAPS?Math.round(myMaps/PER_AGENT_REVIEW_MAPS*100):0,100);
+    var myAppsPct=Math.min(PER_AGENT_REVIEW_APPS?Math.round(myApps/PER_AGENT_REVIEW_APPS*100):0,100);
     var myConvPct=total?Math.round((renewal/total)*100):0;
     var myConvClr=myConvPct>=convTargetImp?'var(--grn)':(myConvPct>=convTarget?'var(--yel)':'var(--red)');
     agentTargetSection='<div class="ov-section"><div class="ov-section-title">🎯 Target Saya Bulan Ini</div>'
@@ -2616,10 +2648,10 @@ function renderOverview(){
       +'<div class="card">'
       +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⭐ Target Review Saya</div>'
       +'<div style="font-size:12px;font-weight:600;color:var(--tx)">📍 Google Maps</div>'
-      +'<div style="font-size:11px;color:var(--tx2)"><strong>'+myMaps+'</strong> / '+PER_AGENT_REVIEW+'</div>'
+      +'<div style="font-size:11px;color:var(--tx2)"><strong>'+myMaps+'</strong> / '+PER_AGENT_REVIEW_MAPS+'</div>'
       +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+myMapsPct+'%"></div></div>'
       +'<div style="font-size:12px;font-weight:600;color:var(--tx);margin-top:8px">📱 App Store</div>'
-      +'<div style="font-size:11px;color:var(--tx2)"><strong>'+myApps+'</strong> / '+PER_AGENT_REVIEW+'</div>'
+      +'<div style="font-size:11px;color:var(--tx2)"><strong>'+myApps+'</strong> / '+PER_AGENT_REVIEW_APPS+'</div>'
       +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+myAppsPct+'%"></div></div>'
       +'</div>'
       +'</div></div>';
@@ -3001,10 +3033,10 @@ function renderOverview(){
     +'<div class="card">'
     +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⭐ Rating & Review</div>'
     +'<div style="font-size:12px;font-weight:600;color:var(--tx)">📍 Google Maps</div>'
-    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+mapsAch+'</strong>/'+REVIEW_TARGET+' approved'+(claimedMaps>valMaps?' &nbsp;·&nbsp; <span style="color:var(--tx3)">'+(claimedMaps-valMaps)+' belum approved</span>':'')+'</div>'
+    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+mapsAch+'</strong>/'+REVIEW_TARGET_MAPS+' approved'+(claimedMaps>valMaps?' &nbsp;·&nbsp; <span style="color:var(--tx3)">'+(claimedMaps-valMaps)+' belum approved</span>':'')+'</div>'
     +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+mapsPct+'%"></div></div>'
     +'<div style="font-size:12px;font-weight:600;color:var(--tx);margin-top:8px">📱 App Store</div>'
-    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+appsAch+'</strong>/'+REVIEW_TARGET+' approved'+(claimedApps>valApps?' &nbsp;·&nbsp; <span style="color:var(--tx3)">'+(claimedApps-valApps)+' belum approved</span>':'')+'</div>'
+    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+appsAch+'</strong>/'+REVIEW_TARGET_APPS+' approved'+(claimedApps>valApps?' &nbsp;·&nbsp; <span style="color:var(--tx3)">'+(claimedApps-valApps)+' belum approved</span>':'')+'</div>'
     +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+appsPct+'%"></div></div>'
     +'</div>'
     +'</div></div>';
@@ -3975,6 +4007,14 @@ function openTargetModal(id){
     var isSel=t?(t.period===m):(MONTH_KEYS[new Date().getMonth()]===m);
     return'<option value="'+m+'"'+(isSel?' selected':'')+'>'+m+' 26</option>';
   }).join('');
+  // 13 Jul (request Ubay): bulk-apply target ke banyak bulan sekaligus (pilih semua ATAU centang
+  // satu-satu) -- CUMA mode Tambah. Edit tetep per-bulan (1 row Targets = 1 bulan by design, Fase E
+  // sync-nya upsert-per-id per bulan).
+  document.getElementById('target-bulk-months-wrap').style.display=id?'none':'';
+  document.getElementById('target-bulk-all-chk').checked=false;
+  document.getElementById('target-bulk-months').innerHTML=id?'':MONTH_KEYS.map(function(m){
+    return'<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" class="target-bulk-month-chk" value="'+m+'" style="width:auto;margin:0"><span>'+m+'</span></label>';
+  }).join('');
   document.getElementById('target-value-inp').value=t?t.targetValue:100;
   document.getElementById('target-value-improved-inp').value=(t&&t.targetValueImproved!=null)?t.targetValueImproved:'';
   document.getElementById('target-default-inp').value=t?t.targetValue:10;
@@ -4089,10 +4129,25 @@ function saveTarget(){
     var impRaw=document.getElementById('target-value-improved-inp').value;
     payload.targetValueImproved=impRaw!==''?(parseFloat(impRaw)||0):null;
   }
-  if(targetEditId)Targets.update(targetEditId,payload);
-  else Targets.add(payload);
+  if(targetEditId){
+    Targets.update(targetEditId,payload);
+    toast('Target disimpan');
+  }else{
+    // 13 Jul (request Ubay): bulk-apply -- bulan di dropdown SELALU ikut, plus bulan yg dicentang.
+    // Tiap bulan jadi 1 row Targets sendiri (klon payload, biar personalOverrides dkk nggak share
+    // referensi) -- Fase E sync (upsert-per-id) jalan per add, konsisten arsitektur per-bulan.
+    var bulkMonths=[period];
+    document.querySelectorAll('.target-bulk-month-chk:checked').forEach(function(c){
+      if(bulkMonths.indexOf(c.value)<0)bulkMonths.push(c.value);
+    });
+    bulkMonths.forEach(function(m){
+      var p=JSON.parse(JSON.stringify(payload));
+      p.period=m;
+      Targets.add(p);
+    });
+    toast(bulkMonths.length>1?('Target disimpan ke '+bulkMonths.length+' bulan ('+bulkMonths.join(', ')+')'):'Target disimpan');
+  }
   closeModal('target-modal');
-  toast('Target disimpan');
   renderTab('overview');
 }
 
@@ -5955,6 +6010,11 @@ document.getElementById('agent-save-btn').addEventListener('click',saveAgent);
 document.getElementById('target-save-btn').addEventListener('click',saveTarget);
 document.getElementById('target-scope-sel').addEventListener('change',toggleTargetScopeWrap);
 document.getElementById('target-metric-sel').addEventListener('change',toggleTargetScopeWrap);
+// 13 Jul: bulk-apply bulan -- "Pilih semua" nyentang/nyabut semua checkbox bulan sekaligus.
+document.getElementById('target-bulk-all-chk').addEventListener('change',function(){
+  var on=this.checked;
+  document.querySelectorAll('.target-bulk-month-chk').forEach(function(c){c.checked=on;});
+});
 
 // Bulk modal save
 document.getElementById('bulk-save-btn').addEventListener('click',function(){
