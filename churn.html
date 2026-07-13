@@ -1132,18 +1132,38 @@ function computeUpsellTierColor(target,period,recs,agentName){
   }
   return{revenue:rev.actual,color:color,tierLabel:tierLabel,arpu:arpu.arpu,arpuCount:arpu.count,synced:rev.synced};
 }
-// CLM-11 Fase G7 (13 Jul, request Ubay): Hardware/Tablet achievement 'bundle:<key>' DIUBAH dari
-// boolean (actual 0/1 vs target fix 1) jadi QTY-CONFIGURABLE -- actual = billingTabletCount +
-// evidenceApprovedCount (dijumlah beneran), target = qty bebas (default 1, bisa 10). Ubay butuh set
-// target kayak "10 evidence hardware approved" buat agen yg nggak ada deal hardware di billing.
-// MEMBALIK keputusan F1 lama "jangan jumlahin billing+evidence" -- itu buat achievement BOOLEAN (biar
-// angka nggak keliatan regres pas ganti sumber); buat target AKTIVITAS qty, dijumlah justru yg dimau.
-// Caveat (operator OK): kalau 1 agen jual tablet DAN submit evidence event yg SAMA -> double-count,
-// tapi de-facto eksklusif per-agen (yg jual -> billing, yg nggak -> ngumpulin evidence), acceptable.
+// CLM-11 Fase G7 (13 Jul): Hardware/Tablet achievement 'bundle:<key>' = QTY-CONFIGURABLE, target qty
+// bebas (default 1, bisa 10) -- Ubay butuh set target kayak "10 hardware" buat agen tanpa deal billing.
+// QA FIX (Ryry, 13 Jul): actual = **count DISTINCT outletId** dari (billing-tablet UNION evidence-
+// approved), BUKAN billingCount+evidenceCount mentah dijumlah. Alasan: evidence dari desain F1 itu
+// FALLBACK bukti buat outlet yg billing-nya BELUM kebaca -- kalau 1 outlet punya billing DAN evidence
+// sekaligus, itu 2 bukti buat 1 deal SAMA (wajib kehitung 1x). Sebaliknya 1 agen jual tablet di 2
+// outlet BEDA (1 kebaca billing, 1 evidence) = genuinely 2 achievement. Dedup per-outlet bener ke dua
+// arah; asumsi lama "de-facto eksklusif per-agen" bisa salah dua arah (over-count outlet sama / under-
+// count outlet beda). outletId billing (upsellRaw) & evidence (record) satu ruang identitas (join sama
+// kayak MRR r.outletId). outletId kosong -> key sintetis per-baris (nggak bisa dedup, dihitung 1, biar
+// deal riil nggak ke-drop diam2). billingCount/evidenceCount TETAP diekspos mentah buat audit/detail.
 function computeBundleAchievement(bundleKey,period,recs,agentName){
   if(bundleKey==='tablet'){
     var gate=computeHardwareTabletGate(period,recs,agentName);
-    return{actual:gate.billingCount+gate.evidenceCount,synced:gate.synced,billingCount:gate.billingCount,evidenceCount:gate.evidenceCount,source:gate.source};
+    var outlets={};var seq=0;
+    var agents=AgentsConfig.getAll();
+    var fin=period?UpsellTeamStore.getMonth(period):null;
+    if(fin&&fin.upsellRaw){
+      fin.upsellRaw.forEach(function(r){
+        if(!r.bundleName||r.bundleName.toLowerCase().indexOf('tablet')===-1)return;
+        if(matchAgentFuzzy(r.creatorName,agents)!==agentName)return;
+        var oid=(r.outletId!=null&&String(r.outletId).trim()!=='')?('o:'+r.outletId):('b:'+(seq++));
+        outlets[oid]=true;
+      });
+    }
+    (recs||[]).forEach(function(r){
+      if(upsellApprovedCount(r,'hardware',agentName)<=0)return;
+      var base=(r.outletId!=null&&String(r.outletId).trim()!=='')?r.outletId:r.id;
+      var key=(base!=null&&String(base).trim()!=='')?('o:'+base):('e:'+(seq++));
+      outlets[key]=true;
+    });
+    return{actual:Object.keys(outlets).length,synced:gate.synced,billingCount:gate.billingCount,evidenceCount:gate.evidenceCount,source:gate.source};
   }
   return{actual:0,synced:false};
 }
@@ -3710,6 +3730,10 @@ function renderInvoiceSummary(){
     +'<span style="font-size:11px;color:var(--tx3);align-self:center">'+MONTH_KEYS[monthIdx]+' '+year+(isCurMonth?' (s/d hari ini)':'')+'</span>'
     +'</div>'
     +'<div class="grid4">'+cardsHtml+'</div></div>'
+    // CLM-11 Fase G5 (QA Ryry, 13 Jul): dokumentasiin dual-state -- Requested/Rejected (status PERCOBAAN
+    // BAYAR) & Approved/Validated (status DOKUMEN invoice) itu 2 dimensi beda yg sah co-exist, jadi 1
+    // invoice bisa muncul di 2 matrix status. Sum lintas-status SENGAJA nggak = total invoice (bukan bug).
+    +'<div class="ov-section" style="padding-top:4px"><div style="font-size:11px;color:var(--tx3);line-height:1.5;background:var(--sur2);border-radius:var(--rs);padding:8px 10px">ℹ️ <b>Requested/Rejected</b> (status percobaan bayar) &amp; <b>Approved/Validated</b> (status dokumen) itu 2 dimensi berbeda yang sah muncul bersamaan — 1 invoice bisa masuk 2 matrix status sekaligus (mis. dokumen sudah Approved tapi percobaan bayarnya sempat Rejected, nunggu dicoba lagi). Jadi <b>jumlah lintas-status TIDAK sama dengan total invoice</b> — itu normal, bukan bug. <b>Paid</b> dijamin eksklusif dari Approved/Validated.</div></div>'
     +(matrixBlocks||'<div class="ov-section"><div class="card empty">Pilih minimal 1 status di filter</div></div>');
 }
 
