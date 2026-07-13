@@ -2086,7 +2086,7 @@ var blastAgentFilter=[]; // CLM-11 A4: multi-select, leader-only, array kosong =
 // CAP render. Tabel blast di-explode per-nomor (21rb+ baris di scope leader) & DIRENDER SEMUA sekaligus
 // (nggak paged kayak tab lain) → freeze pas render/re-render. Cap DISPLAY ke 500 baris; select-all/
 // tarik-hari-ini/buat-csv tetep data-based (csvSelectedIds) jadi nggak kepotong cap. Search buat nyaring.
-var blastSearch='',BLAST_DISPLAY_CAP=500;
+var blastSearch='',BLAST_DISPLAY_CAP=500,blastPage=0;
 var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
 var respUpsellFilter=[]; // CLM-08 (4a): work-order queue -- filter klaim upsell by status
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
@@ -3855,12 +3855,13 @@ function blastFilteredRows(){
   var recs=isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;});
   recs=applyBlastMonthGate(recs,isSup);
   // Filter agen cuma relevan buat leader (agen biasa udah ke-scope ke case-nya sendiri di atas).
-  // QA fix (Ryry, AC-A4-1): filter ini EXCLUDE, bukan include -- agen yg di-CENTANG itu yg mau
-  // di-SKIP dari batch blast (mis. lagi libur), konsisten sama hint UI "pilih buat exclude yang
-  // lagi libur". Semula ke-implement include-only (bug P0: pilih 1 agen malah nyaring JADI cuma
-  // dia doang, bukan nyisain semua KECUALI dia).
+  // CLM-05 UX (operator 13 Jul): DIBALIK dari EXCLUDE (AC-A4-1) jadi INCLUDE. Alasan: exclude bikin
+  // bingung ("mau liat data Sarah doang" → malah harus centang 7 agen lain, dan tetep nggak bisa
+  // "cuma Sarah" krn leader/akun internal di luar roster nggak bisa di-exclude). Include = centang
+  // agen itu = tampilin dia doang (konsisten sama SEMUA filter agen lain di app). Aman: filter ini
+  // DISPLAY-ONLY -- Pilih Semua/Tarik Hari Ini/Buat CSV rebuild dari scope penuh, NGGAK baca filter ini.
   if(isSup&&blastAgentFilter.length){
-    recs=recs.filter(function(r){return blastAgentFilter.indexOf(r.assignedAgent)<0;});
+    recs=recs.filter(function(r){return blastAgentFilter.indexOf(r.assignedAgent)>=0;});
   }
   var allRows=buildExplodedRows(recs);
   if(blastHidePaid)allRows=allRows.filter(function(row){
@@ -3876,11 +3877,16 @@ function blastFilteredRows(){
   }
   return allRows;
 }
-// CLM-05 UX (operator 13 Jul): teks counter tabel blast (mirip #ws-count) -- kasih tau kalau ke-cap.
-function blastCountText(n){
-  return n>BLAST_DISPLAY_CAP
-    ?('Menampilkan '+BLAST_DISPLAY_CAP+' dari '+n+' baris — pakai 🔍 search buat nyaring outlet/nomor tertentu')
-    :('Menampilkan '+n+' baris');
+// CLM-05 UX (operator 13 Jul): paginasi tabel blast (500/hal) -- 21rb+ exploded rows nggak boleh
+// dirender sekaligus (freeze). Clamp blastPage ke range valid, balikin slice-range + info teks.
+function blastPageSlice(n){
+  var totalPages=Math.max(1,Math.ceil(n/BLAST_DISPLAY_CAP));
+  if(blastPage>=totalPages)blastPage=totalPages-1;
+  if(blastPage<0)blastPage=0;
+  var from=blastPage*BLAST_DISPLAY_CAP;
+  var to=Math.min(from+BLAST_DISPLAY_CAP,n);
+  return{from:from,to:to,totalPages:totalPages,
+    text:n?('Menampilkan '+(from+1)+'–'+to+' dari '+n+' baris (hal '+(blastPage+1)+'/'+totalPages+')'):'0 baris'};
 }
 function blastTableRowsHtml(rows){
   var todayStr=localDateStr(new Date().toISOString());
@@ -3915,10 +3921,13 @@ function blastTableRowsHtml(rows){
 }
 function refreshBlastBody(){
   var rows=blastFilteredRows();
+  var sl=blastPageSlice(rows.length);
   var tb=document.getElementById('blast-tbody');
-  if(tb)tb.innerHTML=blastTableRowsHtml(rows.slice(0,BLAST_DISPLAY_CAP))||'<tr><td colspan="10" class="empty">Belum ada data</td></tr>';
-  var cnt=document.getElementById('blast-count');
-  if(cnt)cnt.textContent=blastCountText(rows.length);
+  if(tb)tb.innerHTML=blastTableRowsHtml(rows.slice(sl.from,sl.to))||'<tr><td colspan="10" class="empty">Belum ada data</td></tr>';
+  var cnt=document.getElementById('blast-count');if(cnt)cnt.textContent=sl.text;
+  var prev=document.getElementById('blast-prev'),next=document.getElementById('blast-next');
+  if(prev)prev.disabled=blastPage<=0;
+  if(next)next.disabled=blastPage>=sl.totalPages-1;
 }
 function renderBlast(){
   var isSup=Auth.isSuperior();
@@ -3937,7 +3946,8 @@ function renderBlast(){
       +'</div></td></tr>';
   }).join('');
 
-  var tableRows=blastTableRowsHtml(rows.slice(0,BLAST_DISPLAY_CAP));
+  var blastSlice=blastPageSlice(rows.length);
+  var tableRows=blastTableRowsHtml(rows.slice(blastSlice.from,blastSlice.to));
   var blastAgentOptsArr=AGENTS.map(function(a){return{value:a,label:a};});
 
   document.getElementById('tab-content').innerHTML=
@@ -3956,6 +3966,7 @@ function renderBlast(){
       '<div class="cfg-panel">'
       +'<div class="cfg-title">🔓 Buka Bulan ke Agen</div>'
       +'<div class="pay-info" style="margin-bottom:8px">Bulan blm di-toggle ON = HANYA Sekar yg bisa lihat/tarik di daftar blast ini. Sekali ON, SEMUA agen langsung kebuka bareng. Nggak ngaruh ke Responses Update/My Worksheet.</div>'
+      +'<div style="display:flex;gap:6px;margin-bottom:8px"><button class="btn btn-sec" id="month-gate-all" style="font-size:11px;padding:4px 8px">Buka semua bulan</button><button class="btn btn-sec" id="month-gate-none" style="font-size:11px;padding:4px 8px">Tutup semua</button></div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:8px">'
       +MONTH_KEYS.map(function(m){
           var on=BlastMonthGate.isReleased(m);
@@ -3986,12 +3997,14 @@ function renderBlast(){
     // ini nggak relevan buat mereka). Dipisah baris sendiri biar nggak numpuk sama toolbar CSV di atas.
     +(isSup?('<div class="frow" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">'
       +renderMultiSelect('blastAgentFilter','Agen',blastAgentOptsArr,blastAgentFilter)
-      +'<span style="font-size:11px;color:var(--tx3);align-self:center">Kosongkan = tampilkan semua agen (pilih buat exclude yang lagi libur)</span>'
+      +'<span style="font-size:11px;color:var(--tx3);align-self:center">Kosongkan = semua agen · Pilih = tampilin agen itu aja (mis. pilih Sarah = cuma data Sarah)</span>'
       +'</div>'):'')
     // CLM-05 UX (operator 13 Jul): search outlet/nomor/ID (cari nomor exploded 1 outlet) + counter.
     +'<div class="frow" style="margin-bottom:8px;gap:8px;align-items:center">'
     +'<input class="fsearch" type="search" id="blast-search" placeholder="🔍 Cari nama outlet / nomor HP / ID..." value="'+blastSearch+'">'
-    +'<span id="blast-count" style="font-size:11px;color:var(--tx3);white-space:nowrap;align-self:center">'+blastCountText(rows.length)+'</span>'
+    +'<button class="btn btn-sec" id="blast-prev" style="font-size:12px;padding:5px 10px"'+(blastSlice.totalPages<=1?' disabled':'')+'>◀ Prev</button>'
+    +'<button class="btn btn-sec" id="blast-next" style="font-size:12px;padding:5px 10px"'+(blastSlice.totalPages<=1?' disabled':'')+'>Next ▶</button>'
+    +'<span id="blast-count" style="font-size:11px;color:var(--tx3);white-space:nowrap;align-self:center">'+blastSlice.text+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
     +'<thead><tr><th><input type="checkbox" id="blast-chk-all"></th><th>ID</th><th>Nama Outlet</th><th>Tipe</th><th>Nomor HP</th><th>Agen (Inisial)</th><th>Last Blast</th><th>Expired</th><th>Cadence</th><th>Pembayaran</th></tr></thead>'
@@ -6074,6 +6087,10 @@ tabContent.addEventListener('click',function(e){
     renderBlast();
   }
   else if(tgt.id==='desel-all-blast-btn'){csvSelectedIds.clear();renderBlast();}
+  else if(tgt.id==='blast-prev'){if(blastPage>0){blastPage--;refreshBlastBody();}}
+  else if(tgt.id==='blast-next'){blastPage++;refreshBlastBody();}
+  else if(tgt.id==='month-gate-all'){MONTH_KEYS.forEach(function(m){BlastMonthGate.setReleased(m,true);});toast('Semua bulan dibuka ke agen');renderBlast();}
+  else if(tgt.id==='month-gate-none'){MONTH_KEYS.forEach(function(m){BlastMonthGate.setReleased(m,false);});toast('Semua bulan ditutup (HANYA Sekar yg bisa lihat)');renderBlast();}
   else if(tgt.id==='wl-new-submit'){
     var phoneV=(document.getElementById('wl-new-phone')||{}).value||'';
     var outletIdV=(document.getElementById('wl-new-outlet-id')||{}).value||'';
@@ -6155,7 +6172,7 @@ var MSEL_REFRESH={
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
   invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
-  blastAgentFilter:refreshBlastBody,
+  blastAgentFilter:function(){blastPage=0;refreshBlastBody();},
   invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');},invsumStatusSel:function(){renderTab('invsummary');}
 };
 // CLM-11 Fase G6: Pilih semua / Kosongkan buat panel multi-select. selectAll=true -> centang semua
@@ -6211,7 +6228,7 @@ tabContent.addEventListener('change',function(e){
       if(tgt.checked)csvSelectedIds.add(c.dataset.key);else csvSelectedIds.delete(c.dataset.key);
     });
   }
-  if(tgt.id==='hide-paid-chk'){blastHidePaid=tgt.checked;renderBlast();}
+  if(tgt.id==='hide-paid-chk'){blastHidePaid=tgt.checked;blastPage=0;renderBlast();}
   if(tgt.classList.contains('month-gate-chk')){
     BlastMonthGate.setReleased(tgt.dataset.month,tgt.checked);
     toast((tgt.checked?'Bulan '+tgt.dataset.month+' dibuka':'Bulan '+tgt.dataset.month+' ditutup')+' ke semua agen (Blast WABA)');
@@ -6256,7 +6273,7 @@ tabContent.addEventListener('change',function(e){
 tabContent.addEventListener('input',function(e){
   var tgt=e.target;
   if(tgt.id==='ws-search'){wsSearch=tgt.value;refreshWsBody();}
-  if(tgt.id==='blast-search'){blastSearch=tgt.value;refreshBlastBody();}
+  if(tgt.id==='blast-search'){blastSearch=tgt.value;blastPage=0;refreshBlastBody();}
   if(tgt.id==='m-search'){mSearch=tgt.value;refreshMasterBody();}
   if(tgt.id==='inv-search'){invSearch=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='inv-day'){invDay=tgt.value;refreshInvoiceBody();}
