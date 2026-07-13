@@ -1176,8 +1176,23 @@ function normalizePaketBucket(paketRaw,outletId,recsByOutletId){
 function computeMrrPerPaketActual(period,recs){
   var fin=period?FinancialsStore.getMonth(period):null;
   if(!fin||!fin.data||!fin.data.length)return{synced:false,byPaket:{}};
+  // Hardening (backlog Ryry 13 Jul, temuan re-verify round 1): dulu last-write-wins by array order --
+  // non-deterministic kalau 1 outlet punya >1 record beda cohort dgn productPackage beda (dampak nyata
+  // saat temuan: 0 dari 20 Prime row bulan berjalan, cuma 4 outlet total se-database yg genuinely
+  // nyebrang batas Prime Plus). Sekarang: PRIORITAS record yg cohort-nya match periode dihitung
+  // (paket yg dibayar DI bulan itu = paling relevan buat bucket Prime/PrimePlus), tie-break
+  // expiryDate paling baru (string YYYY-MM-DD comparable), baru fallback urutan array.
   var recsByOutletId={};
-  recs.forEach(function(r){if(r.outletId)recsByOutletId[r.outletId]=r;});
+  recs.forEach(function(r){
+    if(!r.outletId)return;
+    var prev=recsByOutletId[r.outletId];
+    if(!prev){recsByOutletId[r.outletId]=r;return;}
+    var inPeriod=function(x){return period?(x.cohortMonths||x.bulan||'').split(',').indexOf(period)>=0:false;};
+    var prevIn=inPeriod(prev),curIn=inPeriod(r);
+    if(curIn&&!prevIn){recsByOutletId[r.outletId]=r;return;}
+    if(prevIn&&!curIn)return;
+    if(String(r.expiryDate||'')>String(prev.expiryDate||''))recsByOutletId[r.outletId]=r;
+  });
   var agg={};
   MRR_PAKET_TIERS.forEach(function(t){agg[t]={rev:0,qty:0};});
   fin.data.forEach(function(f){
