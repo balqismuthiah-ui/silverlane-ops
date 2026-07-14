@@ -2090,7 +2090,7 @@ var blastSearch='',BLAST_DISPLAY_CAP=500,blastPage=0;
 // CLM-05 (operator 14 Jul): filter Blast (agen+leader) — Termin (Bulanan/Tahunan), Bulan Expired
 // (bulan langganan habis). + tarikCp = "Jadwal Blast": FILTER TABEL WYSIWYG (all/today/H-3/H+2/H+8);
 // yg keliatan di tabel = persis yg bakal ke-CSV. Semua ikut ke blastFilteredRows (dipakai tabel + CSV + Pilih Semua).
-var blastTerminFilter=[],blastExpMonthFilter=[],tarikCp='all';
+var blastTerminFilter=[],blastExpMonthFilter=[],blastHwczFilter=[],tarikCp='all';
 var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
 var respUpsellFilter=[]; // CLM-08 (4a): work-order queue -- filter klaim upsell by status
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
@@ -3881,6 +3881,7 @@ function blastFilteredRows(){
   // CLM-05 (operator 14 Jul): filter Termin (Bulanan/Tahunan) + Bulan Expired. Available agen+leader.
   if(blastTerminFilter.length)recs=recs.filter(function(r){return blastTerminFilter.indexOf(r.termin)>=0;});
   if(blastExpMonthFilter.length)recs=recs.filter(function(r){var s=localDateStr(r.expiryDate);return s&&blastExpMonthFilter.indexOf(MONTH_KEYS[parseInt(s.slice(5,7),10)-1])>=0;});
+  if(blastHwczFilter.length)recs=recs.filter(function(r){return blastHwczFilter.indexOf(String(r.hwcz||'').trim())>=0;});
   // CLM-05 (operator 14 Jul): "Jadwal Blast" (tarikCp) -- WYSIWYG. 'all'=semua tanggal (no filter),
   // 'today'=ada checkpoint APAPUN jatuh hari ini, 'H-3'/'H+2'/'H+8'=checkpoint SPESIFIK itu jatuh hari ini.
   // Yg keliatan di tabel = persis yg bakal ke-CSV.
@@ -3921,7 +3922,7 @@ function blastTableRowsHtml(rows){
   var todayStr=localDateStr(new Date().toISOString());
   return rows.map(function(row){
     var chk=csvSelectedIds.has(row.key)?'checked':'';
-    var gcDisp=row.isGC?'<span class="gc-flag">⚠</span>':'';
+    var gcDisp=row.isGC?gcBlastBadge(row.phone):'';
     var dummyDisp=row.isDummy?'<span class="dummy-flag">🚫</span>':'';
     var rowCls=row.isDummy?'row-dummy':(row.isGC?'row-gc':'');
     var typeBadge=row.phoneType==='Diperbarui'?'<span class="badge badge-blu">Baru</span>':'<span class="badge badge-gray">Utama</span>';
@@ -4034,7 +4035,8 @@ function renderBlast(){
     +'<div class="frow" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">'
     +renderMultiSelect('blastTerminFilter','Termin',[{value:'Bulanan',label:'Bulanan'},{value:'Tahunan',label:'Tahunan'}],blastTerminFilter)
     +renderMultiSelect('blastExpMonthFilter','Bln Expired',MONTH_KEYS.map(function(m){return{value:m,label:m+' 26'};}),blastExpMonthFilter)
-    +'<span style="font-size:11px;color:var(--tx3);align-self:center">Termin (Bulanan/Tahunan) · Bln Expired = bulan langganan habis. Buat "yg diblast hari ini", pakai dropdown Jadwal Blast di atas.</span>'
+    +renderMultiSelect('blastHwczFilter','Potensi (HWCZ)',blastHwczOpts(),blastHwczFilter)
+    +'<span style="font-size:11px;color:var(--tx3);align-self:center">Termin · Bln Expired = bulan langganan habis · Potensi = segmen lead Hot/Warm/Cold/Zombie. Buat "yg diblast hari ini", pakai dropdown Jadwal Blast di atas.</span>'
     +'</div>'
     // CLM-11 A4: filter agen -- leader-only (agen biasa udah ke-scope ke case-nya sendiri, filter
     // ini nggak relevan buat mereka). Dipisah baris sendiri biar nggak numpuk sama toolbar CSV di atas.
@@ -5134,6 +5136,22 @@ function openCsvModal(){
   var csvRecs=recs.filter(function(r){return selectedCaseIds.has(r.id);});
   var rows=buildCsvPhoneRows(csvRecs);
   var filteredRows=rows.filter(function(row){return!row.isDummy&&!row.isGC;});
+  // CLM-05 (operator 14 Jul): analisa per-case buat transparansi -- nomor internal/GC (sales dll)
+  // dikecualikan, tapi outlet tetep keblast lewat nomor alternatif bersih kalau ada. Hitung berapa
+  // nomor internal di-skip, berapa outlet fallback ke alternatif, berapa outlet nggak ada nomor aman.
+  var _cm={};
+  rows.forEach(function(row){
+    var id=row.record.id;var c=_cm[id]||(_cm[id]={gc:0,clean:0,cats:{}});
+    if(row.isGC){c.gc++;var w=gcFlagMap[normPhone(row.phone)];if(w)c.cats[gcCatShort(w.category)]=1;}
+    else if(!row.isDummy)c.clean++;
+  });
+  var gcNumsExcl=0,casesWithGc=0,casesFallback=0,casesBlocked=0;
+  Object.keys(_cm).forEach(function(id){var c=_cm[id];if(c.gc>0){casesWithGc++;gcNumsExcl+=c.gc;if(c.clean>0)casesFallback++;else casesBlocked++;}});
+  var gcSummary=casesWithGc?('<div style="background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px;font-size:12px;color:var(--tx2);margin-bottom:12px">'
+    +'⚠ <strong>'+gcNumsExcl+'</strong> nomor internal/GC dikecualikan dari <strong>'+casesWithGc+'</strong> outlet. '
+    +'<span style="color:var(--grn,#16a34a)">'+casesFallback+' outlet tetap keblast lewat nomor alternatif bersih.</span>'
+    +(casesBlocked?(' <span style="color:var(--red,#dc2626)">'+casesBlocked+' outlet TIDAK ada nomor aman → di-skip.</span>'):'')
+    +'</div>'):'';
 
   var tpls=Templates.getAll();
   var tpl=tpls.find(function(t){return t.id===tplId;});
@@ -5142,14 +5160,17 @@ function openCsvModal(){
   function buildPreviewMsg(rec){return buildMsg(tpl,rec);}
 
   var sample=filteredRows.slice(0,2).map(function(row){
+    var c=_cm[row.record.id];
+    var subNote=(c&&c.gc>0)?'<div style="font-size:10px;color:var(--tx3);margin-top:2px">↪ nomor internal ('+Object.keys(c.cats).join('/')+') di-skip, kirim ke nomor alternatif ini</div>':'';
     return'<div style="background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px;margin-bottom:8px;font-size:12px">'
-      +'<strong>'+row.outletName+'</strong> — '+row.phone
+      +'<strong>'+row.outletName+'</strong> — '+row.phone+subNote
       +'<pre style="white-space:pre-wrap;margin-top:6px;font-size:11px;color:var(--tx2)">'+buildPreviewMsg(row.record)+'</pre>'
       +'</div>';
   }).join('');
 
   document.getElementById('csv-body').innerHTML=
     '<p style="margin-bottom:12px">Template: <strong>'+tpl.name+'</strong> &nbsp;|&nbsp; Baris: <strong>'+filteredRows.length+'</strong> &nbsp;·&nbsp; <span style="color:var(--tx2)">'+csvRecs.length+' case dipilih</span> (dummy &amp; GC dikecualikan)</p>'
+    +gcSummary
     +'<div style="margin-bottom:12px"><strong style="font-size:12px">Preview (2 contoh):</strong><div style="margin-top:8px">'+(sample||'<span style="color:var(--tx3)">Tidak ada data</span>')+'</div></div>'
     +'<div style="background:var(--pril);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px;font-size:12px;color:var(--prid)">Format CSV: name, email, phone number, {{1}}, {{2}}, ... — UTF-8 BOM untuk Excel</div>';
 
@@ -5764,6 +5785,21 @@ function gcWatchlistBadge(phone){
   var label=w.label?(': '+w.label):'';
   return'<span class="badge badge-red" style="font-size:10px" title="Sumber: GetContact Watchlist">⚠️ '+w.category+label+'</span>';
 }
+// CLM-05 (operator 14 Jul): badge GC ringkas buat tabel Blast + CSV -- nunjukin "nomor siapa" (kategori
+// dari Cek Nomor/Watchlist GC: Internal - Sales/CX/Akademi/PO, Nomor Tidak Valid, dll) + label bila ada.
+function gcCatShort(cat){return String(cat||'').replace(/^Internal\s*-\s*/i,'').trim()||'GC';}
+function gcBlastBadge(phone){
+  var w=gcFlagMap[normPhone(phone)];
+  if(!w)return'';
+  var lbl=w.label?(' — '+w.label):'';
+  return' <span class="badge badge-red" style="font-size:10px" title="Dari Cek Nomor (Watchlist GC): '+w.category+lbl+' · dikecualikan dari blast, dipakai nomor alternatif bila ada">⚠ '+gcCatShort(w.category)+'</span>';
+}
+// CLM-05 (operator 14 Jul): opsi filter Potensi (HWCZ = Hot/Warm/Cold/Zombie) dari nilai distinct di records.
+var HWCZ_ORDER=['Hot','Warm','Cold','Zombie'];
+function blastHwczOpts(){
+  var set={};Store.get().records.forEach(function(r){var h=String(r.hwcz||'').trim();if(h)set[h]=1;});
+  return Object.keys(set).sort(function(a,b){var ia=HWCZ_ORDER.indexOf(a),ib=HWCZ_ORDER.indexOf(b);if(ia<0)ia=99;if(ib<0)ib=99;return ia-ib||a.localeCompare(b);}).map(function(h){return{value:h,label:h};});
+}
 
 // CLM-05 #25: sync-down BROADCASTLOG CLARA (bukti kirim WABA aktual) -> derivasi checkpoint H-3/H+2/H+8.
 // Kontrak GAS (?action=broadcastlog): {data:[{phone, sends:[{broadcast_name, sent_at, terminal_status}]}]}.
@@ -6224,6 +6260,7 @@ var MSEL_REFRESH={
   blastAgentFilter:function(){blastPage=0;refreshBlastBody();},
   blastTerminFilter:function(){blastPage=0;refreshBlastBody();},
   blastExpMonthFilter:function(){blastPage=0;refreshBlastBody();},
+  blastHwczFilter:function(){blastPage=0;refreshBlastBody();},
   invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');},invsumStatusSel:function(){renderTab('invsummary');}
 };
 // CLM-11 Fase G6: Pilih semua / Kosongkan buat panel multi-select. selectAll=true -> centang semua
