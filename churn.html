@@ -5269,12 +5269,18 @@ function syncMonthList(months,opts){
           var recId=outletId+(hs||bulanRaw);
           var rawPh=String(row['Nomor Owner']||row['Nomor Outlet']||row['Nomor Merchant']||'').trim();
           var phone=rawPh?normPhone(rawPh):'';
+          // CLM-05 fix (operator 14 Jul): sync per-bulan DULU nggak bangun phoneAlts (cuma full-sync yg
+          // punya) -> phoneAlts null di produksi -> CSV Blast nggak explode multi-nomor. Samain logic:
+          // 3 nomor (Owner/Outlet/Merchant) dedup per-case. Verified source PT Dinamika: owner
+          // 6282143190032 + outlet/merchant 6281230413144 = 2 distinct -> harusnya explode 2 baris.
+          var _paSeen={};
+          var phoneAlts=[row['Nomor Owner'],row['Nomor Outlet'],row['Nomor Merchant']].map(function(p){return String(p||'').trim();}).filter(Boolean).map(normPhone).filter(function(p){if(_paSeen[p])return false;_paSeen[p]=1;return true;});
           var expiry=localDateStr(String(row['Expired Date Latest']||'').trim());
           var gtv=row['GTV Last 3 Month'];
           if(typeof gtv==='string')gtv=parseFloat(gtv.replace(/[^0-9.-]/g,''))||0;else gtv=Number(gtv)||0;
           var nf=Object.assign({outletId:outletId,outletName:String(row['Nama Outlet']||'').trim(),
             email:String(row['Email Outlet']||row['Email User']||'').trim(),
-            expiryDate:expiry,phone:phone,
+            expiryDate:expiry,phone:phone,phoneAlts:phoneAlts,
             productPackage:String(row['Jenis Paket (yang dibayar)']||'').trim(),
             paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
             invoiceSent:hasInvoiceSent(row)?true:null,
