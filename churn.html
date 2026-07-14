@@ -1484,7 +1484,7 @@ function buildUpsellFieldset(p,line,isSup){
 
 const FIELD_OPTIONS=[
   {v:'outletName',l:'Nama Outlet'},{v:'email',l:'Email'},
-  {v:'productPackage',l:'Paket Produk'},{v:'expiryDate',l:'Tanggal Expired'},
+  {v:'productPackage',l:'Paket Produk (yang dibayar)'},{v:'packageTier',l:'Paket Aktif (STARTER/ADVANCE)'},{v:'expiryDate',l:'Tanggal Expired'},
   {v:'assignedAgent',l:'Nama Agen'},{v:'agentInitials',l:'Inisial Agen'},
   {v:'agentDisplayName',l:'Nama Lengkap Agen'},
   {v:'id',l:'ID Outlet'},{v:'phone',l:'Nomor HP Utama'},{v:'custom',l:'(Manual)'}
@@ -4661,7 +4661,8 @@ function openDetail(id){
     +'<tr><td style="color:var(--tx3);width:40%">ID Outlet</td><td><strong>'+(r.outletId||r.id)+'</strong>'+(r.bulan?'&nbsp;<span class="badge badge-pri" style="font-size:10px">'+r.bulan+'</span>':'')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Nama</td><td><strong>'+r.outletName+'</strong></td></tr>'
     +'<tr><td style="color:var(--tx3)">Email</td><td>'+(r.email||'—')+'</td></tr>'
-    +'<tr><td style="color:var(--tx3)">Paket</td><td>'+(r.productPackage||'—')+'</td></tr>'
+    +'<tr><td style="color:var(--tx3)">Paket Aktif</td><td>'+(r.packageTier||'—')+'</td></tr>'
+    +'<tr><td style="color:var(--tx3)">Paket (dibayar)</td><td>'+(r.productPackage||'—')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Expired</td><td>'+fmtDate(r.expiryDate)+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Nomor HP</td><td>'+(canSeePhone?'<span class="phone-full">'+r.phone+'</span>':maskPhone(r.phone))+(isDummy?' <span class="dummy-flag">🚫 Dummy</span>':'')+(isGC?' '+gcWatchlistBadge(r.phone):'')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Agen</td><td>'+(r.assignedAgent||'Unassigned')+'</td></tr>'
@@ -5364,6 +5365,11 @@ function syncMonthList(months,opts){
             // dipake filter billing periode + pisah Tarik Hari Ini per-termin.
             termin:String(row['Last Termin']||'').trim(),
             productPackage:String(row['Jenis Paket (yang dibayar)']||'').trim(),
+            // CLM-05 (operator 14 Jul): paket AKTIF outlet (STARTER/ADVANCE/ENTERPRISE) dari kolom G
+            // 'Support Name Historical' (nama kolom nyleneh, tapi isinya tier paket berjalan). Beda dari
+            // productPackage='Jenis Paket (yang dibayar)' yg KOSONG buat target blast (belum bayar).
+            // Field terpisah -- JANGAN timpa productPackage (dipakai MRR normalizePaketBucket Prime-disambig).
+            packageTier:String(row['Support Name Historical']||'').trim(),
             paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
             invoiceSent:hasInvoiceSent(row)?true:null,
             lifecycleStatus:String(row['Lifecycle Status']||'').trim(),
@@ -5560,6 +5566,7 @@ function syncFromGAS(opts){
           phoneAlts:phoneAlts,
           termin:String(row['Last Termin']||'').trim(), // CLM-05 (operator 14 Jul): Bulanan/Tahunan
           productPackage:String(row['Jenis Paket (yang dibayar)']||'').trim(),
+          packageTier:String(row['Support Name Historical']||'').trim(), // CLM-05 (operator 14 Jul): paket AKTIF (STARTER/ADVANCE), kolom G — beda dari productPackage
           paymentStatus:mapPaymentStatus(row['Status Pembayaran']),
           invoiceSent:hasInvoiceSent(row)?true:null,
           lifecycleStatus:String(row['Lifecycle Status']||'').trim(),
