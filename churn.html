@@ -2408,7 +2408,7 @@ function buildExplodedRows(records){
       phone:r.phone,phoneType:'Utama',
       isDummy:isDummyPhone(r.phone),
       isGC:!!gcFlagMap[r.phone],
-      lastBlastAt:r.lastBlastAt,expiryDate:r.expiryDate,
+      lastBlastAt:recordLastBlastAt(r),expiryDate:r.expiryDate,
       assignedAgent:r.assignedAgent,record:r
     });
     if(r.response&&r.response.updatedPhone&&r.response.updatedPhone!==r.phone){
@@ -2417,7 +2417,7 @@ function buildExplodedRows(records){
         phone:r.response.updatedPhone,phoneType:'Diperbarui',
         isDummy:isDummyPhone(r.response.updatedPhone),
         isGC:!!gcFlagMap[r.response.updatedPhone],
-        lastBlastAt:r.lastBlastAt,expiryDate:r.expiryDate,
+        lastBlastAt:recordLastBlastAt(r),expiryDate:r.expiryDate,
         assignedAgent:r.assignedAgent,record:r
       });
     }
@@ -2461,6 +2461,16 @@ function recordEverBlasted(r){
     for(var k in r.blastLog){var bl=r.blastLog[k];if(bl&&bl.status!=='failed')return true;}
   }
   return r.blastStatus==='blasted';
+}
+// CLM-05 fix (operator 14 Jul): "Last Blast" WAJIB dari blastLog (tgl kirim aktual CLARA), BUKAN
+// r.lastBlastAt (dulu diisi dari kolom sheet 'Tanggal Blast' yg berisi tgl SCHEDULED/masa depan +
+// format campur DD/MM/YYYY -- 4.377 record kebaca "Last Blast" tgl masa depan mis. 04 Sep 2026).
+// Latest sentAt (non-failed) lintas checkpoint; null kalau belum pernah keblast beneran.
+function recordLastBlastAt(r){
+  if(!r.blastLog)return null;
+  var latest=null;
+  for(var k in r.blastLog){var bl=r.blastLog[k];if(bl&&bl.status!=='failed'&&bl.sentAt){if(!latest||String(bl.sentAt)>String(latest))latest=bl.sentAt;}}
+  return latest;
 }
 // CLM-11 A1: breakdown funnel di-scope ke 1 cohort-bulan (cohortMonths, bukan tahun -- lihat
 // catatan YoY di memory, cohortMonths BUKAN tahun-aware, jadi cuma MoM adjacent-month yg valid).
@@ -4621,7 +4631,7 @@ function openDetail(id){
     +'<tr><td style="color:var(--tx3)">Nomor HP</td><td>'+(canSeePhone?'<span class="phone-full">'+r.phone+'</span>':maskPhone(r.phone))+(isDummy?' <span class="dummy-flag">🚫 Dummy</span>':'')+(isGC?' '+gcWatchlistBadge(r.phone):'')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Agen</td><td>'+(r.assignedAgent||'Unassigned')+'</td></tr>'
     +'<tr><td style="color:var(--tx3)">Blast</td><td>'+blastBadge(r.blastStatus)+'</td></tr>'
-    +'<tr><td style="color:var(--tx3)">Last Blast</td><td>'+fmtRelativeBlast(r.lastBlastAt)+'</td></tr>'
+    +'<tr><td style="color:var(--tx3)">Last Blast</td><td>'+fmtRelativeBlast(recordLastBlastAt(r))+'</td></tr>'
     +'</table>'+sheetSection+'</div>'
     +'<div><table style="width:100%;font-size:13px">'
     +'<tr><td style="color:var(--tx3);width:45%">Kategori</td><td>'+respBadge(resp.category)+'</td></tr>'
@@ -5130,7 +5140,7 @@ function openCsvModal(){
         if(vm.field==='custom')val=vm.label;
         else if(vm.field==='agentInitials')val=AgentsConfig.getInitials(rec.assignedAgent);
         else if(vm.field==='agentDisplayName')val=AgentsConfig.getDisplayName(rec.assignedAgent);
-        else val=rec[vm.field]||'';
+        else val=fmtTplVal(rec[vm.field]);
         return cleanCsvField(val);
       });
       csvRows.push([cleanCsvField(rec.outletName),cleanCsvField(rec.email||''),cleanCsvField(row.phone)].concat(vars).join(','));
@@ -5142,6 +5152,14 @@ function openCsvModal(){
   openModal('csv-modal');
 }
 
+// CLM-05 fix (operator 14 Jul): field tanggal di template/CSV diformat dd mmm yyyy (mis. "01 Apr 2026")
+// bukan ISO "2026-04-01" -- lebih enak dibaca merchant di pesan WABA. Cuma value yg keliatan ISO-date
+// yg diformat; sisanya apa adanya.
+function fmtTplVal(v){
+  if(v==null)return'';
+  if(typeof v==='string'&&/^\d{4}-\d{2}-\d{2}/.test(v))return fmtDate(v);
+  return v;
+}
 // ── SHARED MSG BUILDER ────────────────────────────────────────────────────
 function buildMsg(tpl,rec){
   var msg=tpl.messageBody;
@@ -5150,7 +5168,7 @@ function buildMsg(tpl,rec){
     if(vm.field==='custom')val=vm.label;
     else if(vm.field==='agentInitials')val=AgentsConfig.getInitials(rec.assignedAgent);
     else if(vm.field==='agentDisplayName')val=AgentsConfig.getDisplayName(rec.assignedAgent);
-    else val=rec[vm.field]||'';
+    else val=fmtTplVal(rec[vm.field]);
     msg=msg.replace(new RegExp('\\{\\{'+vm.varNum+'\\}\\}','g'),val);
   });
   return msg;
