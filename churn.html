@@ -5115,10 +5115,17 @@ function openCsvModal(){
   // Seleksi checkbox tabel (per phone-row lama) di-map ke SET CASE ID -- CSV sekarang explode
   // per-case dari U/V/W (buildCsvPhoneRows), granularitasnya beda dari tabel yg masih per r.phone/updatedPhone.
   var tableRows=buildExplodedRows(recs);
-  var selectedCaseIds=csvSelectedIds.size>0
-    ?new Set(tableRows.filter(function(row){return csvSelectedIds.has(row.key);}).map(function(row){return row.record.id;}))
-    :null;
-  var csvRecs=selectedCaseIds?recs.filter(function(r){return selectedCaseIds.has(r.id);}):recs;
+  // CLM-05 (operator 14 Jul): CSV = TEPAT case yg dipilih eksplisit (checkbox / Tarik Hari Ini / Pilih Semua).
+  // Dulu: kalau NGGAK ada yg dipilih -> diam2 export FULL scope (45552). Itu bikin bingung: operator
+  // filter "Sarah" + Tarik (0 due hari ini) -> csvSelectedIds kosong -> ke-dump semua. Sekarang: kosong
+  // = WARN + batal, nggak ada lagi silent dump. Buat "blast semua sesuai filter" -> pakai "Pilih Semua"
+  // (yg sekarang hormatin filter aktif). Buat "blast bener2 semua" -> hapus filter dulu, baru Pilih Semua.
+  if(csvSelectedIds.size===0){
+    toast('Belum ada case dipilih. Centang baris, atau klik "Tarik Hari Ini" / "Pilih Semua" dulu.');
+    return;
+  }
+  var selectedCaseIds=new Set(tableRows.filter(function(row){return csvSelectedIds.has(row.key);}).map(function(row){return row.record.id;}));
+  var csvRecs=recs.filter(function(r){return selectedCaseIds.has(r.id);});
   var rows=buildCsvPhoneRows(csvRecs);
   var filteredRows=rows.filter(function(row){return!row.isDummy&&!row.isGC;});
 
@@ -5136,7 +5143,7 @@ function openCsvModal(){
   }).join('');
 
   document.getElementById('csv-body').innerHTML=
-    '<p style="margin-bottom:12px">Template: <strong>'+tpl.name+'</strong> &nbsp;|&nbsp; Baris: <strong>'+filteredRows.length+'</strong> (dummy & GC dikecualikan)</p>'
+    '<p style="margin-bottom:12px">Template: <strong>'+tpl.name+'</strong> &nbsp;|&nbsp; Baris: <strong>'+filteredRows.length+'</strong> &nbsp;·&nbsp; <span style="color:var(--tx2)">'+csvRecs.length+' case dipilih</span> (dummy &amp; GC dikecualikan)</p>'
     +'<div style="margin-bottom:12px"><strong style="font-size:12px">Preview (2 contoh):</strong><div style="margin-top:8px">'+(sample||'<span style="color:var(--tx3)">Tidak ada data</span>')+'</div></div>'
     +'<div style="background:var(--pril);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px;font-size:12px;color:var(--prid)">Format CSV: name, email, phone number, {{1}}, {{2}}, ... — UTF-8 BOM untuk Excel</div>';
 
@@ -6140,11 +6147,12 @@ tabContent.addEventListener('click',function(e){
     toast(n3+' case dipilih (checkpoint'+cpLbl3+' jatuh hari ini)'+(nSkip3?', '+nSkip3+' dilewati (udah terkirim via BROADCASTLOG)':''));
   }
   else if(tgt.id==='sel-all-blast-btn'){
-    var d2=Store.get();var me2=Auth.getActive();var isSup2=Auth.isSuperior();
-    var recs2=isSup2?d2.records:d2.records.filter(function(r){return r.assignedAgent===me2;});
-    recs2=applyBlastMonthGate(recs2,isSup2);
-    buildExplodedRows(recs2).forEach(function(row){csvSelectedIds.add(row.key);});
+    // CLM-05 (operator 14 Jul): Pilih Semua sekarang hormatin filter aktif (blastFilteredRows) --
+    // "filter Sarah -> Pilih Semua -> Buat CSV" = case Sarah doang. Buat pilih bener2 semua: hapus filter dulu.
+    var selRows=blastFilteredRows();
+    selRows.forEach(function(row){csvSelectedIds.add(row.key);});
     renderBlast();
+    toast(selRows.length+' baris dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||blastCadMonthFilter.length||blastSearch||blastHidePaid)?' (sesuai filter aktif)':''));
   }
   else if(tgt.id==='desel-all-blast-btn'){csvSelectedIds.clear();renderBlast();}
   else if(tgt.id==='blast-prev'){if(blastPage>0){blastPage--;refreshBlastBody();}}
