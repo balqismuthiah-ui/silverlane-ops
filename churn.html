@@ -2087,11 +2087,10 @@ var blastAgentFilter=[]; // CLM-11 A4: multi-select, leader-only, array kosong =
 // (nggak paged kayak tab lain) → freeze pas render/re-render. Cap DISPLAY ke 500 baris; select-all/
 // tarik-hari-ini/buat-csv tetep data-based (csvSelectedIds) jadi nggak kepotong cap. Search buat nyaring.
 var blastSearch='',BLAST_DISPLAY_CAP=500,blastPage=0;
-// CLM-05 (operator 14 Jul): filter billing-periode (agen+leader) — Termin (Bulanan/Tahunan), Bulan
-// Expired, Bulan Cadence (bulan checkpoint jatuh). + tarikCp = checkpoint spesifik buat "Tarik Hari Ini"
-// (Semua/H-3/H+2/H+8) biar bisa mastiin blast per-checkpoint. Semua DISPLAY-scope (nggak nyentuh CSV
-// select logic langsung -- Tarik operate di atas blastFilteredRows yg udah kefilter).
-var blastTerminFilter=[],blastExpMonthFilter=[],blastCadMonthFilter=[],tarikCp='all';
+// CLM-05 (operator 14 Jul): filter Blast (agen+leader) — Termin (Bulanan/Tahunan), Bulan Expired
+// (bulan langganan habis). + tarikCp = "Jadwal Blast": FILTER TABEL WYSIWYG (all/today/H-3/H+2/H+8);
+// yg keliatan di tabel = persis yg bakal ke-CSV. Semua ikut ke blastFilteredRows (dipakai tabel + CSV + Pilih Semua).
+var blastTerminFilter=[],blastExpMonthFilter=[],tarikCp='all';
 var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
 var respUpsellFilter=[]; // CLM-08 (4a): work-order queue -- filter klaim upsell by status
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
@@ -3879,13 +3878,20 @@ function blastFilteredRows(){
   if(isSup&&blastAgentFilter.length){
     recs=recs.filter(function(r){return blastAgentFilter.indexOf(r.assignedAgent)>=0;});
   }
-  // CLM-05 (operator 14 Jul): filter billing-periode -- Termin (Bulanan/Tahunan) + Bulan Expired +
-  // Bulan Cadence (bulan checkpoint H-3/H+2/H+8 jatuh). Available agen+leader.
+  // CLM-05 (operator 14 Jul): filter Termin (Bulanan/Tahunan) + Bulan Expired. Available agen+leader.
   if(blastTerminFilter.length)recs=recs.filter(function(r){return blastTerminFilter.indexOf(r.termin)>=0;});
   if(blastExpMonthFilter.length)recs=recs.filter(function(r){var s=localDateStr(r.expiryDate);return s&&blastExpMonthFilter.indexOf(MONTH_KEYS[parseInt(s.slice(5,7),10)-1])>=0;});
-  if(blastCadMonthFilter.length)recs=recs.filter(function(r){
-    return BLAST_CHECKPOINTS.some(function(cp){var s=checkpointDateStr(r.expiryDate,cp.offsetDays);return s&&blastCadMonthFilter.indexOf(MONTH_KEYS[parseInt(s.slice(5,7),10)-1])>=0;});
-  });
+  // CLM-05 (operator 14 Jul): "Jadwal Blast" (tarikCp) -- WYSIWYG. 'all'=semua tanggal (no filter),
+  // 'today'=ada checkpoint APAPUN jatuh hari ini, 'H-3'/'H+2'/'H+8'=checkpoint SPESIFIK itu jatuh hari ini.
+  // Yg keliatan di tabel = persis yg bakal ke-CSV.
+  if(tarikCp&&tarikCp!=='all'){
+    var _todayCp=localDateStr(new Date().toISOString());
+    recs=recs.filter(function(r){
+      var due=checkpointsDueOn(r.expiryDate,_todayCp);
+      if(tarikCp==='today')return due.length>0;
+      return due.some(function(cp){return cp.key===tarikCp;});
+    });
+  }
   var allRows=buildExplodedRows(recs);
   if(blastHidePaid)allRows=allRows.filter(function(row){
     if(row.record.paymentStatus==='paid')return false;
@@ -4011,24 +4017,24 @@ function renderBlast(){
     +'<select id="blast-tpl-sel" style="padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx)">'
     +'<option value="">— Pilih Template —</option>'+tplOpts+'</select>'
     +'<button class="btn btn-pri" id="buat-csv-btn">📥 Buat CSV</button>'
-    // CLM-05 (operator 14 Jul): dropdown checkpoint buat Tarik Hari Ini -- pilih H-3/H+2/H+8 spesifik
-    // (atau semua). Tarik operate di atas list yg lagi kefilter (termin/bulan) -> pisah per-checkpoint.
-    +'<select id="tarik-cp-sel" title="Checkpoint buat Tarik Hari Ini" style="padding:7px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);font-size:12px">'
-    +'<option value="all"'+(tarikCp==='all'?' selected':'')+'>Semua checkpoint</option>'
-    +BLAST_CHECKPOINTS.map(function(cp){return'<option value="'+cp.key+'"'+(tarikCp===cp.key?' selected':'')+'>'+cp.label+'</option>';}).join('')
+    // CLM-05 (operator 14 Jul): "Jadwal Blast" = FILTER TABEL (WYSIWYG). Pilih "H-3 hari ini" -> tabel
+    // cuma nampilin case yg checkpoint H-3-nya jatuh hari ini = persis yg bakal ke-download. "Semua tanggal"
+    // = tampilin semua (planning). Gantiin tombol "Tarik Hari Ini" lama (yg cuma nyeleksi, bikin bingung).
+    +'<select id="tarik-cp-sel" title="Jadwal blast: saring tabel ke case yang checkpoint-nya jatuh HARI INI" style="padding:7px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);font-size:12px">'
+    +'<option value="all"'+(tarikCp==='all'?' selected':'')+'>🗓️ Semua tanggal</option>'
+    +'<option value="today"'+(tarikCp==='today'?' selected':'')+'>🎯 Jatuh hari ini (semua)</option>'
+    +BLAST_CHECKPOINTS.map(function(cp){return'<option value="'+cp.key+'"'+(tarikCp===cp.key?' selected':'')+'>'+cp.label+' jatuh hari ini</option>';}).join('')
     +'</select>'
-    +'<button class="btn btn-org" id="tarik-hari-ini-btn" title="Pilih otomatis case yang checkpoint terpilih jatuh hari ini (ikut filter termin/bulan yg aktif)">🎯 Tarik Hari Ini</button>'
     +'<button class="btn btn-sec" id="sel-all-blast-btn">Pilih Semua</button>'
     +'<button class="btn btn-sec" id="desel-all-blast-btn">Batal</button>'
     +'<label style="font-size:12px;color:var(--tx2);display:flex;align-items:center;gap:4px"><input type="checkbox" id="hide-paid-chk"'+(blastHidePaid?' checked':'')+'>Sembunyikan Lunas / Paid CRM / Self Onboard</label>'
     +'</div></div>'
-    // CLM-05 (operator 14 Jul): filter billing-periode -- Termin/Bulan Expired/Bulan Cadence. Available
-    // SEMUA (agen+leader) biar agen bisa nyaring dalam bulan yg dibukain, leader bisa view sama.
+    // CLM-05 (operator 14 Jul): filter Termin/Bulan Expired. Available SEMUA (agen+leader). "Yg diblast
+    // hari ini" dihandle dropdown Jadwal Blast di toolbar atas (WYSIWYG), bukan filter bulan.
     +'<div class="frow" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">'
     +renderMultiSelect('blastTerminFilter','Termin',[{value:'Bulanan',label:'Bulanan'},{value:'Tahunan',label:'Tahunan'}],blastTerminFilter)
     +renderMultiSelect('blastExpMonthFilter','Bln Expired',MONTH_KEYS.map(function(m){return{value:m,label:m+' 26'};}),blastExpMonthFilter)
-    +renderMultiSelect('blastCadMonthFilter','Bln Cadence',MONTH_KEYS.map(function(m){return{value:m,label:m+' 26'};}),blastCadMonthFilter)
-    +'<span style="font-size:11px;color:var(--tx3);align-self:center">Filter billing periode (Termin / bln expired / bln checkpoint blast)</span>'
+    +'<span style="font-size:11px;color:var(--tx3);align-self:center">Termin (Bulanan/Tahunan) · Bln Expired = bulan langganan habis. Buat "yg diblast hari ini", pakai dropdown Jadwal Blast di atas.</span>'
     +'</div>'
     // CLM-11 A4: filter agen -- leader-only (agen biasa udah ke-scope ke case-nya sendiri, filter
     // ini nggak relevan buat mereka). Dipisah baris sendiri biar nggak numpuk sama toolbar CSV di atas.
@@ -6121,38 +6127,13 @@ tabContent.addEventListener('click',function(e){
     downloadCSV(csvTest,'waba_test_'+new Date().toISOString().slice(0,10)+'.csv');
     toast('CSV test didownload (1 baris)');
   }
-  else if(tgt.id==='tarik-hari-ini-btn'){
-    // CLM-05 (operator 14 Jul): Tarik Hari Ini sekarang (a) operate di atas blastFilteredRows() -- jadi
-    // IKUT filter termin/bulan/agen/search yg lagi aktif (dulu rebuild scope penuh), dan (b) hormatin
-    // dropdown checkpoint (tarikCp): 'all' = H-3/H+2/H+8 semua, atau spesifik satu checkpoint. Ini
-    // sengaja beda dari Pilih Semua/Buat CSV (yg tetep full-scope) -- operator minta tarik per-checkpoint
-    // + per-termin biar bisa blast bertahap.
-    var todayStr3=localDateStr(new Date().toISOString());
-    var n3=0,nSkip3=0;
-    blastFilteredRows().forEach(function(row){
-      var due3=checkpointsDueOn(row.expiryDate,todayStr3);
-      if(tarikCp!=='all')due3=due3.filter(function(cp){return cp.key===tarikCp;});
-      if(!due3.length)return;
-      // "belum keblast": lewati kalau SEMUA checkpoint due (terpilih) hari ini udah confirmed terkirim (non-failed) via BROADCASTLOG
-      var allSent3=due3.every(function(cp){
-        var bl=row.record.blastLog&&row.record.blastLog[cp.key];
-        return bl&&bl.status!=='failed';
-      });
-      if(allSent3){nSkip3++;return;}
-      csvSelectedIds.add(row.key);n3++;
-    });
-    renderBlast();
-    var cpObj3=BLAST_CHECKPOINTS.filter(function(c){return c.key===tarikCp;})[0];
-    var cpLbl3=(tarikCp==='all'||!cpObj3)?'':' '+cpObj3.label;
-    toast(n3+' case dipilih (checkpoint'+cpLbl3+' jatuh hari ini)'+(nSkip3?', '+nSkip3+' dilewati (udah terkirim via BROADCASTLOG)':''));
-  }
   else if(tgt.id==='sel-all-blast-btn'){
     // CLM-05 (operator 14 Jul): Pilih Semua sekarang hormatin filter aktif (blastFilteredRows) --
     // "filter Sarah -> Pilih Semua -> Buat CSV" = case Sarah doang. Buat pilih bener2 semua: hapus filter dulu.
     var selRows=blastFilteredRows();
     selRows.forEach(function(row){csvSelectedIds.add(row.key);});
     renderBlast();
-    toast(selRows.length+' baris dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||blastCadMonthFilter.length||blastSearch||blastHidePaid)?' (sesuai filter aktif)':''));
+    toast(selRows.length+' baris dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||(tarikCp&&tarikCp!=='all')||blastSearch||blastHidePaid)?' (sesuai filter aktif)':''));
   }
   else if(tgt.id==='desel-all-blast-btn'){csvSelectedIds.clear();renderBlast();}
   else if(tgt.id==='blast-prev'){if(blastPage>0){blastPage--;refreshBlastBody();}}
@@ -6243,7 +6224,6 @@ var MSEL_REFRESH={
   blastAgentFilter:function(){blastPage=0;refreshBlastBody();},
   blastTerminFilter:function(){blastPage=0;refreshBlastBody();},
   blastExpMonthFilter:function(){blastPage=0;refreshBlastBody();},
-  blastCadMonthFilter:function(){blastPage=0;refreshBlastBody();},
   invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');},invsumStatusSel:function(){renderTab('invsummary');}
 };
 // CLM-11 Fase G6: Pilih semua / Kosongkan buat panel multi-select. selectAll=true -> centang semua
@@ -6289,7 +6269,7 @@ tabContent.addEventListener('change',function(e){
   // QA round 2 (Ubay): bucket Daily View sekarang dropdown (Semua/CLM/CC/TC/Sales), bukan tombol.
   if(tgt.id==='daily-view-bucket-sel'){dailyViewBucketSel=tgt.value;renderTab('overview');return;}
   if(tgt.id==='invsum-month'){invsumMonth=tgt.value;renderTab('invsummary');return;}
-  if(tgt.id==='tarik-cp-sel'){tarikCp=tgt.value;return;} // CLM-05: checkpoint buat Tarik Hari Ini
+  if(tgt.id==='tarik-cp-sel'){tarikCp=tgt.value;blastPage=0;refreshBlastBody();return;} // CLM-05: Jadwal Blast = filter tabel (WYSIWYG)
   if(tgt.classList.contains('blast-chk')){
     if(tgt.checked)csvSelectedIds.add(tgt.dataset.key);
     else csvSelectedIds.delete(tgt.dataset.key);
