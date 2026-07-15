@@ -5402,6 +5402,10 @@ function syncMonthList(months,opts){
             recurring:String(row['Recurring']||'').trim(),
             hwcz:String(row['HWCZ']||'').trim(),
             expiredDateHistorical:localDateStr(String(row['Expired Date Historical']||'').trim()),
+            // (operator 15 Jul): First Buy Date = kolom Y di [Raw]. DULU field hantu -- dirender di modal
+            // detail (line ~4670) tapi NGGAK PERNAH di-sync, jadi selalu "—". Sekarang keisi + jadi
+            // bahan hitung LoS (expiredDateHistorical - firstBuyDate) buat playbook nego harga.
+            firstBuyDate:localDateStr(String(row['First Buy Date']||'').trim()),
             gtvLast3M:gtv||null,
             idMerchant:String(row['ID Merchant']||'').trim()||null,
             namaMerchant:String(row['Nama Merchant']||'').trim()||null,
@@ -5599,6 +5603,7 @@ function syncFromGAS(opts){
           recurring:String(row['Recurring']||'').trim(),
           hwcz:String(row['HWCZ']||'').trim(),
           expiredDateHistorical:localDateStr(String(row['Expired Date Historical']||'').trim()),
+          firstBuyDate:localDateStr(String(row['First Buy Date']||'').trim()), // (operator 15 Jul): kolom Y [Raw] -- dulu field hantu, lihat komentar di sync per-bulan
           gtvLast3M:gtv||null,
           idMerchant:String(row['ID Merchant']||'').trim()||null,
           namaMerchant:String(row['Nama Merchant']||'').trim()||null,
