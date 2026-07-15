@@ -2091,6 +2091,9 @@ var blastSearch='',BLAST_DISPLAY_CAP=500,blastPage=0;
 // (bulan langganan habis). + tarikCp = "Jadwal Blast": FILTER TABEL WYSIWYG (all/today/H-3/H+2/H+8);
 // yg keliatan di tabel = persis yg bakal ke-CSV. Semua ikut ke blastFilteredRows (dipakai tabel + CSV + Pilih Semua).
 var blastTerminFilter=[],blastExpMonthFilter=[],blastHwczFilter=[],tarikCp='all';
+// CLM-05 (operator 14 Jul): filter Respon (mis. saring/kecualiin RESPON NEGATIF) + Last Blast
+// (belum pernah vs udah pernah diblast) -- biar bisa jeda blast & nggak nge-spam outlet yg sama.
+var blastRespFilter=[],blastLastBlastFilter=[];
 var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
 var respUpsellFilter=[]; // CLM-08 (4a): work-order queue -- filter klaim upsell by status
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
@@ -3882,6 +3885,17 @@ function blastFilteredRows(){
   if(blastTerminFilter.length)recs=recs.filter(function(r){return blastTerminFilter.indexOf(r.termin)>=0;});
   if(blastExpMonthFilter.length)recs=recs.filter(function(r){var s=localDateStr(r.expiryDate);return s&&blastExpMonthFilter.indexOf(MONTH_KEYS[parseInt(s.slice(5,7),10)-1])>=0;});
   if(blastHwczFilter.length)recs=recs.filter(function(r){return blastHwczFilter.indexOf(String(r.hwcz||'').trim())>=0;});
+  // CLM-05 (operator 14 Jul): filter Respon -- '__none__' = belum ada respon sama sekali. Kepake buat
+  // nyaring/ngecualiin RESPON NEGATIF biar nggak diblast lagi (udah nolak, jangan di-spam).
+  if(blastRespFilter.length)recs=recs.filter(function(r){
+    var c=(r.response&&r.response.category)?r.response.category:'__none__';
+    return blastRespFilter.indexOf(c)>=0;
+  });
+  // CLM-05 (operator 14 Jul): filter Last Blast -- 'blank' = belum pernah keblast (blastLog kosong),
+  // 'ada' = udah pernah. Sumbernya recordLastBlastAt (bukti kirim CLARA), sama kayak kolom Last Blast.
+  if(blastLastBlastFilter.length)recs=recs.filter(function(r){
+    return blastLastBlastFilter.indexOf(recordLastBlastAt(r)?'ada':'blank')>=0;
+  });
   // CLM-05 (operator 14 Jul): "Jadwal Blast" (tarikCp) -- WYSIWYG. 'all'=semua tanggal (no filter),
   // 'today'=ada checkpoint APAPUN jatuh hari ini, 'H-3'/'H+2'/'H+8'=checkpoint SPESIFIK itu jatuh hari ini.
   // Yg keliatan di tabel = persis yg bakal ke-CSV.
@@ -4044,7 +4058,9 @@ function renderBlast(){
     +renderMultiSelect('blastTerminFilter','Termin',[{value:'Bulanan',label:'Bulanan'},{value:'Tahunan',label:'Tahunan'}],blastTerminFilter)
     +renderMultiSelect('blastExpMonthFilter','Bln Expired',MONTH_KEYS.map(function(m){return{value:m,label:m+' 26'};}),blastExpMonthFilter)
     +renderMultiSelect('blastHwczFilter','Potensi (HWCZ)',blastHwczOpts(),blastHwczFilter)
-    +'<span style="font-size:11px;color:var(--tx3);align-self:center">Termin · Bln Expired = bulan langganan habis · Potensi = segmen lead Hot/Warm/Cold/Zombie. Buat "yg diblast hari ini", pakai dropdown Jadwal Blast di atas.</span>'
+    +renderMultiSelect('blastRespFilter','Respon',Object.keys(RESP_CATS).map(function(c){return{value:c,label:c};}).concat([{value:'__none__',label:'(Belum ada respon)'}]),blastRespFilter)
+    +renderMultiSelect('blastLastBlastFilter','Last Blast',[{value:'blank',label:'Belum pernah diblast'},{value:'ada',label:'Sudah pernah diblast'}],blastLastBlastFilter)
+    +'<span style="font-size:11px;color:var(--tx3);align-self:center">Termin · Bln Expired = bulan langganan habis · Potensi = segmen lead Hot/Warm/Cold/Zombie · Respon = hasil follow-up (mis. kecualiin RESPON NEGATIF) · Last Blast = belum/udah pernah keblast (biar bisa dijeda, nggak spam).</span>'
     +'</div>'
     // CLM-11 A4: filter agen -- leader-only (agen biasa udah ke-scope ke case-nya sendiri, filter
     // ini nggak relevan buat mereka). Dipisah baris sendiri biar nggak numpuk sama toolbar CSV di atas.
@@ -6184,7 +6200,7 @@ tabContent.addEventListener('click',function(e){
     var selRows=blastFilteredRows().filter(function(row){return!row.isGC&&!row.isDummy;});
     selRows.forEach(function(row){csvSelectedIds.add(row.key);});
     renderBlast();
-    toast(selRows.length+' nomor bersih dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||blastHwczFilter.length||(tarikCp&&tarikCp!=='all')||blastSearch||blastHidePaid)?' (sesuai filter aktif)':''));
+    toast(selRows.length+' nomor bersih dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||blastHwczFilter.length||blastRespFilter.length||blastLastBlastFilter.length||(tarikCp&&tarikCp!=='all')||blastSearch||blastHidePaid)?' (sesuai filter aktif)':''));
   }
   else if(tgt.id==='desel-all-blast-btn'){csvSelectedIds.clear();renderBlast();}
   else if(tgt.id==='blast-prev'){if(blastPage>0){blastPage--;refreshBlastBody();}}
@@ -6276,6 +6292,8 @@ var MSEL_REFRESH={
   blastTerminFilter:function(){blastPage=0;refreshBlastBody();},
   blastExpMonthFilter:function(){blastPage=0;refreshBlastBody();},
   blastHwczFilter:function(){blastPage=0;refreshBlastBody();},
+  blastRespFilter:function(){blastPage=0;refreshBlastBody();},
+  blastLastBlastFilter:function(){blastPage=0;refreshBlastBody();},
   invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');},invsumStatusSel:function(){renderTab('invsummary');}
 };
 // CLM-11 Fase G6: Pilih semua / Kosongkan buat panel multi-select. selectAll=true -> centang semua
