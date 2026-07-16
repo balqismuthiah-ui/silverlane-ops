@@ -5819,7 +5819,10 @@ function gcWatchlistBadge(phone){
   var w=gcFlagMap[normPhone(phone)];
   if(!w)return'';
   var label=w.label?(': '+w.label):'';
-  return'<span class="badge badge-red" style="font-size:10px" title="Sumber: GetContact Watchlist">⚠️ '+w.category+label+'</span>';
+  // (operator 16 Jul): tampilin NOMOR-nya juga (nomor GC = internal/sales, bukan nomor privat customer)
+  // biar agen tau nomor si "Sales Dandi Irawan" berapa -> bisa mastiin & koreksi ke nomor owner asli.
+  var num=phone?(' · '+normPhone(phone)):'';
+  return'<span class="badge badge-red" style="font-size:10px" title="Sumber: GetContact Watchlist">⚠️ '+w.category+label+num+'</span>';
 }
 // CLM-05 (operator 14 Jul): badge GC ringkas buat tabel Blast + CSV -- nunjukin "nomor siapa" (kategori
 // dari Cek Nomor/Watchlist GC: Internal - Sales/CX/Akademi/PO, Nomor Tidak Valid, dll) + label bila ada.
