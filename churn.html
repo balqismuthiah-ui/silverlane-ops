@@ -3274,7 +3274,7 @@ function masterRows(d){
     var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
     var isDummy=isDummyPhone(r.phone);
     var dispId=r.outletId||r.id;
-    var canSeePhone=(me===r.assignedAgent)||isSup;
+    var canSeePhone=(me===r.assignedAgent)||isSup||phoneIsGcFlagged(r);
     var phoneDisp=canSeePhone?'<span class="phone-full">'+r.phone+'</span>':'<span class="phone-mask">'+maskPhone(r.phone)+'</span>';
     return'<tr>'
       +'<td style="font-size:12px">'+dispId+'</td>'
@@ -3401,7 +3401,7 @@ function wsRows(d,me,isSup){
   wsPage=Math.min(wsPage,totalPages-1);
   var paged=recs.slice(wsPage*PAGE_SIZE,(wsPage+1)*PAGE_SIZE);
   return paged.map(function(r){
-    var canSeePhone=(Auth.getActive()===r.assignedAgent)||isSup;
+    var canSeePhone=(Auth.getActive()===r.assignedAgent)||isSup||phoneIsGcFlagged(r);
     var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
     var isDummy=isDummyPhone(r.phone);
     var chk=wsSelectedIds.has(r.id)?'checked':'';
@@ -4651,7 +4651,7 @@ function openDetail(id){
   if(!r)return;
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
-  var canSeePhone=(me===r.assignedAgent)||isSup;
+  var canSeePhone=(me===r.assignedAgent)||isSup||phoneIsGcFlagged(r);
   var resp=r.response||{};
   var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
   var isDummy=isDummyPhone(r.phone);
@@ -4735,7 +4735,7 @@ function openResp(id){
   // CLM-08 item (b): Response Update sekarang view-all (semua agen bisa buka case siapa aja) --
   // nomor HP submission ("Nomor HP Baru") harus ikut aturan mask yg sama kayak Master&Assign/My
   // Worksheet, bukan keliatan mentah ke semua yg buka modal-nya.
-  var canSeePhone=(Auth.getActive()===r.assignedAgent)||isSup;
+  var canSeePhone=(Auth.getActive()===r.assignedAgent)||isSup||phoneIsGcFlagged(r);
   respTargetId=id;
   var resp=r.response||{};
   respOpenSnapshot={id:id,updatedAt:resp.updatedAt||null}; // P1-1: snapshot utk deteksi konflik
@@ -5829,6 +5829,15 @@ function gcBlastBadge(phone){
   if(!w)return'';
   var lbl=w.label?(' — '+w.label):'';
   return' <span class="badge badge-red" style="font-size:10px" title="Dari Cek Nomor (Watchlist GC): '+w.category+lbl+' · dikecualikan dari blast, dipakai nomor alternatif bila ada">⚠ '+gcCatShort(w.category)+'</span>';
+}
+// (operator 16 Jul): nomor case kena GC (confirmed) = nomor internal/sales/invalid, BUKAN nomor privat
+// customer. Jadi aman di-unmask + boleh diedit siapa aja (agen non-owner + leader) supaya bisa
+// dikoreksi/diflag. Non-GC tetep ke-mask kayak biasa (cuma owner-agen + leader yg lihat).
+function phoneIsGcFlagged(r){
+  if(!r)return false;
+  if(r.phone&&gcFlagMap[normPhone(r.phone)])return true;
+  if(r.response&&r.response.updatedPhone&&gcFlagMap[normPhone(r.response.updatedPhone)])return true;
+  return false;
 }
 // CLM-05 (operator 14 Jul): opsi filter Potensi (HWCZ = Hot/Warm/Cold/Zombie) dari nilai distinct di records.
 var HWCZ_ORDER=['Hot','Warm','Cold','Zombie'];
