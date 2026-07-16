@@ -2185,7 +2185,7 @@ function wbQueueGet(){try{return JSON.parse(localStorage.getItem(WB_QUEUE_KEY)||
 function wbQueueSet(q){try{localStorage.setItem(WB_QUEUE_KEY,JSON.stringify(q));}catch(e){}}
 // CLM-07: SEMUA call GAS (kecuali requestOtp/verifyOtp/logout) wajib bawa token -- _gasPost/_gasGet
 // jadi 2 choke point yg nyisipin otomatis, biar nggak ada request yg "lupa" (brief Section D).
-function _gasPost(payload){
+function _gasPostRaw(payload){
   var withToken=Object.assign({},payload,{token:Auth.getToken()});
   // text/plain hindari CORS preflight (GAS tak handle OPTIONS)
   return fetch(GAS_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(withToken)})
@@ -2196,6 +2196,19 @@ function _gasPost(payload){
       if(j&&j.ok===false)throw new Error(j.error||'write gagal');
       return j;
     });});
+}
+// (operator 16 Jul, FIX DATA-LOSS): SERIALIZE semua write ke GAS. Dulu tiap _gasPost nembak langsung &
+// independen -> submit 2 klaim (maps+playstore) = 2 POST barengan -> GAS LockService jatuhin salah satu
+// -> baris klaim ilang dari sheet (kebukti: Vanny Cake playstore hilang). Sekarang tiap write NUNGGU
+// write sebelumnya settle (sukses/gagal) baru nembak. Idempotent (upsert-by-key) jadi aman. Nutup SEMUA
+// call-site (upsell/response/GC/targets bulk-reorder/dst) sekaligus krn _gasPost = choke-point tunggal.
+var _wbChain=Promise.resolve();
+function _gasPost(payload){
+  var p=_wbChain.then(function(){return _gasPostRaw(payload);},function(){return _gasPostRaw(payload);});
+  // chain maju pas p settle ATAU 30 detik (biar 1 fetch nyangkut nggak nge-freeze antrean write lain --
+  // kalau timeout & respons telat dateng, .then/.catch caller tetep jalan; upsert idempotent = aman dobel)
+  _wbChain=new Promise(function(resolve){var done=false,fin=function(){if(!done){done=true;resolve();}};p.then(fin,fin);setTimeout(fin,30000);});
+  return p;
 }
 function buildWbPayload(r,me){
   var resp=r.response||{};
