@@ -5762,10 +5762,14 @@ function mergeUpsellFromRemote(local,remote){
     audit:local?(local.audit||[]):[] // preserve — GAS nggak nyimpen audit trail
   };
 }
-function syncUpsellOnly(){
+// opts.silent (operator 16 Jul): dipakai auto-sync on-load -- agen NGGAK punya tombol Sync Upsell (leader-only)
+// jadi tanpa ini agen nggak pernah lihat status validasi klaimnya (approved/rejected). Silent = nggak spam
+// toast pas background, error ditelen (tombol manual leader tetep surface error).
+function syncUpsellOnly(opts){
+  opts=opts||{};
   var btn=document.getElementById('sync-upsell-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  toast('Mengambil klaim upsell…',3000);
+  if(!opts.silent)toast('Mengambil klaim upsell…',3000);
   _gasGet('upsell',60000).then(function(json){
     var rows=json.data||[];
     var d=Store.get();
@@ -5784,9 +5788,9 @@ function syncUpsellOnly(){
       if(merged!==rec.upsell[platform]){rec.upsell[platform]=merged;n++;}
     });
     Store.set(d);renderTab(currentTab);
-    toast(n+' klaim upsell disinkronkan dari '+rows.length+' baris');
+    if(!opts.silent)toast(n+' klaim upsell disinkronkan dari '+rows.length+' baris');
   }).catch(function(err){
-    toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync upsell: '+err.message,5000);
+    if(!opts.silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync upsell: '+err.message,5000);
   }).then(function(){
     var b=document.getElementById('sync-upsell-btn');
     if(b){b.disabled=false;b.textContent='📥 Sync Upsell';}
@@ -6566,6 +6570,11 @@ function startApp(){
   // CLM-11 Fase E: tarik Targets lintas-akun leader on-load (jarang berubah, cukup sync-on-load +
   // sync abis aksi sendiri di Targets.add/update/delete -- BUKAN polling agresif kayak responsesDelta).
   setTimeout(syncTargetsFromServer,jms(2200));
+  // (operator 16 Jul): auto-sync klaim upsell on-load (silent) -- tombol manual cuma di tab leader, jadi
+  // tanpa ini agen nggak pernah lihat status validasi klaimnya sendiri (approved/rejected). Sekali per
+  // load, ringan (~sekelas Targets/GC, jauh lebih murah dari poll respons 10-menit). Leader tetep bisa
+  // klik manual buat refresh kapan aja.
+  setTimeout(function(){syncUpsellOnly({silent:true});},jms(3600));
   // QA round 3 lanjutan: auto-sync financials+upsellteam bulan berjalan (silent, throttle 30 menit
   // internal -- lihat autoSyncFinancialsStores). Staggered paling akhir, payload-nya paling gede.
   setTimeout(autoSyncFinancialsStores,jms(4200));
