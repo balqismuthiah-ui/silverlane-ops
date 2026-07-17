@@ -552,7 +552,11 @@ function respOutcome(resp){
   if(!resp||!resp.category)return null;
   var cat=resp.category,det=resp.detail;
   if(cat==='Self Onboard')return'renewal';
-  if(cat==='RESPON POSITIF')return det==='PAID CRM'?'renewal':'followup';
+  // 18 Jul (Ryry QA): pakai PAID_DETAILS (sumber kebenaran tunggal, sama yg trigger paymentStatus='paid')
+  // BUKAN cek 'PAID CRM' doang. Data real pakai kategori RESPON POSITIF + detail 'PAID SELF ONBOARD'
+  // buat self-onboard bayar (kategori 'Self Onboard' 0 baris dari 25.514) -> dulu salah masuk 'followup'.
+  // Kelihatan baru pasca-v53: pra-v53 kategori L:U null -> case ini nggak pernah masuk respOutcome.
+  if(cat==='RESPON POSITIF')return PAID_DETAILS.indexOf(det)>=0?'renewal':'followup';
   if(cat==='RESPON NEGATIF')return'churn';
   return'other'; // NO RESPONSE, NOMOR TIDAK VALID, BUKAN RENEWAL
 }
