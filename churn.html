@@ -2185,29 +2185,43 @@ function wbQueueGet(){try{return JSON.parse(localStorage.getItem(WB_QUEUE_KEY)||
 function wbQueueSet(q){try{localStorage.setItem(WB_QUEUE_KEY,JSON.stringify(q));}catch(e){}}
 // CLM-07: SEMUA call GAS (kecuali requestOtp/verifyOtp/logout) wajib bawa token -- _gasPost/_gasGet
 // jadi 2 choke point yg nyisipin otomatis, biar nggak ada request yg "lupa" (brief Section D).
-function _gasPostRaw(payload){
+// 1 attempt write. WAJIB cek j.ok/body (bukan cuma HTTP 200) -- Ubay 17 Jul: false-200 (GAS balikin
+// sukses palsu tanpa flush/commit) itu sebab write lenyap tanpa jejak. err.retriable nandain error
+// TRANSIENT (lock-fail server `retry:true` / HTTP 5xx-429 / respons non-JSON = kemungkinan timeout eksekusi)
+// yg layak di-retry, VS permanen (unauthorized / business-reject `ok:false` tanpa retry) yg jangan.
+function _gasPostOnce(payload){
   var withToken=Object.assign({},payload,{token:Auth.getToken()});
   // text/plain hindari CORS preflight (GAS tak handle OPTIONS)
   return fetch(GAS_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(withToken)})
     .then(function(r){return r.text().then(function(t){
-      if(!r.ok)throw new Error('HTTP '+r.status);
-      var j;try{j=JSON.parse(t);}catch(e){throw new Error('Respons GAS bukan JSON (doPost belum ada?)');}
-      if(j&&j.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
-      if(j&&j.ok===false)throw new Error(j.error||'write gagal');
+      if(!r.ok){var e=new Error('HTTP '+r.status);e.retriable=(r.status>=500||r.status===429);throw e;}
+      var j;try{j=JSON.parse(t);}catch(e2){var e3=new Error('Respons GAS bukan JSON (kemungkinan timeout eksekusi)');e3.retriable=true;throw e3;}
+      if(j&&j.error==='unauthorized'){forceReLogin();var eu=new Error('unauthorized');eu.retriable=false;throw eu;}
+      if(j&&j.ok===false){var eb=new Error(j.error||'write gagal');eb.retriable=(j.retry===true);throw eb;}
       return j;
     });});
 }
-// (operator 16 Jul, FIX DATA-LOSS): SERIALIZE semua write ke GAS. Dulu tiap _gasPost nembak langsung &
-// independen -> submit 2 klaim (maps+playstore) = 2 POST barengan -> GAS LockService jatuhin salah satu
-// -> baris klaim ilang dari sheet (kebukti: Vanny Cake playstore hilang). Sekarang tiap write NUNGGU
-// write sebelumnya settle (sukses/gagal) baru nembak. Idempotent (upsert-by-key) jadi aman. Nutup SEMUA
-// call-site (upsell/response/GC/targets bulk-reorder/dst) sekaligus krn _gasPost = choke-point tunggal.
+// (Ubay 17 Jul, interim stanch-bleeding sebelum GAS lock+flush deploy): retry-backoff buat error TRANSIENT.
+// Lock/commit contention itu sesaat (sesi lain kelar ~1-2dtk) -> retry sering langsung landed. Backoff
+// 0.8/1.6/3.2dtk, maks 3x, baru nyerah ke antrean lokal (writeBack*.catch). Permanen (unauth/business) langsung nyerah.
+function _gasPostWithRetry(payload,attempt){
+  attempt=attempt||0;
+  return _gasPostOnce(payload).catch(function(err){
+    if(err&&err.retriable&&attempt<3){
+      return new Promise(function(res){setTimeout(res,800*Math.pow(2,attempt));}).then(function(){return _gasPostWithRetry(payload,attempt+1);});
+    }
+    throw err;
+  });
+}
+// SERIALIZE semua write ke GAS (nutup append-race intra-tab -- Ubay: `targetRow=lastUsed+1` nol lock ->
+// 2 write barengan nulis baris sama). Tiap write (termasuk retry-nya) NUNGGU write sebelumnya settle baru
+// nembak. Choke-point tunggal -> nutup SEMUA call-site (upsell/respons/GC/targets bulk-reorder). Idempotent
+// (upsert-by-key) jadi retry aman. Timeout advance 60dtk (akomodasi 3x retry+backoff, biar fetch nyangkut
+// nggak nge-freeze antrean; kalau kepicu & respons telat dateng .then/.catch caller tetep jalan).
 var _wbChain=Promise.resolve();
 function _gasPost(payload){
-  var p=_wbChain.then(function(){return _gasPostRaw(payload);},function(){return _gasPostRaw(payload);});
-  // chain maju pas p settle ATAU 30 detik (biar 1 fetch nyangkut nggak nge-freeze antrean write lain --
-  // kalau timeout & respons telat dateng, .then/.catch caller tetep jalan; upsert idempotent = aman dobel)
-  _wbChain=new Promise(function(resolve){var done=false,fin=function(){if(!done){done=true;resolve();}};p.then(fin,fin);setTimeout(fin,30000);});
+  var p=_wbChain.then(function(){return _gasPostWithRetry(payload);},function(){return _gasPostWithRetry(payload);});
+  _wbChain=new Promise(function(resolve){var done=false,fin=function(){if(!done){done=true;resolve();}};p.then(fin,fin);setTimeout(fin,60000);});
   return p;
 }
 function buildWbPayload(r,me){
