@@ -2224,6 +2224,22 @@ function _gasPost(payload){
   _wbChain=new Promise(function(resolve){var done=false,fin=function(){if(!done){done=true;resolve();}};p.then(fin,fin);setTimeout(fin,60000);});
   return p;
 }
+// Dirty-check write-back respons (17 Jul, approved Ubay) — fix P0 clobber: leader yang cuma validasi
+// klaim upsell dulu ikut nulis ulang r.response versi LOKALnya ke sheet; kalau lokalnya basi (window
+// s/d 10 menit = interval pollResponsesDelta), respons agen ketimpa senyap. Bukti: case 70801546235
+// (Lamih) -- BE Summary='NO RESPONSE', BF Keterangan=kosong, Agen=Erizka, Last Edit By=Muthia.
+//
+// Fingerprint = PERSIS field yang mendarat di sheet menurut buildWbPayload:
+//   category -> Summary ·  detail -> Keterangan ·  note -> Note ·  evidenceLink -> Link Evidence
+//   assignedAgent -> Agen  (catatan: ini di r, BUKAN r.response)
+// SENGAJA diexclude:
+//   - updatedPhone & waStatus -> local-only, nggak ada di DASH_HEADERS (lihat mergeResponseFromRemote)
+//   - Tgl Response / Last Edit At/By -> selalu now/me, kalau diikutin fingerprint nggak akan pernah sama
+//     (= dirty-check mati total, balik ke bug semula)
+function respSheetFingerprint(resp,agent){
+  resp=resp||{};
+  return JSON.stringify([resp.category||null,resp.detail||null,resp.note||'',resp.evidenceLink||null,agent||'']);
+}
 function buildWbPayload(r,me){
   var resp=r.response||{};
   var now=new Date().toISOString();
@@ -4879,7 +4895,13 @@ function saveResp(){
   }
 
   // P1-1: deteksi konflik concurrency — case berubah sejak modal dibuka?
-  var prevResp=r.response||{};
+  var prevResp=r.response||{}; // NB: reference ke objek LAMA — r.response di-REASSIGN di bawah
+                               // (bukan mutasi in-place), jadi ini tetap snapshot pra-edit yg sah.
+  // Dirty-check (17 Jul, approved Ubay): baseline PRA-EDIT buat mutusin perlu write-back respons apa
+  // nggak. assignedAgent WAJIB ikut ke-snapshot di sini — dia mendarat di sheet (buildWbPayload
+  // 'Agen') TAPI di-mutasi in-place di r (bukan di r.response), jadi kalau nggak dicatat sekarang
+  // nilai lamanya keburu hilang -> ganti agen nggak ke-write = silent-loss BARU.
+  var prevAgent=r.assignedAgent||'';
   if(respOpenSnapshot&&respOpenSnapshot.id===respTargetId
      &&(prevResp.updatedAt||null)!==(respOpenSnapshot.updatedAt||null)){
     var proceed=confirm(
@@ -4994,7 +5016,12 @@ function saveResp(){
 
   Store.set(d);
   // CLM-01: write-back ke Sheets RESPONSES (by key ID Outlet+Expired) + audit Last Edit
-  writeBackResponse(r,me);
+  // 17 Jul: cuma kalau ADA yang berubah (pola sama `changed` di writeBackUpsell atas). Leader yang
+  // cuma approve/reject klaim upsell -> nol write respons -> nol clobber. Baseline = prevResp/prevAgent
+  // (PRA-edit), bukan r.response yang udah ke-reassign di atas.
+  if(respSheetFingerprint(prevResp,prevAgent)!==respSheetFingerprint(r.response,r.assignedAgent)){
+    writeBackResponse(r,me);
+  }
   closeModal('resp-modal');
   toast('Respon berhasil disimpan');
   renderTab(currentTab);
