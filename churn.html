@@ -542,7 +542,10 @@ const RESP_DETAILS={
   'RESPON POSITIF':['PROSES NEGOSIASI','AKAN BAYAR SEGERA','PAID CRM','COMPARE HARGA - ON PRO','COMPARE HARGA - DEAL','COMPARE HARGA - TIDAK COCOK'],
   'RESPON NEGATIF':['OUTLET TUTUP PERMANEN','OUTLET TUTUP SEMENTARA','PINDAH KE KOMPETITOR - NO DETAIL','PINDAH KE KOMPETITOR - FITUR','PINDAH KE KOMPETITOR - HARGA','PINDAH KE KOMPETITOR - KECEWA','PINDAH KE MANUAL','APLIKASI TIDAK TERPAKAI','HARGA TIDAK COCOK','KECEWA DENGAN PELAYANAN','GANTI PEMILIK/MANAGEMENT','INDIKASI PINDAH MASA LANGGANAN','MENOLAK MEMBERIKAN ALASAN','TIDAK DAPAT MEMBERIKAN KEPUTUSAN'],
   'Self Onboard':['PAID SELF ONBOARD'],
-  'BUKAN RENEWAL':['AKUN BARU','BY COCKPIT','XL 1Biz','AKUN INTERNAL','ACCOUNT DELETED']
+  // 'TIDAK ADA DI CRM BILLING' (18 Jul, keputusan Muthia): ~1rb+ baris dipakai konsisten agen, secara
+  // fungsional respons sah tapi belum resmi masuk taksonomi. Outlet nggak ada di billing CRM = nggak
+  // ada yg bisa di-renewal dari sisi CRM = alasan valid BUKAN RENEWAL. Diresmiin ke sini.
+  'BUKAN RENEWAL':['AKUN BARU','BY COCKPIT','XL 1Biz','AKUN INTERNAL','ACCOUNT DELETED','TIDAK ADA DI CRM BILLING']
 };
 // Paid-detail values yang exempt dari evidence gate & trigger auto paymentStatus='paid'
 const PAID_DETAILS=['PAID CRM','PAID SELF ONBOARD'];
@@ -4792,6 +4795,17 @@ function openResp(id){
   if(resp.category&&RESP_DETAILS[resp.category]){
     var opts=RESP_DETAILS[resp.category];
     detailOpts+=(Array.isArray(opts)?opts:[]).map(function(o){return'<option value="'+o+'"'+(resp.detail===o?' selected':'')+'>'+o+'</option>';}).join('');
+  }
+  // Part A "preserve unknown" (18 Jul, keputusan Ubay): kalau resp.detail ada isinya tapi DI LUAR
+  // RESP_DETAILS[kategori] (nilai lama/migrasi/non-taksonomi kayak CREDIT CARD, DEAL), dropdown dulu
+  // nggak punya opsi match -> jatuh ke "—" -> Simpan nulis KOSONG = detail asli lenyap SENYAP. Ini
+  // mekanisme yg ngeclobber Lamih + ~2rb baris billing. Fix: sisipin opsi preserve biar dropdown
+  // nampilin & Simpan mempertahankan (pola sama specialAgentOpt di field Agen). Ini jalur clobber
+  // TERAKHIR yg ketutup. NB: cuma open-time; kalau leader AKTIF ganti kategori (change listener),
+  // rebuild dari RESP_DETAILS = memang niat reklasifikasi, wajar nilai lama nggak dipertahanin.
+  var _dknown=resp.category&&RESP_DETAILS[resp.category]&&RESP_DETAILS[resp.category].indexOf(resp.detail)>=0;
+  if(resp.detail&&!_dknown){
+    detailOpts+='<option value="'+resp.detail+'" selected>'+resp.detail+' (nilai lama)</option>';
   }
   // Dropdown dulu cuma daftar AGENTS -- kalau r.assignedAgent kosong (Unassigned) atau nilai khusus dari
   // sheet (mis. "Akun Internal"/"Bukan renewal", nggak ada di AGENTS), select nggak punya opsi yang match
