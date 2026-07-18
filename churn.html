@@ -3497,6 +3497,11 @@ function renderWorksheet(){
     +'<input class="fsearch" type="search" id="ws-search" placeholder="🔍 Cari nama / ID outlet..." value="'+wsSearch+'">'
     +(agentFilter||'')
     +payFilter
+    // 18 Jul (Ubay approve): tombol Sync Upsell buat agen. Klaim upsell dulu cuma auto-sync ON-LOAD
+    // (nggak ada poll interval -- keputusan kuota/GATE 3), jadi agen mesti reload buat lihat hasil
+    // validasi leader (approved/rejected). Tombol ini = tarik terbaru tanpa reload penuh. Reuse id
+    // 'sync-upsell-btn' (handler+loading-state existing; cuma 1 tab render sekaligus jadi nggak dobel).
+    +'<button class="btn btn-blu" id="sync-upsell-btn" style="padding:5px 12px;font-size:12px" title="Tarik status validasi klaim upsell terbaru (approved/rejected) dari leader — tanpa reload">📥 Sync Upsell</button>'
     +'<span id="ws-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+wsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
