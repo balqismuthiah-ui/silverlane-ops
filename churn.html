@@ -6095,6 +6095,11 @@ function mapSummaryToCategory(sum){
   if(sl.indexOf('negatif')>=0)return'RESPON NEGATIF';
   if(sl.indexOf('self onboard')>=0)return'Self Onboard';
   if(sl.indexOf('bukan renewal')>=0)return'BUKAN RENEWAL';
+  // 18 Jul (Muthia): 1.076 baris punya "tidak ada di crm billing" nyangkut di SLOT KATEGORI (bukan
+  // detail) -> dulu map ke null -> jatuh "Belum Dikategorikan". Petain ke BUKAN RENEWAL (sejalan
+  // keputusan #1: outlet nggak ada di billing CRM = alasan valid bukan-renewal). Recover 1.076 ke
+  // bucket bener. Cross-tab konfirmasi: 909 baris udah kategori BUKAN RENEWAL, ini nutup sisa 1.076.
+  if(sl.indexOf('tidak ada di crm billing')>=0)return'BUKAN RENEWAL';
   if(sl.indexOf('nomor tidak valid')>=0)return'NOMOR TIDAK VALID';
   if(sl.indexOf('no response')>=0)return'NO RESPONSE';
   return null;
