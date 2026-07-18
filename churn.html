@@ -6149,10 +6149,14 @@ function syncResponsesOnly(){
     var rows=json.data||[];
     var d=Store.get();
     var idx={};d.records.forEach(function(r){idx[r.id]=r;});
-    var n=0;
+    var n=0,unmatched=0;
     rows.forEach(function(row){
       var jc=String(row['Join id outlet&exp date']||'').trim();if(!jc)return;
-      var rec=idx[jc];if(!rec)return;
+      // 18 Jul (Ubay): dulu drop SENYAP (if(!rec)return nol jejak). Sekarang DIHITUNG biar undercount
+      // kemonitor, bukan invisible ("no silent caps"). ~23% respons yatim (join key outletID+expiry
+      // nggak match krn expiry geser/arsip) — diagnostic: 3.991 recoverable, 1.756 benign. Rescue
+      // remedy NGGAK dibangun sekarang (cycle-aware, nunggu keputusan); ini cuma bikin VISIBLE.
+      var rec=idx[jc];if(!rec){unmatched++;return;}
       var bm=_mapBlast(row['STATUS BLAST']);
       if(bm)rec.blastStatus=bm;
       var tb=String(row['Tanggal Blast']||'').trim();
@@ -6174,7 +6178,9 @@ function syncResponsesOnly(){
       rec.response=resp;n++;
     });
     Store.set(d);renderMaster();
-    toast(n+' respons diimport dari '+rows.length+' baris');
+    var pctUnmatched=rows.length?Math.round(unmatched/rows.length*100):0;
+    console.log('[sync respons] '+n+' updated · '+unmatched+' unmatched ('+pctUnmatched+'% — di luar tracking, ~expiry geser/arsip) dari '+rows.length+' baris server');
+    toast(n+' respons diimport dari '+rows.length+' baris'+(unmatched?' · '+unmatched+' di luar periode tracking':''));
   }).catch(function(err){
     toast(err.name==='AbortError'?'Timeout 150s — GAS butuh ~2 menit, coba buka URL GAS?action=responses di tab baru dulu lalu klik lagi':'Gagal: '+err.message,6000);
   }).then(function(){
