@@ -2771,6 +2771,11 @@ function renderOverview(){
     var myMaps=allRecs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',me);},0);
     var myApps=allRecs.reduce(function(s,r){return s+upsellApprovedCount(r,'playstore',me);},0);
     var myUpsellFin=computeUpsellCountAttach(myRecs,currentMonthKey);
+    // 18 Jul (operator): revenue PERSONAL (Rp) — renewal (join FinancialsStore, scope myRecs) + upsell
+    // (UpsellTeamStore, filter creatorName=me). Ditampilin nominal PENUH (fmtRpFull). Dulu agen cuma
+    // lihat COUNT (outlet renewal / deal), sekarang + Rp punya dia sendiri.
+    var myRenewalRev=computeFinancialsMetric('renewal_revenue',myRecs,currentMonthKey);
+    var myUpsellRev=computeUpsellRevenuePersonal(currentMonthKey,me);
     var myMapsPct=Math.min(PER_AGENT_REVIEW_MAPS?Math.round(myMaps/PER_AGENT_REVIEW_MAPS*100):0,100);
     var myAppsPct=Math.min(PER_AGENT_REVIEW_APPS?Math.round(myApps/PER_AGENT_REVIEW_APPS*100):0,100);
     var myConvPct=total?Math.round((renewal/total)*100):0;
@@ -2785,6 +2790,8 @@ function renderOverview(){
       +'<div style="font-size:18px;font-weight:700;color:var(--blu)">'+fmtRp(PER_AGENT_RENEWAL_IMP)+'</div>'
       +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">Insentif: T0 Rp5jt · T1 Rp5,5jt · T2 Rp6jt · T3 Rp7jt (+konversi)</div>'
       +'<div style="font-size:11px;color:var(--tx2);margin-top:3px">Outlet renewal saya: <strong>'+renewal+'</strong></div>'
+      +'<div style="font-size:10px;color:var(--tx3);margin-top:6px">Revenue renewal saya ('+currentMonthKey+' 26)</div>'
+      +'<div style="font-size:17px;font-weight:800;color:var(--grn)">'+(myRenewalRev.denom?fmtRpFull(myRenewalRev.actual):'<span style="font-size:11px;font-weight:400;color:var(--tx3)">belum ada data financials</span>')+'</div>'
       +'</div>'
       +'<div class="card">'
       +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">📈 Upselling Saya ('+currentMonthKey+' 26)</div>'
@@ -2793,7 +2800,9 @@ function renderOverview(){
           +'<div style="font-size:18px;font-weight:800;color:var(--tx)">'+myUpsellFin.count+' deal</div>'
           +'<div style="font-size:11px;color:var(--tx3);margin-top:4px">Attach rate</div>'
           +'<div style="font-size:18px;font-weight:700;color:var(--blu)">'+myUpsellFin.attachPct+'%</div>'
-          +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+myUpsellFin.count+' dari '+myUpsellFin.denom+' deal renewal saya</div>')
+          +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+myUpsellFin.count+' dari '+myUpsellFin.denom+' deal renewal saya</div>'
+          +'<div style="font-size:10px;color:var(--tx3);margin-top:6px">Revenue upsell saya</div>'
+          +'<div style="font-size:17px;font-weight:800;color:var(--grn)">'+(myUpsellRev.synced?fmtRpFull(myUpsellRev.actual):'<span style="font-size:11px;font-weight:400;color:var(--tx3)">—</span>')+'</div>')
         :'<div style="font-size:11px;color:var(--tx3)">Belum ada data financials bulan ini</div>')
       +'</div>'
       +'<div class="card">'
@@ -2852,7 +2861,10 @@ function renderOverview(){
     var clr1=pct1>=100?'var(--grn)':(pct1>=70?'var(--yel)':'var(--red)');
     return'<div class="card">'
       +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+label+'</div>'
-      +'<div style="font-size:22px;font-weight:800;color:'+(hasImp?'var(--tx)':clr1)+'">'+fmtMetricVal(actual,unit)+'</div>'
+      // 18 Jul (operator): angka ACTUAL Rp ditampilin PENUH (fmtRpFull), nggak disingkat "jt/M" —
+      // biar renewal/upsell/ARPU kebaca nominal lengkap. Target-tier breakdown tetep pakai short
+      // (fmtMetricVal) biar nggak overflow di baris compact.
+      +'<div style="font-size:22px;font-weight:800;color:'+(hasImp?'var(--tx)':clr1)+'">'+(unit==='Rp'?fmtRpFull(actual):fmtMetricVal(actual,unit))+'</div>'
       +'<div style="margin-top:4px">'+render2TierBars(actual,unit,targetVal,hasImp?targetValImproved:null)+'</div>'
       +(extraNote||'')
       +'</div>';
@@ -3021,8 +3033,21 @@ function renderOverview(){
       return m;
     }
     var dvCurMap=dvRosterMap(dvCurUT);
-    var dvCurSeries=buildDailyCumulativeSeries(dvCurUT[dvMetricField],daysInMonth,dvCurMap);
-    var dvPrevSeries=dvPrevUT?buildDailyCumulativeSeries(dvPrevUT[dvMetricField],daysInPrevMonth,dvRosterMap(dvPrevUT)):null;
+    // 18 Jul (operator): metrik grafik + opsi 'total' (Renewal+Upsell). Total = jumlah element-wise
+    // series renewal & upsell per-bucket per-hari (dua-duanya kumulatif, jadi jumlahnya juga kumulatif).
+    function dvSeriesFor(ut,days,map){
+      if(!ut)return null;
+      if(dailyViewMetricSel==='total'){
+        var rS=buildDailyCumulativeSeries(ut.renewalsRaw,days,map);
+        var uS=buildDailyCumulativeSeries(ut.upsellRaw,days,map);
+        var out={};
+        Object.keys(rS).forEach(function(k){out[k]=rS[k].map(function(v,i){return v+((uS[k]&&uS[k][i])||0);});});
+        return out;
+      }
+      return buildDailyCumulativeSeries(ut[dvMetricField],days,map);
+    }
+    var dvCurSeries=dvSeriesFor(dvCurUT,daysInMonth,dvCurMap);
+    var dvPrevSeries=dvPrevUT?dvSeriesFor(dvPrevUT,daysInPrevMonth,dvRosterMap(dvPrevUT)):null;
     // QA round 2b: count deal renewal/upsell + attach rate per tim (bulan berjalan) -- gantiin 4 stat
     // card Multi-team Upsell Tracker yg dilebur ke section ini.
     function dvCountsFor(rows){
@@ -3041,15 +3066,17 @@ function renderOverview(){
       +Object.keys(DAILY_VIEW_BUCKETS).map(function(k){
         return'<option value="'+k+'"'+(k===dailyViewBucketSel?' selected':'')+'>'+DAILY_VIEW_BUCKETS[k].label+'</option>';
       }).join('')+'</select>';
-    var dvMetricTabsHtml=['renewal','upsell'].map(function(m){
-      var cls=m===dailyViewMetricSel?'btn-pri':'btn-sec';
-      return'<button class="btn '+cls+'" style="padding:4px 10px;font-size:11px" data-act="daily-view-metric" data-metric="'+m+'">'+(m==='renewal'?'Renewal':'Upsell')+'</button>';
-    }).join('');
+    // 18 Jul (operator): 2 tombol metrik → DROPDOWN 3 opsi (Renewal / Upsell / Total gabungan).
+    var DV_METRIC_OPTS=[['renewal','Renewal'],['upsell','Upsell'],['total','Total (Renewal+Upsell)']];
+    var dvMetricTabsHtml='<select id="daily-view-metric-sel" style="width:auto;padding:4px 8px;font-size:11px;margin-bottom:0">'
+      +DV_METRIC_OPTS.map(function(o){return'<option value="'+o[0]+'"'+(o[0]===dailyViewMetricSel?' selected':'')+'>'+o[1]+'</option>';}).join('')
+      +'</select>';
     // QA round 2: breakdown "siapa aja di Sales" -- jawab langsung pertanyaan kelas "250rb ini siapa?"
     // (kasus Heriyandi). Distinct creatorName bucket SALES bulan berjalan + total Rp, biar nama
     // non-roster (bener2 sales ATAU salah ejaan di tab Agent CX) langsung keliatan tanpa buka sheet.
     var dvSalesNames={};
-    (dvCurUT[dvMetricField]||[]).forEach(function(r){
+    var dvSalesSrc=dailyViewMetricSel==='total'?((dvCurUT.renewalsRaw||[]).concat(dvCurUT.upsellRaw||[])):(dvCurUT[dvMetricField]||[]);
+    dvSalesSrc.forEach(function(r){
       if(dailyViewTeamBucketOf(r.creatorName,dvCurMap)!=='SALES')return;
       var nm=r.creatorName||'(tanpa nama)';
       dvSalesNames[nm]=(dvSalesNames[nm]||0)+r.subtotal;
@@ -3113,8 +3140,11 @@ function renderOverview(){
   // (section standalone "Attach Rate per Agen" Fase C dihapus, angkanya nggak berubah -- fungsi
   // computePersonalAttachRate yg sama persis); (b) kolom bulan-lalu di-cap s.d. hari yang sama
   // (dayCap=dayOfMonth, genuinely MTD apple-to-apple kayak Daily View, bukan bulan lalu penuh).
+  // 18 Jul (operator): tabel MTD per-Agen dibuka buat AGEN juga (dulu leader-only) — agen boleh lihat
+  // 1 tim penuh (renewal & upsell per-agen), keputusan transparansi. Data dari UpsellTeamStore yg
+  // udah auto-sync on-load buat semua user (autoSyncFinancialsStores), jadi nggak nambah beban.
   var agentMtdSection='';
-  if(isSup){
+  if(true){
     var mtdCurUT=UpsellTeamStore.getMonth(currentMonthKey);
     var mtdDayCap=Math.min(dayOfMonth,daysInPrevMonth);
     function mtdGrowthHtml(g){
@@ -6009,6 +6039,19 @@ function syncUpsellTeamOnly(monthParam,silent){
 // tombol manual tetep ada buat force kapan aja). Pola on-load sama GC Watchlist, silent (no toast).
 var FIN_UT_AUTOSYNC_TS_KEY='fin_ut_autosync_ts_v1';
 function autoSyncFinancialsStores(){
+  // 18 Jul (operator): prev-month auto-sync SEKALI kalau belum ada di store. Fix "agen nggak lihat
+  // bulan lalu (Juni)": store per-browser + tombol sync manual leader-only + on-load cuma bulan
+  // berjalan -> prev month NGGAK PERNAH masuk browser agen. Guard-by-absence (getMonth null) = +GET
+  // cuma sekali per browser per pergantian bulan (data bulan lalu udah beku), bukan tiap load. Ditaruh
+  // SEBELUM throttle current-month biar tetep jalan walau current-month lagi ke-throttle.
+  // ⚠️ JITTER + DEFER (syarat Ubay, GATE 3 concurrency-bound ~30 simultan): prev-month = beku +
+  // non-urgent, JANGAN ikut burst shift-start (pagi pertama tiap bulan, ~11 agen login bareng × +2 GET
+  // = +22 numpuk di peak -> bisa nembus 30). Fire 9-20 dtk abis fungsi (current-month udah settle di
+  // ~0-2.5dtk) + random 8dtk spread per browser -> nyebar keluar window peak. Inline jitter krn jms()
+  // nested di startApp (nggak kejangkau sini).
+  var prevMon=MONTH_KEYS[(new Date().getMonth()+11)%12];
+  if(!UpsellTeamStore.getMonth(prevMon))setTimeout(function(){syncUpsellTeamOnly(prevMon,true);},9000+Math.floor(Math.random()*8000));
+  if(!FinancialsStore.getMonth(prevMon))setTimeout(function(){syncFinancialsOnly(prevMon,true);},12000+Math.floor(Math.random()*8000));
   try{
     var last=parseInt(localStorage.getItem(FIN_UT_AUTOSYNC_TS_KEY)||'0',10);
     if(Date.now()-last<30*60*1000)return;
@@ -6447,6 +6490,7 @@ tabContent.addEventListener('change',function(e){
   var tgt=e.target;
   // QA round 2 (Ubay): bucket Daily View sekarang dropdown (Semua/CLM/CC/TC/Sales), bukan tombol.
   if(tgt.id==='daily-view-bucket-sel'){dailyViewBucketSel=tgt.value;renderTab('overview');return;}
+  if(tgt.id==='daily-view-metric-sel'){dailyViewMetricSel=tgt.value;renderTab('overview');return;} // 18 Jul: dropdown metrik (renewal/upsell/total)
   if(tgt.id==='invsum-month'){invsumMonth=tgt.value;renderTab('invsummary');return;}
   if(tgt.id==='tarik-cp-sel'){tarikCp=tgt.value;blastPage=0;refreshBlastBody();return;} // CLM-05: Jadwal Blast = filter tabel (WYSIWYG)
   if(tgt.classList.contains('blast-chk')){
