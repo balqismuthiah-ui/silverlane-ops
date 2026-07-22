@@ -4209,8 +4209,8 @@ function renderBlast(){
     +'</div>'
     +'<div class="frow" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">'
     +'<div style="display:flex;flex-direction:column;gap:4px">'
-    +'<input type="tel" id="blast-test-phone" placeholder="📞 Nomor test: 628xxx..." style="padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);width:200px;outline:none">'
-    +'<div style="font-size:10px;color:var(--tx3)">Nomor test masuk ke CSV sebagai baris pertama jika diisi</div>'
+    +'<input type="text" id="blast-test-phone" placeholder="📞 Nomor test: 628xxx (boleh banyak, pisah koma)" style="padding:7px 10px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);width:280px;outline:none">'
+    +'<div style="font-size:10px;color:var(--tx3)">Boleh 0/1/banyak nomor (pisah koma/spasi). Masuk ke SETIAP file sebagai baris awal.</div>'
     +'</div>'
     +'<button class="btn btn-sec" id="preview-test-btn" style="font-size:12px">Preview Test</button>'
     +'<button class="btn btn-sec" id="test-only-csv-btn" style="font-size:12px">CSV Test Only</button>'
@@ -5394,22 +5394,46 @@ function openCsvModal(){
       +'</div>';
   }).join('');
 
+  // CLM-13 tahap 1: nomor test = list bebas (pisah koma/spasi/;). Dipakai buat estimasi split.
+  var _testRaw=(document.getElementById('blast-test-phone')||{}).value||'';
+  var _testCount=_testRaw.split(/[\s,;]+/).map(function(x){return x.trim();}).filter(Boolean).length;
+
   document.getElementById('csv-body').innerHTML=
     '<p style="margin-bottom:12px">Template: <strong>'+tpl.name+'</strong> &nbsp;|&nbsp; Baris: <strong>'+filteredRows.length+'</strong> nomor &nbsp;·&nbsp; <span style="color:var(--tx2)">'+(new Set(filteredRows.map(function(row){return row.record.id;})).size)+' outlet</span> (dummy &amp; GC dikecualikan)</p>'
     +gcSummary
+    // CLM-13 tahap 1: auto-split per-file (default 50) + baris test di tiap file.
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px">'
+    +'<label style="font-size:12px;color:var(--tx2)">Maks per file:</label>'
+    +'<input type="number" id="csv-perfile" value="50" min="1" max="500" style="width:70px;padding:5px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx)">'
+    +'<span id="csv-split-info" style="font-size:11px;color:var(--tx3)"></span>'
+    +'</div>'
     +'<div style="margin-bottom:12px"><strong style="font-size:12px">Preview (2 contoh):</strong><div style="margin-top:8px">'+(sample||'<span style="color:var(--tx3)">Tidak ada data</span>')+'</div></div>'
     +'<div style="background:var(--pril);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px;font-size:12px;color:var(--prid)">Format CSV: name, email, phone number, {{1}}, {{2}}, ... — UTF-8 BOM untuk Excel</div>';
+
+  // estimasi jumlah file live (pas per-file diubah)
+  function updateSplitInfo(){
+    var pf=parseInt((document.getElementById('csv-perfile')||{}).value)||50;
+    var realPer=Math.max(1,pf-_testCount);
+    var nFile=Math.max(filteredRows.length?Math.ceil(filteredRows.length/realPer):0,(_testCount&&!filteredRows.length)?1:0);
+    var el=document.getElementById('csv-split-info');
+    if(el)el.textContent='→ '+nFile+' file · '+realPer+' nomor + '+_testCount+' test / file';
+  }
+  updateSplitInfo();
+  var _pf=document.getElementById('csv-perfile');if(_pf)_pf.addEventListener('input',updateSplitInfo);
 
   document.getElementById('csv-download-btn').onclick=function(){
     // Format LOCKED (Ubay): name | e-mail | phone_number | 1 | 2 | ... | N -- kolom variabel = ANGKA sesuai urutan template, bukan label
     var headers=['name','e-mail','phone_number'].concat((tpl.variableMap||[]).map(function(vm){return String(vm.varNum);}));
-    var csvRows=[headers.map(cleanCsvField).join(',')];
-    // Add test row first if test phone provided
-    var testPhoneVal=(document.getElementById('blast-test-phone')||{}).value||'';
-    if(testPhoneVal){
-      var meTest=Auth.getActive();
-      var normTest=normPhone(testPhoneVal);
-      var testVars=(tpl.variableMap||[]).map(function(vm){
+    var headerLine=headers.map(cleanCsvField).join(',');
+    var meTest=Auth.getActive();
+
+    // CLM-13 tahap 1: nomor test = LIST bebas (0/1/banyak, pisah koma/spasi/;). Dedup + normPhone.
+    var testRaw=(document.getElementById('blast-test-phone')||{}).value||'';
+    var _seenT={};
+    var testPhones=testRaw.split(/[\s,;]+/).map(function(x){return x.trim();}).filter(Boolean)
+      .map(function(x){return normPhone(x);}).filter(function(p){if(!p||_seenT[p])return false;_seenT[p]=1;return true;});
+    var testRows=testPhones.map(function(p){
+      var tv=(tpl.variableMap||[]).map(function(vm){
         var val='';
         if(vm.field==='custom')val=vm.label;
         else if(vm.field==='agentInitials')val=AgentsConfig.getInitials(meTest);
@@ -5418,9 +5442,10 @@ function openCsvModal(){
         else val='[TEST]';
         return cleanCsvField(val);
       });
-      csvRows.push([cleanCsvField('[TEST] '+meTest),'test@majoo.id',cleanCsvField(normTest)].concat(testVars).join(','));
-    }
-    filteredRows.forEach(function(row){
+      return [cleanCsvField('[TEST] '+meTest),'test@majoo.id',cleanCsvField(p)].concat(tv).join(',');
+    });
+
+    var realRows=filteredRows.map(function(row){
       var rec=row.record;
       var vars=(tpl.variableMap||[]).map(function(vm){
         var val='';
@@ -5430,11 +5455,32 @@ function openCsvModal(){
         else val=fmtTplVal(rec[vm.field]);
         return cleanCsvField(val);
       });
-      csvRows.push([cleanCsvField(rec.outletName),cleanCsvField(rec.email||''),cleanCsvField(row.phone)].concat(vars).join(','));
+      return [cleanCsvField(rec.outletName),cleanCsvField(rec.email||''),cleanCsvField(row.phone)].concat(vars).join(',');
     });
-    var testNote=testPhoneVal?' (termasuk 1 baris test)':'';
-    downloadCSV(csvRows.join('\n'),'waba_'+tpl.name+'_'+new Date().toISOString().slice(0,10)+'.csv');
-    toast('CSV berhasil didownload'+testNote);
+
+    // auto-split: tiap file = maks (perFile) baris, DIKURANGI slot test (test masuk tiap file).
+    var perFile=parseInt((document.getElementById('csv-perfile')||{}).value)||50;
+    if(perFile<1)perFile=50;
+    var realPerFile=Math.max(1,perFile-testPhones.length);
+    var totalFiles=realRows.length?Math.ceil(realRows.length/realPerFile):(testPhones.length?1:0);
+    if(!totalFiles){toast('Nggak ada baris buat di-download');return;}
+
+    var dateStr=new Date().toISOString().slice(0,10);
+    var fileIdx=0;
+    // download berurutan (delay kecil biar browser nggak blok multi-download; 1x konfirmasi "izinkan banyak unduhan" wajar).
+    function dlNext(){
+      if(fileIdx>=totalFiles){
+        toast(totalFiles+' file didownload · '+realRows.length+' nomor'+(testPhones.length?' + '+testPhones.length+' test/file':''),5000);
+        return;
+      }
+      var chunk=realRows.slice(fileIdx*realPerFile,(fileIdx+1)*realPerFile);
+      var lines=[headerLine].concat(testRows).concat(chunk);
+      var suffix=totalFiles>1?('_b'+(fileIdx+1)):'';
+      downloadCSV(lines.join('\n'),'waba_'+tpl.name+'_'+dateStr+suffix+'.csv');
+      fileIdx++;
+      setTimeout(dlNext,400);
+    }
+    dlNext();
   };
   openModal('csv-modal');
 }
