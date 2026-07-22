@@ -2723,6 +2723,12 @@ function renderOverview(){
 
   var pBlasted=total?Math.round((blasted/total)*100):0;
   var pRenewal=total?Math.round((renewal/total)*100):0;
+  // CLM-12: konversi MOVING-LEADS (basis expiry gerak, BUKAN respons agen) — headline baru card
+  // Konversi Renewal. Denom = Hot & User-Trx (keputusan operator). myRecs belum di-scope bulan
+  // (funnel scope-nya di dalam), jadi scope di sini. Respons-based (pRenewal) tetep dipertahanin
+  // sbg sub-line konteks (selisih moving vs respons = bayar/renew tapi belum di-tag agen).
+  var convMovRecs=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
+  var convMov=computeMovingConversion(convBaseFilter(convMovRecs,'Hot'),currentMonthKey);
   var gcCount=Object.keys(gcFlagMap).length; // CLM-09: sheet-backed (confirmed+belum-resolve), bukan d.watchlist lokal
 
   // ── Review stats (team-wide) ──────────────────────────────────────────
@@ -3268,10 +3274,13 @@ function renderOverview(){
     // Conversion
     +'<div class="card">'
     +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">🎯 Konversi Renewal</div>'
-    +'<div style="display:flex;align-items:baseline;gap:6px"><div style="font-size:26px;font-weight:800;color:var(--tx)">'+pRenewal+'%</div>'
-    +'<div style="font-size:13px;color:var(--tx3)">aktual</div></div>'
-    +'<div style="margin-top:5px">'+render2TierBars(pRenewal,'%',convTarget,convTargetImp)+'</div>'
-    +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+renewal+' renewal dari '+total+' outlet</div>'
+    +'<div style="display:flex;align-items:baseline;gap:6px"><div style="font-size:26px;font-weight:800;color:var(--tx)">'+convMov.actual+'%</div>'
+    +'<div style="font-size:13px;color:var(--tx3)">moving leads</div></div>'
+    +'<div style="margin-top:5px">'+render2TierBars(convMov.actual,'%',convTarget,convTargetImp)+'</div>'
+    +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+convMov.moving+' gerak dari '+convMov.total+' Hot User-Trx (expiry pindah)</div>'
+    // CLM-12: respons-based dipertahanin sbg sub-line konteks (keputusan operator: simpan dua-duanya).
+    // Selisih moving vs respons = akun yg renew/bayar tapi respons belum di-tag agen.
+    +'<div style="font-size:11px;color:var(--tx3);margin-top:3px;padding-top:3px;border-top:1px solid var(--bdr)">basis respons agen: <strong>'+pRenewal+'%</strong> ('+renewal+'/'+total+' outlet)</div>'
     +'<div onclick="var n=this.nextElementSibling;n.style.display=n.style.display===\'none\'?\'\':\'none\'" style="cursor:pointer;font-size:11px;color:var(--pri);margin-top:6px;user-select:none">▸ Detail Tidak Renewal</div>'
     +'<div style="display:none;margin-top:4px">'+buildDetailList('churn','red')+'</div>'
     +'</div>'
