@@ -2083,17 +2083,45 @@ var Templates={
     this.save(defaults);
     return defaults;
   },
-  add:function(tpl){var all=this.getAll();all.push(Object.assign({},tpl,{id:uid()}));this.save(all);},
+  add:function(tpl){var all=this.getAll();var t=Object.assign({},tpl,{id:tpl.id||uid()});all.push(t);this.save(all);return t;},
   update:function(id,tpl){
     var all=this.getAll();
     var i=all.findIndex(function(t){return t.id===id;});
-    if(i>=0){all[i]=Object.assign({},tpl,{id:id});this.save(all);}
+    if(i>=0){all[i]=Object.assign({},tpl,{id:id});this.save(all);return all[i];}
+    return null;
   },
   delete:function(id){
     var all=this.getAll();
     this.save(all.filter(function(t){return t.id!==id;}));
   }
 };
+// CLM-12: sync template WABA lintas-akun (v55 GAS). Pola sama syncTargetsFromServer + bootstrap:
+// leader push template LOKAL yg belum ada di server (mis. template lama Muthia dari sebelum fitur
+// sync) biar ke-preserve + kebagi ke leader lain. Agen dapet server yg UDAH kefilter visibleToAgent
+// (disaring di server, bukan client — anti bocor lewat devtools).
+function syncTemplatesFromServer(opts){
+  opts=opts||{};
+  if(!Auth.getToken())return;
+  var isLeader=Auth.isSuperior();
+  _gasGet('templates').then(function(json){
+    if(!json||json.ok===false)return;
+    var server=json.data||[];
+    if(isLeader){
+      var sids={};server.forEach(function(t){if(t&&t.id)sids[t.id]=1;});
+      Templates.getAll().forEach(function(t){
+        if(t&&t.id&&!sids[t.id]){
+          if(t.visibleToAgent===undefined)t.visibleToAgent=false; // default aman: nggak langsung ke agen
+          _gasPost({action:'upsertTemplate',template:t}).catch(function(){});
+          server.push(t);
+        }
+      });
+    }
+    // leader = union (server + lokal-only yg baru dipush); agen = server visible-only (replace, jangan seed lama)
+    Templates.save(server);
+    if(!opts.silent)toast(server.length+' template disinkron');
+    renderTab(currentTab);
+  }).catch(function(err){if(!opts.silent)toast('Gagal sync template: '+(err&&err.message||''),4000);});
+}
 
 // ── SEED DATA ──────────────────────────────────────────────────────────────
 function mkRec(id,name,expiry,phone,agent,blastSt,email,pkg){
@@ -4135,10 +4163,13 @@ function renderBlast(){
 
   var tplOpts=tpls.map(function(t){return'<option value="'+t.id+'">'+t.name+'</option>';}).join('');
   var tplRows=tpls.map(function(t){
+    // CLM-12: badge visible-to-agen, klik = toggle langsung (nggak usah buka modal).
+    var vis=t.visibleToAgent===true;
     return'<tr class="ctbl">'
       +'<td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+t.name+'</td>'
       +'<td>'+t.language+'</td>'
       +'<td>'+(t.variableMap?t.variableMap.length:0)+'</td>'
+      +'<td><button class="action-btn" data-act="tpl-vis" data-id="'+t.id+'" title="'+(vis?'Tampil ke agen — klik buat sembunyiin':'Leader-only — klik buat tampilin ke agen')+'" style="background:'+(vis?'var(--grnl)':'transparent')+'">'+(vis?'👁️':'🔒')+'</button></td>'
       +'<td><div class="row-tools">'
       +'<button class="action-btn ab-edit" data-act="edit-tpl" data-id="'+t.id+'">✏</button>'
       +'<button class="action-btn ab-wl" data-act="del-tpl" data-id="'+t.id+'">✕</button>'
@@ -4155,8 +4186,8 @@ function renderBlast(){
       '<div class="cfg-panel">'
       +'<div class="cfg-title">📋 Template WABA</div>'
       +'<div class="tbl-wrap" style="margin-bottom:8px"><table class="ctbl">'
-      +'<thead><tr><th>Nama</th><th>Bhs</th><th>Var</th><th></th></tr></thead>'
-      +'<tbody>'+(tplRows||'<tr><td colspan="4" class="empty">—</td></tr>')+'</tbody>'
+      +'<thead><tr><th>Nama</th><th>Bhs</th><th>Var</th><th>Agen</th><th></th></tr></thead>'
+      +'<tbody>'+(tplRows||'<tr><td colspan="5" class="empty">—</td></tr>')+'</tbody>'
       +'</table></div>'
       +'<button class="btn btn-pri" id="add-tpl-btn" style="font-size:12px;padding:5px 10px">+ Tambah Template</button>'
       +'</div>'
@@ -5261,6 +5292,10 @@ function renderTplForm(tpl,varCount){
     +'<option value="id"'+((!tpl||tpl.language==='id')?' selected':'')+'>Indonesia (id)</option>'
     +'<option value="en"'+(tpl&&tpl.language==='en'?' selected':'')+'>English (en)</option>'
     +'</select>'
+    // CLM-12: toggle visible-to-agen. DEFAULT off (template baru nggak langsung ke agen — leader nyalain sengaja).
+    +'<label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-weight:400">'
+    +'<input type="checkbox" id="tpl-visible" '+((tpl&&tpl.visibleToAgent)?'checked':'')+' style="width:auto;margin:0"> '
+    +'👁️ Tampilkan ke agen <span style="font-size:11px;color:var(--tx3)">(default: cuma leader)</span></label>'
     +'<label>Jumlah Variabel</label>'
     +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">'
     +'<input type="number" id="tpl-varcount" value="'+varCount+'" min="1" max="10" style="width:80px;padding:6px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx)">'
@@ -5288,7 +5323,8 @@ function collectTplForm(){
     name:document.getElementById('tpl-name')?document.getElementById('tpl-name').value:'',
     language:document.getElementById('tpl-lang')?document.getElementById('tpl-lang').value:'id',
     variableMap:variableMap,
-    messageBody:document.getElementById('tpl-body-txt')?document.getElementById('tpl-body-txt').value:''
+    messageBody:document.getElementById('tpl-body-txt')?document.getElementById('tpl-body-txt').value:'',
+    visibleToAgent:document.getElementById('tpl-visible')?document.getElementById('tpl-visible').checked:false
   };
 }
 
@@ -5296,10 +5332,12 @@ function saveTpl(){
   if(!Auth.isSuperior()){toast('Khusus Team Lead');return;}
   var tpl=collectTplForm();
   if(!tpl.name.trim()){toast('Masukkan nama template');return;}
-  if(tplEditId){Templates.update(tplEditId,tpl);}
-  else{Templates.add(tpl);}
+  var saved=tplEditId?Templates.update(tplEditId,tpl):Templates.add(tpl);
+  // CLM-12: push ke GAS (v55) biar leader lain + agen (kalau visible) ikut lihat. Push objek yg
+  // BENERAN kesimpen (id-nya bisa beda dari tpl.id kalau add generate uid baru).
+  _gasPost({action:'upsertTemplate',template:saved||tpl}).catch(function(){toast('Tersimpan lokal — gagal sync ke server, coba Simpan lagi',5000);});
   closeModal('tpl-modal');
-  toast('Template disimpan');
+  toast('Template disimpan'+((saved&&saved.visibleToAgent)?' · tampil ke agen':' · leader-only'));
   renderTab('blast');
 }
 
@@ -6347,9 +6385,21 @@ tabContent.addEventListener('click',function(e){
     else if(act==='gc')openGC(id);
     else if(act==='assign')handleAssignOne(id);
     else if(act==='edit-tpl')openTplModal(id);
+    else if(act==='tpl-vis'){
+      // CLM-12: toggle visible-to-agen langsung dari daftar + push GAS. Leader-only.
+      if(!Auth.isSuperior()){toast('Khusus Team Lead');return;}
+      var _tp=Templates.getAll().find(function(t){return t.id===id;});
+      if(_tp){
+        var upd=Object.assign({},_tp,{visibleToAgent:!(_tp.visibleToAgent===true)});
+        Templates.update(id,upd);
+        _gasPost({action:'upsertTemplate',template:upd}).catch(function(){toast('Gagal sync ke server — coba lagi',4000);});
+        toast(upd.visibleToAgent?'Template tampil ke agen':'Template disembunyiin dari agen');
+        renderBlast();
+      }
+    }
     else if(act==='del-tpl'){
       if(!Auth.isSuperior()){toast('Khusus Team Lead');return;}
-      if(confirm('Hapus template ini?')){Templates.delete(id);toast('Template dihapus');renderBlast();}
+      if(confirm('Hapus template ini?')){Templates.delete(id);_gasPost({action:'deleteTemplate',id:id}).catch(function(){});toast('Template dihapus');renderBlast();}
     }
     else if(act==='toggle-agent-status')toggleAgentStatus(agid);
     else if(act==='edit-target')openTargetModal(id);
@@ -6766,6 +6816,9 @@ function startApp(){
   // CLM-11 Fase E: tarik Targets lintas-akun leader on-load (jarang berubah, cukup sync-on-load +
   // sync abis aksi sendiri di Targets.add/update/delete -- BUKAN polling agresif kayak responsesDelta).
   setTimeout(syncTargetsFromServer,jms(2200));
+  // CLM-12: sync template WABA lintas-akun on-load (silent). Leader bootstrap template lokal ke GAS +
+  // tarik punya leader lain; agen dapet visible-only. Pola sama Targets (sekali per load, ringan).
+  setTimeout(function(){syncTemplatesFromServer({silent:true});},jms(2400));
   // (operator 16 Jul): auto-sync klaim upsell on-load (silent) -- tombol manual cuma di tab leader, jadi
   // tanpa ini agen nggak pernah lihat status validasi klaimnya sendiri (approved/rejected). Sekali per
   // load, ringan (~sekelas Targets/GC, jauh lebih murah dari poll respons 10-menit). Leader tetep bisa
