@@ -2701,10 +2701,12 @@ function renderOverview(){
       var aNo=aTotal-aRenew-aTidak-aFu;
       var aBlasted=aRecs.filter(recordEverBlasted).length; // CLM-05 AC-H2 fix: dari blastLog (CLARA)
       var pct=aTotal?Math.round((aRenew/aTotal)*100):0; // respons-based (sub-line)
-      // CLM-12: konversi moving-leads per agen (Hot User-Trx, expiry gerak) — SELARAS card headline.
+      // CLM-12: konversi moving-leads per agen. Penyebut = Hot SEMUA (keputusan operator 22 Jul —
+      // beda dari card team yg Hot User-Trx; % nyaris sama krn excluded-cat gerak di laju mirip).
       // aRecs belum di-scope bulan (recs=d.records full), moving relatif-bulan jadi scope di sini.
       var aMovRecs=aRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
-      var aConv=computeMovingConversion(convBaseFilter(aMovRecs,'Hot'),currentMonthKey);
+      var aHotAll=aMovRecs.filter(function(r){return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz==='Hot';});
+      var aConv=computeMovingConversion(aHotAll,currentMonthKey);
       var mpct=aConv.actual;
       var convClr=mpct>=convTargetImp?'var(--grn)':(mpct>=convTarget?'var(--yel)':'var(--red)');
       var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',ag);},0);
@@ -2718,7 +2720,7 @@ function renderOverview(){
         +'<td><span class="badge badge-gray">'+aNo+'</span></td>'
         +'<td><span style="font-size:11px;color:var(--tx2)">📍'+aMaps+'/'+PER_AGENT_REVIEW_MAPS+' &nbsp;📱'+aApps+'/'+PER_AGENT_REVIEW_APPS+'</span></td>'
         +'<td style="color:'+convClr+'">'+mpct+'%<div class="prog-bar"><div class="prog-fill" style="width:'+Math.min(convTargetImp?mpct/convTargetImp*100:0,100)+'%;background:'+convClr+'"></div></div>'
-        +'<div style="font-size:10px;color:var(--tx3)">'+aConv.moving+'/'+aConv.total+' Hot·UT'+(aConv.total?'':' <span title="nol Hot User-Trx bulan ini">—</span>')+'</div>'
+        +'<div style="font-size:10px;color:var(--tx3)">'+aConv.moving+'/'+aConv.total+' Hot'+(aConv.total?'':' <span title="nol Hot bulan ini">—</span>')+'</div>'
         +'<div style="font-size:10px;color:var(--tx3)">respons: '+pct+'%</div></td></tr>';
     }).join('');
     agentSection='<div class="ov-section"><div class="ov-section-title">👥 Ringkasan per Agen</div>'
