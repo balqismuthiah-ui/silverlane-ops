@@ -928,18 +928,61 @@ function computeMetricRaw(metricKey,recs,period){
 // Hot Leads Moving = subset yg Expired-Date-LATEST-nya udah "gerak" lewat akhir bulan tracked (tanda
 // renewal/reaktivasi). Conversion = Moving/Total. AC-B3-4: Total=0 (bulan tanpa hot leads sama
 // sekali) -> denom:0 dipakai caller buat tampilin state jujur, BUKAN divide-by-zero/NaN.
+// ── CLM-12: klasifikasi kategori Raw buat conversion moving-leads ──────────────
+// Replika PERSIS 5 COUNTIFS operator (Force Activation / XL1BIZ / Cockpit / User Trx / Never Trx).
+// ⚠️ SEMUA banding LOWERCASE dua sisi — COUNTIFS case-insensitive, === di JS nggak. Kalau nggak,
+//    'Cockpit'/'COCKPIT' lolos filter dan angkanya beda dari sheet.
+// Precedence dari nested-exclusion di rumus: forceactivation > XL1BIZ > cockpit > (trx-split).
+// emailUser (kolom F) DIPAKAI di sini, BUKAN r.email — r.email ambil Email Outlet (E) duluan jadi
+// penanda forceactivation ketutup (lihat catatan di 2 jalur ingest).
+function rawExcludeCat(r){
+  if(String(r.emailUser||'').toLowerCase().indexOf('forceactivation')>=0)return'force';
+  if(String(r.lv3||'').trim().toLowerCase()==='xl1biz')return'xl1biz';
+  if(String(r.pembayaranMelalui||'').trim().toLowerCase()==='cockpit')return'cockpit';
+  return null;
+}
+// kategori final 1 record (mutually exclusive, urut precedence). null = ke-exclude dari base.
+function rawUserCat(r){
+  var ex=rawExcludeCat(r);
+  if(ex)return ex;                                  // force / xl1biz / cockpit
+  return String(r.lastTrxDate||'').trim()==='-'?'never_trx':'user_trx';
+}
+function isUserTrx(r){ return rawUserCat(r)==='user_trx'; }
+// Moving = Expired Date Latest (r.expiryDate) lewat akhir bulan period. Dipisah jadi helper biar
+// dipakai konsisten sama card + daily breakdown (satu definisi, bukan diketik ulang).
+function isMovingLead(r,period){
+  var mi=MONTH_KEYS.indexOf(period); if(mi<0)return false;
+  var last=new Date(2026,mi+1,0).getDate();
+  var eom='2026-'+String(mi+1).padStart(2,'0')+'-'+String(last).padStart(2,'0');
+  return !!(r.expiryDate&&r.expiryDate>eom);
+}
+// CLM-12: conversion moving-leads yg dipakai bareng card + daily breakdown. Satu definisi,
+// tie-out ke sheet operator (base 3.343, hari-1 Hot-UserTrx 946/721=76%, terverifikasi console).
+// subset = record yg udah di-scope bulan + filter apa pun (termin/agen/HWCZ) oleh caller.
+function computeMovingConversion(subset,period){
+  var total=subset.length;
+  if(!total)return{total:0,moving:0,remaining:0,actual:0,unit:'%',denom:0};
+  var moving=0;
+  subset.forEach(function(r){if(isMovingLead(r,period))moving++;});
+  return{total:total,moving:moving,remaining:total-moving,
+    actual:Math.round(moving/total*100),unit:'%',denom:total};
+}
+// filter base conversion: bukan demo, bukan recurring, HWCZ tertentu (default Hot), kategori User-Trx
+// (exclude force/xl1biz/cockpit/never-trx). Dipisah jadi helper biar card + daily + per-agen konsisten.
+function convBaseFilter(recs,hwcz){
+  hwcz=hwcz||'Hot';
+  return recs.filter(function(r){
+    return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz===hwcz&&isUserTrx(r);
+  });
+}
 function computeHotLeadsConversion(recs,period){
-  var hotRecs=recs.filter(function(r){return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz==='Hot';});
-  var totalHot=hotRecs.length;
-  if(!totalHot)return{actual:0,unit:'%',denom:0};
-  var monthIdx=MONTH_KEYS.indexOf(period);
-  if(monthIdx<0)return{actual:0,unit:'%',denom:0};
-  // Convention app-wide: SEMUA bulan diasumsikan tahun berjalan 2026 (cohortMonths/MONTH_KEYS BUKAN
-  // tahun-aware, sama keterbatasan struktural yg udah didokumentasi di temuan A1-YoY).
-  var lastDay=new Date(2026,monthIdx+1,0).getDate();
-  var endOfMonthStr='2026-'+String(monthIdx+1).padStart(2,'0')+'-'+String(lastDay).padStart(2,'0');
-  var moving=hotRecs.filter(function(r){return r.expiryDate&&r.expiryDate>endOfMonthStr;}).length;
-  return{actual:Math.round(moving/totalHot*100),unit:'%',denom:totalHot};
+  // CLM-12: denom SEKARANG = Hot & User-Trx (exclude force/xl1biz/cockpit/never-trx) — match sheet
+  // operator (76%). DULU denom = SEMUA Hot -> kelewat lebar, angka nggak match. Degradasi mulus:
+  // sebelum re-sync (field lastTrxDate/emailUser/dst belum ada), isUserTrx balik true buat semua ->
+  // perilaku = versi lama, nol pecah. Abis re-sync -> angka bener.
+  if(MONTH_KEYS.indexOf(period)<0)return{actual:0,unit:'%',denom:0};
+  var res=computeMovingConversion(convBaseFilter(recs,'Hot'),period);
+  return{actual:res.actual,unit:'%',denom:res.denom};
 }
 // QA fix (Ryry, CLM-11 B1) — Levenshtein edit-distance, dipakai KHUSUS sbg tier-2 fallback buat
 // typo kelas "Fauziayah" vs "Fauziyah" (nama billing diketik manual, beda ejaan dari email agen).
@@ -5508,6 +5551,14 @@ function syncMonthList(months,opts){
             demoTestingV2:String(row['Demo/Testing V2']||'').trim(),
             recurring:String(row['Recurring']||'').trim(),
             hwcz:String(row['HWCZ']||'').trim(),
+            // CLM-12 conversion: 5 kolom Raw buat conversion moving-leads (5 kategori exclude).
+            // emailUser (kolom F) TERPISAH dari `email` -- `email` ambil Email Outlet (E) duluan,
+            // jadi penanda "forceactivation" di F ketutup. Wajib field sendiri.
+            emailUser:String(row['Email User']||'').trim(),
+            deleted:String(row['Deleted']||'').trim(),           // kolom J -- NGGAK dipakai nyaring (retroaktif), disimpen buat info
+            lastTrxDate:String(row['Last Trx Date']||'').trim(), // kolom O -- '-' = never trx
+            pembayaranMelalui:String(row['Pembayaran Melalui']||'').trim(), // kolom AG -- 'cockpit' = exclude
+            lv3:String(row['LV 3']||'').trim(),                  // kolom AW -- 'XL1BIZ' = exclude
             expiredDateHistorical:localDateStr(String(row['Expired Date Historical']||'').trim()),
             // (operator 15 Jul): First Buy Date = kolom Y di [Raw]. DULU field hantu -- dirender di modal
             // detail (line ~4670) tapi NGGAK PERNAH di-sync, jadi selalu "—". Sekarang keisi + jadi
@@ -5709,6 +5760,13 @@ function syncFromGAS(opts){
           demoTestingV2:String(row['Demo/Testing V2']||'').trim(),
           recurring:String(row['Recurring']||'').trim(),
           hwcz:String(row['HWCZ']||'').trim(),
+          // CLM-12 conversion: 5 kolom Raw (lihat catatan jalur ingest satunya). emailUser (F)
+          // TERPISAH dari `email` (yg ambil Email Outlet E duluan -> penanda forceactivation ketutup).
+          emailUser:String(row['Email User']||'').trim(),
+          deleted:String(row['Deleted']||'').trim(),           // J -- NGGAK nyaring (retroaktif), info aja
+          lastTrxDate:String(row['Last Trx Date']||'').trim(), // O -- '-' = never trx
+          pembayaranMelalui:String(row['Pembayaran Melalui']||'').trim(), // AG -- 'cockpit' = exclude
+          lv3:String(row['LV 3']||'').trim(),                  // AW -- 'XL1BIZ' = exclude
           expiredDateHistorical:localDateStr(String(row['Expired Date Historical']||'').trim()),
           firstBuyDate:localDateStr(String(row['First Buy Date']||'').trim()), // (operator 15 Jul): kolom Y [Raw] -- dulu field hantu, lihat komentar di sync per-bulan
           gtvLast3M:gtv||null,
