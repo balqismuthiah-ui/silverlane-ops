@@ -967,12 +967,15 @@ function computeMovingConversion(subset,period){
   return{total:total,moving:moving,remaining:total-moving,
     actual:Math.round(moving/total*100),unit:'%',denom:total};
 }
-// filter base conversion: bukan demo, bukan recurring, HWCZ tertentu (default Hot), kategori User-Trx
-// (exclude force/xl1biz/cockpit/never-trx). Dipisah jadi helper biar card + daily + per-agen konsisten.
+// filter base conversion: bukan demo, bukan recurring, HWCZ tertentu (default Hot).
+// CLM-12 (operator 22 Jul): penyebut = Hot SEMUA, BUKAN Hot User-Trx. Alasan: assignment udah
+// keburu di-distribusi basis Hot-all s/d Desember, jadi konversi (team + per-agen) dinilai atas
+// populasi yang SAMA = adil, rata, konsisten. isUserTrx/rawUserCat/rawExcludeCat TETEP ada buat
+// breakdown 5-kategori di daily view — cuma nggak dipakai nyaring penyebut konversi lagi.
 function convBaseFilter(recs,hwcz){
   hwcz=hwcz||'Hot';
   return recs.filter(function(r){
-    return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz===hwcz&&isUserTrx(r);
+    return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz===hwcz;
   });
 }
 function computeHotLeadsConversion(recs,period){
@@ -2701,12 +2704,11 @@ function renderOverview(){
       var aNo=aTotal-aRenew-aTidak-aFu;
       var aBlasted=aRecs.filter(recordEverBlasted).length; // CLM-05 AC-H2 fix: dari blastLog (CLARA)
       var pct=aTotal?Math.round((aRenew/aTotal)*100):0; // respons-based (sub-line)
-      // CLM-12: konversi moving-leads per agen. Penyebut = Hot SEMUA (keputusan operator 22 Jul —
-      // beda dari card team yg Hot User-Trx; % nyaris sama krn excluded-cat gerak di laju mirip).
-      // aRecs belum di-scope bulan (recs=d.records full), moving relatif-bulan jadi scope di sini.
+      // CLM-12: konversi moving-leads per agen. Penyebut = Hot SEMUA (via convBaseFilter, sekarang
+      // Hot-all) — SELARAS card team. aRecs belum di-scope bulan (recs=d.records full), moving
+      // relatif-bulan jadi scope di sini.
       var aMovRecs=aRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
-      var aHotAll=aMovRecs.filter(function(r){return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz==='Hot';});
-      var aConv=computeMovingConversion(aHotAll,currentMonthKey);
+      var aConv=computeMovingConversion(convBaseFilter(aMovRecs,'Hot'),currentMonthKey);
       var mpct=aConv.actual;
       var convClr=mpct>=convTargetImp?'var(--grn)':(mpct>=convTarget?'var(--yel)':'var(--red)');
       var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',ag);},0);
@@ -3285,7 +3287,7 @@ function renderOverview(){
     +'<div style="display:flex;align-items:baseline;gap:6px"><div style="font-size:26px;font-weight:800;color:var(--tx)">'+convMov.actual+'%</div>'
     +'<div style="font-size:13px;color:var(--tx3)">moving leads</div></div>'
     +'<div style="margin-top:5px">'+render2TierBars(convMov.actual,'%',convTarget,convTargetImp)+'</div>'
-    +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+convMov.moving+' gerak dari '+convMov.total+' Hot User-Trx (expiry pindah)</div>'
+    +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+convMov.moving+' gerak dari '+convMov.total+' Hot (expiry pindah)</div>'
     // CLM-12: respons-based dipertahanin sbg sub-line konteks (keputusan operator: simpan dua-duanya).
     // Selisih moving vs respons = akun yg renew/bayar tapi respons belum di-tag agen.
     +'<div style="font-size:11px;color:var(--tx3);margin-top:3px;padding-top:3px;border-top:1px solid var(--bdr)">basis respons agen: <strong>'+pRenewal+'%</strong> ('+renewal+'/'+total+' outlet)</div>'
