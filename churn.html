@@ -1905,8 +1905,49 @@ var BlastMonthGate={
     if(Object.prototype.hasOwnProperty.call(d,month))return!!d[month];
     return this.DEFAULT_CLOSED.indexOf(month)<0;
   },
-  setReleased:function(month,val){var d=this.getAll();d[month]=!!val;localStorage.setItem(this.KEY,JSON.stringify(d));}
+  setReleased:function(month,val){var d=this.getAll();d[month]=!!val;localStorage.setItem(this.KEY,JSON.stringify(d));},
+  // CLM-13 v56: gate SEKARANG shared via GAS (dulu per-browser localStorage = bug: toggle leader
+  // nggak pernah nyampe agen). push = kirim SELURUH map (setBlastGate ambil full). syncFromServer =
+  // tarik gate otoritatif, REPLACE lokal (server = sumber; agen baca yg bener). Degrade mulus:
+  // kalau GAS gagal/kosong, lokal apa adanya (default all-kecuali-Nov/Dec).
+  push:function(){_gasPost({action:'setBlastGate',gate:this.getAll()}).catch(function(){});},
+  syncFromServer:function(){
+    if(!Auth.getToken())return;
+    var self=this;
+    _gasGet('blastgate').then(function(j){
+      if(!j||j.ok===false)return;
+      localStorage.setItem(self.KEY,JSON.stringify(j.gate||{}));
+      if(currentTab==='blast')renderTab('blast');
+    }).catch(function(){});
+  }
 };
+// CLM-13 v56: batch metadata (pengganti tab sheet Jul_01/Jul_02). Cache lokal + sync GAS (server
+// prune 2mgg). METADATA doang -- nomor per-batch = v56b (ditahan, review beban GATE-3).
+var blastBatchesData=[];
+function syncBlastBatchesFromServer(){
+  if(!Auth.getToken())return;
+  _gasGet('blastbatches').then(function(j){
+    if(!j||j.ok===false)return;
+    blastBatchesData=j.data||[];
+    if(currentTab==='blast')renderTab('blast');
+  }).catch(function(){});
+}
+function batchRename(id){
+  if(!Auth.isSuperior())return;
+  var b=blastBatchesData.find(function(x){return x.id===id;});
+  var nl=prompt('Label batch (kayak nama tab sheet):',b?b.label:'');
+  if(nl===null)return; nl=String(nl).trim(); if(!nl)return;
+  _gasPost({action:'renameBlastBatch',id:id,label:nl}).then(function(){
+    if(b)b.label=nl; renderBlast(); toast('Label batch diubah');
+  }).catch(function(){toast('Gagal ubah label — coba lagi',3000);});
+}
+function batchDelete(id){
+  if(!Auth.isSuperior())return;
+  if(!confirm('Hapus catatan batch ini? (cuma catatan — nggak ngaruh ke data blast/broadcast)'))return;
+  _gasPost({action:'deleteBlastBatch',id:id}).then(function(){
+    blastBatchesData=blastBatchesData.filter(function(x){return x.id!==id;}); renderBlast(); toast('Batch dihapus');
+  }).catch(function(){toast('Gagal hapus — coba lagi',3000);});
+}
 // Sekar selalu lihat semua bulan (nggak kena gate). Agen: case tanpa info bulan sengaja LOLOS
 // (jangan over-hide data lama yg belum ada cohortMonths), case dgn >=1 bulan released ikut lolos.
 function applyBlastMonthGate(recs,isSup){
@@ -4181,6 +4222,17 @@ function renderBlast(){
   var blastSlice=blastPageSlice(rows.length);
   var tableRows=blastTableRowsHtml(rows.slice(blastSlice.from,blastSlice.to));
   var blastAgentOptsArr=AGENTS.map(function(a){return{value:a,label:a};});
+  // CLM-13 v56: baris batch (metadata, 2mgg). Terbaru dulu (server udah sort + prune).
+  var batchRows=(blastBatchesData||[]).map(function(b){
+    var dt=b.createdAt?String(b.createdAt).slice(0,10):'';
+    return'<tr class="ctbl">'
+      +'<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="klik buat rename" data-act="batch-rename" data-id="'+b.id+'">'+(b.label||'—')+'</td>'
+      +'<td style="font-size:11px">'+dt+'</td>'
+      +'<td>'+(b.count||0)+'</td>'
+      +'<td>'+(b.fileCount||1)+'</td>'
+      +'<td style="font-size:11px;color:var(--tx3)">'+String(b.createdBy||"").split("@")[0]+'</td>'
+      +'<td><div class="row-tools"><button class="action-btn ab-wl" data-act="batch-del" data-id="'+b.id+'" title="Hapus catatan">✕</button></div></td></tr>';
+  }).join('');
 
   document.getElementById('tab-content').innerHTML=
     '<div class="blast-cfg">'
@@ -4206,6 +4258,16 @@ function renderBlast(){
             +'<input type="checkbox" class="month-gate-chk" data-month="'+m+'"'+(on?' checked':'')+'>'+m+' 26</label>';
         }).join('')
       +'</div>'
+      +'</div>'
+    ):'')
+    // CLM-13 v56: panel batch blast (metadata, 2mgg, lintas-leader) — pengganti tab sheet Jul_01/Jul_02.
+    +(isSup?(
+      '<div class="cfg-panel">'
+      +'<div class="cfg-title">📦 Batch Blast <span style="font-size:10px;color:var(--tx3);font-weight:400">(2 minggu terakhir)</span></div>'
+      +'<div class="pay-info" style="margin-bottom:8px">Tiap download CSV = 1 batch (pengganti tab sheet). Kelacak lintas-leader, auto-hapus 2 minggu. Klik label buat rename.</div>'
+      +(batchRows
+        ?'<div class="tbl-wrap"><table class="ctbl"><thead><tr><th>Label</th><th>Tgl</th><th>Nomor</th><th>File</th><th>Oleh</th><th></th></tr></thead><tbody>'+batchRows+'</tbody></table></div>'
+        :'<div class="empty" style="font-size:11px;padding:8px 0">Belum ada batch. Download CSV buat mulai nyatat.</div>')
       +'</div>'
     ):'')
     +'</div>'
@@ -5476,6 +5538,14 @@ function openCsvModal(){
     function dlNext(){
       if(fileIdx>=totalFiles){
         toast(totalFiles+' file didownload · '+realRows.length+' nomor'+(testPhones.length?' + '+testPhones.length+' test/file':''),5000);
+        // CLM-13 v56: catat batch (metadata) ke GAS -- pengganti tab sheet, kelacak lintas-leader.
+        // Cuma leader (endpoint tolak agen). Label default editable nanti di panel batch.
+        if(Auth.isSuperior()&&realRows.length){
+          var _scope=blastExpMonthFilter.length?blastExpMonthFilter.join('/'):(syncMonthFilter||'');
+          var _lbl=(tpl.name||'blast')+'_'+dateStr+(_scope?(' ['+_scope+']'):'');
+          _gasPost({action:'saveBlastBatch',batch:{label:_lbl,template:tpl.name||'',monthScope:_scope,count:realRows.length,fileCount:totalFiles}})
+            .then(function(){if(typeof syncBlastBatchesFromServer==='function')syncBlastBatchesFromServer();}).catch(function(){});
+        }
         return;
       }
       var chunk=realRows.slice(fileIdx*realPerFile,(fileIdx+1)*realPerFile);
@@ -6446,6 +6516,8 @@ tabContent.addEventListener('click',function(e){
     else if(act==='wa')openWA(id);
     else if(act==='gc')openGC(id);
     else if(act==='assign')handleAssignOne(id);
+    else if(act==='batch-rename')batchRename(id); // CLM-13 v56
+    else if(act==='batch-del')batchDelete(id);   // CLM-13 v56
     else if(act==='edit-tpl')openTplModal(id);
     else if(act==='tpl-vis'){
       // CLM-12: toggle visible-to-agen langsung dari daftar + push GAS. Leader-only.
@@ -6546,8 +6618,8 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='desel-all-blast-btn'){csvSelectedIds.clear();renderBlast();}
   else if(tgt.id==='blast-prev'){if(blastPage>0){blastPage--;refreshBlastBody();}}
   else if(tgt.id==='blast-next'){blastPage++;refreshBlastBody();}
-  else if(tgt.id==='month-gate-all'){MONTH_KEYS.forEach(function(m){BlastMonthGate.setReleased(m,true);});toast('Semua bulan dibuka ke agen');renderBlast();}
-  else if(tgt.id==='month-gate-none'){MONTH_KEYS.forEach(function(m){BlastMonthGate.setReleased(m,false);});toast('Semua bulan ditutup (HANYA Sekar yg bisa lihat)');renderBlast();}
+  else if(tgt.id==='month-gate-all'){MONTH_KEYS.forEach(function(m){BlastMonthGate.setReleased(m,true);});BlastMonthGate.push();toast('Semua bulan dibuka ke agen');renderBlast();}
+  else if(tgt.id==='month-gate-none'){MONTH_KEYS.forEach(function(m){BlastMonthGate.setReleased(m,false);});BlastMonthGate.push();toast('Semua bulan ditutup (HANYA Sekar yg bisa lihat)');renderBlast();}
   else if(tgt.id==='wl-new-submit'){
     var phoneV=(document.getElementById('wl-new-phone')||{}).value||'';
     var outletIdV=(document.getElementById('wl-new-outlet-id')||{}).value||'';
@@ -6696,6 +6768,7 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='hide-paid-chk'){blastHidePaid=tgt.checked;blastPage=0;renderBlast();}
   if(tgt.classList.contains('month-gate-chk')){
     BlastMonthGate.setReleased(tgt.dataset.month,tgt.checked);
+    BlastMonthGate.push(); // CLM-13 v56: push ke GAS -> agen baca gate yg bener
     toast((tgt.checked?'Bulan '+tgt.dataset.month+' dibuka':'Bulan '+tgt.dataset.month+' ditutup')+' ke semua agen (Blast WABA)');
     renderBlast();
   }
@@ -6881,6 +6954,10 @@ function startApp(){
   // CLM-12: sync template WABA lintas-akun on-load (silent). Leader bootstrap template lokal ke GAS +
   // tarik punya leader lain; agen dapet visible-only. Pola sama Targets (sekali per load, ringan).
   setTimeout(function(){syncTemplatesFromServer({silent:true});},jms(2400));
+  // CLM-13 v56: tarik month-gate blast otoritatif on-load (agen baca gate yg bener, bukan default lokal).
+  setTimeout(function(){BlastMonthGate.syncFromServer();},jms(2600));
+  // CLM-13 v56: tarik daftar batch blast (metadata, leader) on-load.
+  setTimeout(function(){if(Auth.isSuperior())syncBlastBatchesFromServer();},jms(2800));
   // (operator 16 Jul): auto-sync klaim upsell on-load (silent) -- tombol manual cuma di tab leader, jadi
   // tanpa ini agen nggak pernah lihat status validasi klaimnya sendiri (approved/rejected). Sekali per
   // load, ringan (~sekelas Targets/GC, jauh lebih murah dari poll respons 10-menit). Leader tetep bisa
