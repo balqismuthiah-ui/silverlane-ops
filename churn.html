@@ -2547,7 +2547,8 @@ function buildExplodedRows(records){
         key:r.id+'_'+p,outletId:r.id,outletName:r.outletName,
         phone:p,phoneSource:srcs[j]||'',
         isDummy:isDummyPhone(p),
-        isGC:!!gcFlagMap[p],
+        isGC:!!gcFlagMap[p],           // badge (semua GC, termasuk user)
+        isGcBlast:gcBlocksBlast(p),    // CLM-13: exclude blast HANYA non-user GC
         lastBlastAt:recordLastBlastAt(r),expiryDate:r.expiryDate,
         assignedAgent:r.assignedAgent,record:r
       });
@@ -2574,7 +2575,8 @@ function buildCsvPhoneRows(records){
       rows.push({
         record:rec,phone:p,outletId:rec.id,outletName:rec.outletName,
         isDummy:isDummyPhone(p),
-        isGC:!!gcFlagMap[p]
+        isGC:!!gcFlagMap[p],
+        isGcBlast:gcBlocksBlast(p) // CLM-13: exclude blast HANYA non-user GC
       });
     });
   });
@@ -4113,11 +4115,11 @@ function blastTableRowsHtml(rows){
   return rows.map(function(row){
     // CLM-05 (operator 14 Jul): baris PER-NOMOR. Nomor internal/GC & dummy NGGAK bisa diblast -> checkbox
     // di-disable + nggak masuk seleksi. Nomor bersih = checkbox aktif. Group border tiap ganti outlet.
-    var blocked=row.isGC||row.isDummy;
+    var blocked=row.isGcBlast||row.isDummy; // CLM-13: GC-user TIDAK diblokir (tetep bisa dicentang/blast)
     var chk=(!blocked&&csvSelectedIds.has(row.key))?'checked':'';
     var gcDisp=row.isGC?gcBlastBadge(row.phone):'';
     var dummyDisp=row.isDummy?' <span class="dummy-flag" title="Nomor dummy/placeholder — dikecualikan">🚫 dummy</span>':'';
-    var rowCls=row.isDummy?'row-dummy':(row.isGC?'row-gc':'');
+    var rowCls=row.isDummy?'row-dummy':(row.isGcBlast?'row-gc':''); // CLM-13: user-GC nggak di-highlight blokir
     var srcBadge=row.phoneSource?'<span class="badge badge-gray" title="Sumber nomor dari sheet">'+row.phoneSource+'</span>':'<span style="color:var(--tx3)">—</span>';
     var blastMark=blocked?'<span style="font-size:11px;color:var(--rd,#dc2626)" title="Nomor internal/dummy — di-skip">✕ skip</span>':'<span style="font-size:11px;color:var(--grn,#16a34a)">✓ blast</span>';
     var dueToday=checkpointsDueOn(row.expiryDate,todayStr);
@@ -5216,7 +5218,10 @@ function openWA(id){
 
 // CLM-09: kategori "known" -> status confirmed/'Done' di sheet (langsung ke-flag semua akun).
 // GC_NEEDCHECK_KATEGORI (const terpisah, dipakai match filter juga) -> backlog, nggak ke-flag.
-var GC_KATEGORI_OPTIONS=['Internal - CX','Internal - Sales','Internal - Akademi','Internal - PO','Nomor Tidak Valid','Tidak ada WA'];
+// CLM-13: 6 pertama = EXCLUDE dari blast (internal/invalid/no-WA). 2 terakhir mengandung "user"
+// = nomor user ASLI (udah dicek getcontact) -> TETEP diblast, cuma penanda biar nggak re-check.
+// Deteksi blastable via gcIsUserCat (/user/i), BUKAN posisi — aman kalau nambah kategori user lain.
+var GC_KATEGORI_OPTIONS=['Internal - CX','Internal - Sales','Internal - Akademi','Internal - PO','Nomor Tidak Valid','Tidak ada WA','Indikasi User','Fix User'];
 
 function openGC(id){
   var d=Store.get();
@@ -5361,14 +5366,14 @@ function openCsvModal(){
     toast('Belum ada nomor dipilih. Centang baris, atau klik "Pilih Semua" dulu.');
     return;
   }
-  var filteredRows=selRows.filter(function(row){return!row.isDummy&&!row.isGC;});
+  var filteredRows=selRows.filter(function(row){return!row.isDummy&&!row.isGcBlast;}); // CLM-13: GC-user tetep ikut CSV
   // Ringkasan transparansi: buat outlet2 yg ada di seleksi, berapa nomor internal/GC di-skip + kategori.
   var _selOutlets={};selRows.forEach(function(row){_selOutlets[row.record.id]=1;});
   var _cm={};
   allRows.forEach(function(row){
     if(!_selOutlets[row.record.id])return;
     var id=row.record.id;var c=_cm[id]||(_cm[id]={gc:0,clean:0,cats:{}});
-    if(row.isGC){c.gc++;var w=gcFlagMap[normPhone(row.phone)];if(w)c.cats[gcCatShort(w.category)]=1;}
+    if(row.isGcBlast){c.gc++;var w=gcFlagMap[normPhone(row.phone)];if(w)c.cats[gcCatShort(w.category)]=1;} // CLM-13: GC-user nggak dihitung exclude
     else if(!row.isDummy)c.clean++;
   });
   var gcNumsExcl=0,casesWithGc=0,casesFallback=0,casesBlocked=0;
@@ -6099,10 +6104,21 @@ function gcWatchlistBadge(phone){
 // CLM-05 (operator 14 Jul): badge GC ringkas buat tabel Blast + CSV -- nunjukin "nomor siapa" (kategori
 // dari Cek Nomor/Watchlist GC: Internal - Sales/CX/Akademi/PO, Nomor Tidak Valid, dll) + label bila ada.
 function gcCatShort(cat){return String(cat||'').replace(/^Internal\s*-\s*/i,'').trim()||'GC';}
+// CLM-13: kategori GC yg mengandung "user" (Indikasi User / Fix User) = nomor user ASLI (udah dicek
+// getcontact) -> TETEP diblast, badge cuma penanda "udah dicek" (hemat kuota re-check). 6 kategori
+// existing (Internal-*, Nomor Tidak Valid, Tidak ada WA) = TETEP exclude.
+function gcIsUserCat(cat){return /user/i.test(String(cat||''));}
+// gcBlocksBlast: nomor GC yg HARUS dikecualikan dari blast (bukan kategori user). Dipakai buat
+// exclude CSV + disable centang. BEDA dari isGC (badge, muncul buat SEMUA GC termasuk user).
+function gcBlocksBlast(phone){var w=gcFlagMap[normPhone(phone)];return!!w&&!gcIsUserCat(w.category);}
 function gcBlastBadge(phone){
   var w=gcFlagMap[normPhone(phone)];
   if(!w)return'';
   var lbl=w.label?(' — '+w.label):'';
+  if(gcIsUserCat(w.category)){
+    // user asli: tetep diblast, badge hijau = penanda "udah dicek getcontact".
+    return' <span class="badge badge-grn" style="font-size:10px" title="Dari Cek Nomor (Watchlist GC): '+w.category+lbl+' · sudah dicek getcontact = nomor user, TETAP diblast">✓ '+gcCatShort(w.category)+'</span>';
+  }
   return' <span class="badge badge-red" style="font-size:10px" title="Dari Cek Nomor (Watchlist GC): '+w.category+lbl+' · dikecualikan dari blast, dipakai nomor alternatif bila ada">⚠ '+gcCatShort(w.category)+'</span>';
 }
 // (operator 16 Jul): nomor case kena GC (confirmed) = nomor internal/sales/invalid, BUKAN nomor privat
