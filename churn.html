@@ -1634,8 +1634,20 @@ function isDummyPhone(p){
 }
 
 function cleanCsvField(s){
-  return String(s||'').replace(/,/g,' ').replace(/"/g,'').replace(/\n/g,' ').trim();
+  // CLM-13: koma -> spasi (biar nggak kebaca kolom baru di CSV), buang double-quote LURUS + KERITING
+  // (" " dari copy-paste juga mecahin CSV), newline -> spasi, collapse spasi ganda ("Toko, Jakarta"
+  // -> "Toko Jakarta"). Apostrof/single-quote DIBIARIN (legit di nama "D'Cost", nggak mecahin CSV).
+  return String(s||'')
+    .replace(/[\r\n]+/g,' ')
+    .replace(/,/g,' ')
+    .replace(/["“”]/g,'')
+    .replace(/\s+/g,' ')
+    .trim();
 }
+// CLM-13: "-" (placeholder sheet) itu truthy di JS -> `"-" || fallback` balik "-" & fallback nggak
+// kebaca. Ini yg bikin email ketutup (Email Outlet "-" nutupin Email User yg valid). Anggap
+// "-"/kosong/whitespace = TIDAK ADA, biar fallback chain jalan.
+function cleanDashVal(v){var s=String(v==null?'':v).trim();return(s==='-'||s==='')?'':s;}
 
 function downloadCSV(content,filename){
   const blob=new Blob(['﻿'+content],{type:'text/csv;charset=utf-8;'});
@@ -5709,7 +5721,7 @@ function syncMonthList(months,opts){
           var gtv=row['GTV Last 3 Month'];
           if(typeof gtv==='string')gtv=parseFloat(gtv.replace(/[^0-9.-]/g,''))||0;else gtv=Number(gtv)||0;
           var nf=Object.assign({outletId:outletId,outletName:String(row['Nama Outlet']||'').trim(),
-            email:String(row['Email Outlet']||row['Email User']||'').trim(),
+            email:cleanDashVal(row['Email Outlet'])||cleanDashVal(row['Email User']),// CLM-13: "-" jangan nutup fallback
             expiryDate:expiry,phone:phone,phoneAlts:phoneAlts,phoneAltsSrc:phoneAltsSrc,
             // CLM-05 (operator 14 Jul): Termin langganan (Bulanan/Tahunan) dari kolom 'Last Termin' --
             // dipake filter billing periode + pisah Tarik Hari Ini per-termin.
@@ -5923,7 +5935,7 @@ function syncFromGAS(opts){
         var newFields=Object.assign({
           outletId:outletId,
           outletName:String(row['Nama Outlet']||'').trim(),
-          email:String(row['Email Outlet']||row['Email User']||'').trim(),
+          email:cleanDashVal(row['Email Outlet'])||cleanDashVal(row['Email User']),// CLM-13: "-" jangan nutup fallback
           expiryDate:expiry,
           phone:phone,
           phoneAlts:phoneAlts,
