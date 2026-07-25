@@ -970,12 +970,16 @@ function computeMovingConversion(subset,period){
 // filter base conversion: bukan demo, bukan recurring, HWCZ tertentu (default Hot).
 // CLM-12 (operator 22 Jul): penyebut = Hot SEMUA, BUKAN Hot User-Trx. Alasan: assignment udah
 // keburu di-distribusi basis Hot-all s/d Desember, jadi konversi (team + per-agen) dinilai atas
-// populasi yang SAMA = adil, rata, konsisten. isUserTrx/rawUserCat/rawExcludeCat TETEP ada buat
-// breakdown 5-kategori di daily view — cuma nggak dipakai nyaring penyebut konversi lagi.
+// populasi yang SAMA = adil, rata, konsisten. isUserTrx/rawUserCat TETEP ada buat breakdown
+// 5-kategori di daily view.
+// P0 fix (Muthia via Ubay, 25 Jul): exclude force-activation juga -- expiry-nya "keliatan moving"
+// itu artifact switch-email, BUKAN renewal customer asli. rawExcludeCat udah detect ini dari awal,
+// cuma belum pernah dipake nyaring populasi (cuma buat breakdown kategori) -- reuse langsung,
+// JANGAN re-tulis logic emailUser.indexOf('forceactivation') kedua kalinya.
 function convBaseFilter(recs,hwcz){
   hwcz=hwcz||'Hot';
   return recs.filter(function(r){
-    return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz===hwcz;
+    return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz===hwcz&&rawExcludeCat(r)!=='force';
   });
 }
 function computeHotLeadsConversion(recs,period){
