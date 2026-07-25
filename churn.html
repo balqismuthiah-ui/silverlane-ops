@@ -987,6 +987,93 @@ function computeHotLeadsConversion(recs,period){
   var res=computeMovingConversion(convBaseFilter(recs,'Hot'),period);
   return{actual:res.actual,unit:'%',denom:res.denom};
 }
+// ── CLM-12: Daily View 3-Seksi — live-computed, GANTI stub KLOPOS_DATA lama ────────────────
+// 3 seksi (termin) x 3 blok (Total/Moving/Remaining) x baris HWCZ + drill 5-kategori.
+// Reuse PERSIS rawUserCat/isMovingLead/convBaseFilter di atas — nol logic paralel.
+var KLOPOS_CAT_DEFS=[
+  {key:'force',label:'Force Activation'},
+  {key:'xl1biz',label:'XL1BIZ'},
+  {key:'cockpit',label:'RPML/Cockpit'},
+  {key:'user_trx',label:'User Trx'},
+  {key:'never_trx',label:'User Never Trx'}
+];
+var KLOPOS_HWCZ=['Hot','Warm','Cold','Zombie'];
+var KLOPOS_SECTIONS=[
+  {key:'all',label:'All Termin',termin:null},
+  {key:'tahunan',label:'Tahunan',termin:'Tahunan'},
+  {key:'bulanan',label:'Bulanan',termin:'Bulanan'}
+];
+var KLOPOS_BLOCKS=[
+  {key:'total',label:'Total'},
+  {key:'moving',label:'Moving'},
+  {key:'remaining',label:'Remaining'}
+];
+function kloposDaysInMonth(monthKey){
+  var mi=MONTH_KEYS.indexOf(monthKey);
+  return mi<0?30:new Date(2026,mi+1,0).getDate();
+}
+function kloposDayStr(monthKey,day){
+  var mi=MONTH_KEYS.indexOf(monthKey);
+  return'2026-'+String(mi+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+}
+// Scope ke cohort-bulan (assignment) + termin seksi (null = All Termin, union nol-filter).
+// Pola sama kayak convMovRecs/aMovRecs (2793/2823) -- recs blm di-scope bulan sampe sini.
+function kloposScope(recs,monthKey,terminVal){
+  var scoped=recs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(monthKey)>=0;});
+  if(terminVal)scoped=scoped.filter(function(r){return r.termin===terminVal;});
+  return scoped;
+}
+// Bucket 1 subset (udah base-filtered) jadi {daily:[...],total} buat 1 blok (Total/Moving/Remaining).
+// ⚠️ WAJIB expiredDateHistorical (WIB-correct), BUKAN raw ISO -- jebakan timezone udah pernah kejadian
+// (hari-1 kebaca 141 bukan 946 kalau salah pakai UTC mentah).
+function kloposBucket(subset,monthKey,days,blockKey){
+  var byDay={};
+  subset.forEach(function(r){
+    if(blockKey!=='total'){
+      var moving=isMovingLead(r,monthKey);
+      if(blockKey==='moving'&&!moving)return;
+      if(blockKey==='remaining'&&moving)return;
+    }
+    var ds=r.expiredDateHistorical;
+    if(!ds)return;
+    byDay[ds]=(byDay[ds]||0)+1;
+  });
+  var daily=[],total=0;
+  for(var d=1;d<=days;d++){
+    var v=byDay[kloposDayStr(monthKey,d)]||0;
+    daily.push(v);total+=v;
+  }
+  return{daily:daily,total:total};
+}
+// Bangun 1 baris (row) x 3 blok dari 1 subset base-filtered (Total row / HWCZ row / kategori row).
+// total = subset.length (bukan sum-of-daily) -- match anchor tie-out (base.length di tieout_conversion.js,
+// nol filter hari), sum-of-daily cuma buat drill kolom per-hari & bisa < total kalau ada tanggal nyasar.
+function kloposRow(subset,monthKey,days){
+  var out={};
+  KLOPOS_BLOCKS.forEach(function(b){
+    var bucket=kloposBucket(subset,monthKey,days,b.key);
+    out[b.key]={daily:bucket.daily,total:b.key==='total'?subset.length:bucket.total};
+  });
+  return out;
+}
+// Compute 1 seksi penuh (Total row + 4 HWCZ row + 4x5 kategori row), reuse convBaseFilter/rawUserCat.
+function computeKloposSection(recs,monthKey,section){
+  var days=kloposDaysInMonth(monthKey);
+  var scoped=kloposScope(recs,monthKey,section.termin);
+  var rows=[];
+  rows.push({label:'Total User',cls:'',row:kloposRow(scoped.filter(function(r){
+    return r.demoTestingV2==='N'&&r.recurring==='N';
+  }),monthKey,days)});
+  KLOPOS_HWCZ.forEach(function(hwcz){
+    var hwczSubset=convBaseFilter(scoped,hwcz);
+    rows.push({label:hwcz,cls:'cat-'+hwcz.toLowerCase(),row:kloposRow(hwczSubset,monthKey,days)});
+    KLOPOS_CAT_DEFS.forEach(function(cat){
+      var catSubset=hwczSubset.filter(function(r){return rawUserCat(r)===cat.key;});
+      rows.push({label:cat.label,cls:'sub',row:kloposRow(catSubset,monthKey,days)});
+    });
+  });
+  return{days:days,rows:rows};
+}
 // QA fix (Ryry, CLM-11 B1) — Levenshtein edit-distance, dipakai KHUSUS sbg tier-2 fallback buat
 // typo kelas "Fauziayah" vs "Fauziyah" (nama billing diketik manual, beda ejaan dari email agen).
 // GAS action=upsellteam terbukti NGGAK punya kolom email sama sekali (cek langsung ke source tab
@@ -4792,91 +4879,69 @@ function openTestPreview(){
 }
 
 // ── TAB: KLOPOS DAILY ──────────────────────────────────────────────────────
-var kloposMonth='Jun 2026';
-var KLOPOS_DATA={
-  'May 2026':{
-    convRate:'85%',days:31,
-    rows:{
-      'Total User':      {carry:1918,daily:[85,57,45,55,38,42,26,18,11,31,12,11,17,8,14,14,13,9,13,13,9,42,19,24,51,54,69,41,48,39,null],total:2846,cls:''},
-      'Force Activation':{carry:65, daily:[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,null],  total:65, cls:'sub'},
-      'XL1BIZ':          {carry:null,daily:null,total:null,cls:'sub'},
-      'RPML/Cockpit':    {carry:null,daily:null,total:null,cls:'sub'},
-      'User Trx':        {carry:null,daily:null,total:null,cls:'sub'},
-      'User Never Trx':  {carry:null,daily:null,total:null,cls:'sub'},
-      'Hot':             {carry:null,daily:null,total:null,cls:'cat-hot'},
-      'Warm':            {carry:null,daily:null,total:null,cls:'cat-warm'},
-      'Cold':            {carry:null,daily:null,total:null,cls:'cat-cold'},
-      'Zombie':          {carry:null,daily:null,total:null,cls:'cat-zombie'}
-    }
-  },
-  'Jun 2026':{
-    convRate:'81%',days:30,
-    rows:{
-      'Total User':      {carry:1490,daily:[99,79,40,49,52,43,34,38,47,56,47,45,37,33,30,49,41,50,43,33,31,47,33,41,36,40,58,37,68,0,null],total:2826,cls:''},
-      'Force Activation':{carry:66, daily:[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,null],  total:67, cls:'sub'},
-      'XL1BIZ':          {carry:null,daily:null,total:null,cls:'sub'},
-      'RPML/Cockpit':    {carry:null,daily:null,total:null,cls:'sub'},
-      'User Trx':        {carry:null,daily:null,total:null,cls:'sub'},
-      'User Never Trx':  {carry:null,daily:null,total:null,cls:'sub'},
-      'Hot':             {carry:null,daily:null,total:null,cls:'cat-hot'},
-      'Warm':            {carry:null,daily:null,total:null,cls:'cat-warm'},
-      'Cold':            {carry:null,daily:null,total:null,cls:'cat-cold'},
-      'Zombie':          {carry:null,daily:null,total:null,cls:'cat-zombie'}
-    }
-  }
-};
+// CLM-12: live-computed dari records (computeKloposSection di atas), GANTI stub KLOPOS_DATA hardcoded.
+var kloposMonth=null;
+var kloposSection='all';
+var kloposBlock='total';
 function renderKlopos(){
-  var md=KLOPOS_DATA[kloposMonth];
-  var days=md.days;
-  // Month selector
-  var monthBtns=Object.keys(KLOPOS_DATA).map(function(m){
-    return'<button onclick="kloposMonth=\''+m+'\';renderKlopos()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--bdr);background:'+(m===kloposMonth?'var(--pri)':'var(--card)')+';color:'+(m===kloposMonth?'#fff':'var(--tx)')+';cursor:pointer;font-size:12px;font-weight:600">'+m+'</button>';
+  var d=Store.get(),recs=d.records;
+  // Bulan tersedia = cohortMonths yg beneran ada di data (sama pola _bulanSet di renderMaster/3545).
+  var monthSet=new Set();
+  recs.forEach(function(r){(r.cohortMonths||r.bulan||'').split(',').forEach(function(b){if(b)monthSet.add(b);});});
+  var availMonths=MONTH_KEYS.filter(function(m){return monthSet.has(m);});
+  if(!availMonths.length)availMonths=[MONTH_KEYS[new Date().getMonth()]];
+  var todayMonthKey=MONTH_KEYS[new Date().getMonth()];
+  if(!kloposMonth||availMonths.indexOf(kloposMonth)<0)kloposMonth=availMonths.indexOf(todayMonthKey)>=0?todayMonthKey:availMonths[availMonths.length-1];
+  var section=KLOPOS_SECTIONS.filter(function(s){return s.key===kloposSection;})[0]||KLOPOS_SECTIONS[0];
+  var block=KLOPOS_BLOCKS.filter(function(b){return b.key===kloposBlock;})[0]||KLOPOS_BLOCKS[0];
+  var data=computeKloposSection(recs,kloposMonth,section);
+  var days=data.days;
+  var totalRow=data.rows[0].row; // 'Total User' -- semua HWCZ gabung
+
+  var monthBtns=availMonths.map(function(m){
+    return'<button onclick="kloposMonth=\''+m+'\';renderKlopos()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--bdr);background:'+(m===kloposMonth?'var(--pri)':'var(--card)')+';color:'+(m===kloposMonth?'#fff':'var(--tx)')+';cursor:pointer;font-size:12px;font-weight:600">'+m+' 26</button>';
   }).join(' ');
+  var sectionBtns=KLOPOS_SECTIONS.map(function(s){
+    return'<button onclick="kloposSection=\''+s.key+'\';renderKlopos()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--bdr);background:'+(s.key===kloposSection?'var(--pri)':'var(--card)')+';color:'+(s.key===kloposSection?'#fff':'var(--tx)')+';cursor:pointer;font-size:12px;font-weight:600">'+s.label+'</button>';
+  }).join(' ');
+  var blockBtns=KLOPOS_BLOCKS.map(function(b){
+    return'<button onclick="kloposBlock=\''+b.key+'\';renderKlopos()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--bdr);background:'+(b.key===kloposBlock?'var(--pri)':'var(--card)')+';color:'+(b.key===kloposBlock?'#fff':'var(--tx)')+';cursor:pointer;font-size:12px;font-weight:600">'+b.label+'</button>';
+  }).join(' ');
+
   // Build header row
-  var hdr='<th style="position:sticky;left:0;z-index:2;background:var(--card);min-width:130px;font-size:11px">Kategori</th>'
-    +'<th style="min-width:60px;font-size:10px;color:var(--tx3)">Carry</th>';
-  for(var d=1;d<=days;d++) hdr+='<th style="min-width:36px;font-size:10px;color:var(--tx3)">'+d+'</th>';
+  var hdr='<th style="position:sticky;left:0;z-index:2;background:var(--card);min-width:130px;font-size:11px">Kategori</th>';
+  for(var d1=1;d1<=days;d1++) hdr+='<th style="min-width:36px;font-size:10px;color:var(--tx3)">'+d1+'</th>';
   hdr+='<th style="min-width:54px;font-size:11px;font-weight:700">Total</th>';
   // Build data rows
-  var rows='';
-  var rowKeys=Object.keys(md.rows);
-  rowKeys.forEach(function(label){
-    var r=md.rows[label];
-    var isAvail=r.daily!==null;
-    var clsMap={'sub':'color:var(--tx2);padding-left:16px','cat-hot':'color:var(--grn);font-weight:600','cat-warm':'color:var(--yel);font-weight:600','cat-cold':'color:var(--blu);font-weight:600','cat-zombie':'color:var(--tx3);font-weight:600','':'font-weight:700'};
-    var tdStyle=clsMap[r.cls]||'';
-    rows+='<tr style="border-bottom:1px solid var(--bdr)">'
-      +'<td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;white-space:nowrap;'+tdStyle+'">'+label+'</td>'
-      +'<td style="text-align:center;font-size:11px;color:var(--tx3)">'+(isAvail&&r.carry!=null?r.carry:'—')+'</td>';
-    if(isAvail){
-      for(var d2=0;d2<days;d2++){
-        var v=r.daily[d2];
-        var bg=v>0?'background:rgba(99,102,241,.08)':'';
-        rows+='<td style="text-align:center;font-size:11px;'+bg+'">'+(v!=null?v:'')+'</td>';
-      }
-      rows+='<td style="text-align:center;font-size:12px;font-weight:700;color:var(--grn)">'+r.total+'</td>';
-    }else{
-      for(var d3=0;d3<days;d3++) rows+='<td style="text-align:center;font-size:11px;color:var(--tx3)">—</td>';
-      rows+='<td style="text-align:center;font-size:11px;color:var(--tx3)">—</td>';
+  var clsMap={'sub':'color:var(--tx2);padding-left:16px','cat-hot':'color:var(--grn);font-weight:600','cat-warm':'color:var(--yel);font-weight:600','cat-cold':'color:var(--blu);font-weight:600','cat-zombie':'color:var(--tx3);font-weight:600','':'font-weight:700'};
+  var rows=data.rows.map(function(rowDef){
+    var r=rowDef.row[block.key];
+    var tdStyle=clsMap[rowDef.cls]||'';
+    var cells='<td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;white-space:nowrap;'+tdStyle+'">'+rowDef.label+'</td>';
+    for(var d2=0;d2<days;d2++){
+      var v=r.daily[d2];
+      var bg=v>0?'background:rgba(99,102,241,.08)':'';
+      cells+='<td style="text-align:center;font-size:11px;'+bg+'">'+v+'</td>';
     }
-    rows+='</tr>';
-  });
-  var newDaily=md.rows['Total User'].daily?md.rows['Total User'].daily.filter(function(v){return v!=null&&v>0;}).reduce(function(a,b){return a+b;},0):0;
+    cells+='<td style="text-align:center;font-size:12px;font-weight:700;color:var(--grn)">'+r.total+'</td>';
+    return'<tr style="border-bottom:1px solid var(--bdr)">'+cells+'</tr>';
+  }).join('');
+
+  var convPct=totalRow.total.total?Math.round(totalRow.moving.total/totalRow.total.total*100):0;
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📅 KLOPOS Daily Assignment</div>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'+monthBtns+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+monthBtns+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+sectionBtns+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'+blockBtns+'</div>'
     +'<div class="grid4" style="margin-bottom:12px">'
-    +'<div class="stat"><div class="stat-val">'+md.rows['Total User'].carry+'</div><div class="stat-lbl">Carry-over Awal</div></div>'
-    +'<div class="stat"><div class="stat-val" style="color:var(--grn)">'+newDaily+'</div><div class="stat-lbl">New Assigned (bln ini)</div></div>'
-    +'<div class="stat"><div class="stat-val">'+md.rows['Total User'].total+'</div><div class="stat-lbl">Total Pool</div></div>'
-    +'<div class="stat"><div class="stat-val" style="color:var(--blu)">'+md.convRate+'</div><div class="stat-lbl">Konversi Bulan Ini</div></div>'
+    +'<div class="stat"><div class="stat-val">'+totalRow.total.total+'</div><div class="stat-lbl">Total Pool ('+section.label+')</div></div>'
+    +'<div class="stat"><div class="stat-val" style="color:var(--grn)">'+totalRow.moving.total+'</div><div class="stat-lbl">Moving</div></div>'
+    +'<div class="stat"><div class="stat-val" style="color:var(--tx3)">'+totalRow.remaining.total+'</div><div class="stat-lbl">Remaining</div></div>'
+    +'<div class="stat"><div class="stat-val" style="color:var(--blu)">'+convPct+'%</div><div class="stat-lbl">Konversi Moving Bulan Ini</div></div>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table style="border-collapse:collapse;width:100%">'
     +'<thead><tr style="background:var(--bkg)">'+hdr+'</tr></thead><tbody>'+rows+'</tbody>'
-    +'</table></div></div>'
-    +'<div style="margin-top:10px;padding:8px 12px;background:rgba(99,102,241,.06);border-radius:6px;border-left:3px solid var(--pri)">'
-    +'<span style="font-size:11px;color:var(--tx2)">⚠ Data parsial — XL1BIZ, RPML/Cockpit, User Trx, User Never Trx, dan HWCZ belum tersedia. Export tab <strong>SUMMARY KLOPOS [DAILY]</strong> sebagai CSV untuk data lengkap.</span>'
-    +'</div></div>';
+    +'</table></div></div></div>';
 }
 
 // ── RENDER TAB ─────────────────────────────────────────────────────────────
