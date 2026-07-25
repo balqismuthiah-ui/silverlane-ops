@@ -976,10 +976,16 @@ function computeMovingConversion(subset,period){
 // itu artifact switch-email, BUKAN renewal customer asli. rawExcludeCat udah detect ini dari awal,
 // cuma belum pernah dipake nyaring populasi (cuma buat breakdown kategori) -- reuse langsung,
 // JANGAN re-tulis logic emailUser.indexOf('forceactivation') kedua kalinya.
-function convBaseFilter(recs,hwcz){
+// excludeForce default true (dipake 4 caller conversion — Hot-all card/per-agen/daily-view).
+// excludeForce=false dipake KHUSUS baris drill-down "Force Activation" di Daily View (Ubay 25 Jul):
+// visibilitas operasional (berapa banyak force-activation per bucket) beda tujuan dari exclude-dari-
+// metric-konversi -- baris lain (XL1BIZ/Cockpit/UserTrx/NeverTrx + Total/Moving/Remaining) tetap
+// post-exclude persis kayak sebelumnya.
+function convBaseFilter(recs,hwcz,excludeForce){
   hwcz=hwcz||'Hot';
+  if(excludeForce===undefined)excludeForce=true;
   return recs.filter(function(r){
-    return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz===hwcz&&rawExcludeCat(r)!=='force';
+    return r.demoTestingV2==='N'&&r.recurring==='N'&&r.hwcz===hwcz&&(!excludeForce||rawExcludeCat(r)!=='force');
   });
 }
 function computeHotLeadsConversion(recs,period){
@@ -1071,8 +1077,12 @@ function computeKloposSection(recs,monthKey,section){
   KLOPOS_HWCZ.forEach(function(hwcz){
     var hwczSubset=convBaseFilter(scoped,hwcz);
     rows.push({label:hwcz,cls:'cat-'+hwcz.toLowerCase(),row:kloposRow(hwczSubset,monthKey,days)});
+    // Force Activation drill-down = populasi SEBELUM exclude (visibilitas operasional, Ubay 25 Jul) --
+    // kategori lain tetap post-exclude (hwczSubset), cuma baris ini yang beda sumber.
+    var hwczSubsetPreForce=convBaseFilter(scoped,hwcz,false);
     KLOPOS_CAT_DEFS.forEach(function(cat){
-      var catSubset=hwczSubset.filter(function(r){return rawUserCat(r)===cat.key;});
+      var srcSubset=cat.key==='force'?hwczSubsetPreForce:hwczSubset;
+      var catSubset=srcSubset.filter(function(r){return rawUserCat(r)===cat.key;});
       rows.push({label:cat.label,cls:'sub',row:kloposRow(catSubset,monthKey,days)});
     });
   });
