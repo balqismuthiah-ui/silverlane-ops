@@ -3424,8 +3424,25 @@ function renderOverview(){
       var clr=g>=0?'var(--grn)':'var(--red)';
       return'<span style="color:'+clr+'">'+(g>=0?'+':'')+g+'%</span>';
     }
+    // CLM-11 Fase G (25 Jul, operator): kolom "Potensi" -- Rp dari invoice yg BELUM DIBAYAR tapi
+    // BELUM EXPIRED (INV_POTENTIAL_STATUSES: VALIDATED/APPROVED-INVOICE/PROFORMA), per-agen, per
+    // komponen (subsOnly=Renewal, upsellAmt=Upsell). 1 invoice bisa nyumbang KE DUA tabel sekaligus
+    // (subsOnly ke tabel Renewal, upsellAmt ke tabel Upsell) -- itu emang komponen berbeda, bukan
+    // dobel-hitung. agentName dari invEnrichedRows() (SATU sumber, udah include reassignment
+    // override) -- jangan reimplement join invMatchAgentName di sini.
+    var mtdInvEnriched=invEnrichedRows();
+    function computeAgentInvoicePotential(agentName){
+      var out={renewal:0,upsell:0};
+      mtdInvEnriched.forEach(function(r){
+        if(r.agentName!==agentName)return;
+        if(INV_POTENTIAL_STATUSES.indexOf(r.statusDetail)<0)return;
+        out.renewal+=(r.subsOnly||0);
+        out.upsell+=(r.upsellAmt||0);
+      });
+      return out;
+    }
     // QA round 2 (operator, 13 Jul): nominal LENGKAP (fmtRpFull) + kolom angka rata kanan.
-    function mtdRowsHtml(fieldArr,withAttach){
+    function mtdRowsHtml(fieldArr,withAttach,potentialKey){
       return AGENTS.map(function(ag){
         var c=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,prevMonthKey,mtdDayCap);
         var attachCell='';
@@ -3433,6 +3450,8 @@ function renderOverview(){
           var ar=computePersonalAttachRate(currentMonthKey,ag);
           attachCell='<td style="text-align:right">'+(ar.synced?(ar.pct+'% <span style="color:var(--tx3);font-size:10px">('+ar.dealCount+'/'+ar.denom+')</span>'):'—')+'</td>';
         }
+        var potential=computeAgentInvoicePotential(ag);
+        var potentialCell='<td style="text-align:right;color:var(--blu)">'+fmtRpFull(potential[potentialKey])+'</td>';
         return'<tr><td>'+ag+'</td>'
           +'<td style="text-align:right">'+fmtRpFull(c.prev.revenue)+'</td>'
           +'<td style="text-align:right">'+fmtRpFull(c.cur.revenue)+'</td>'
@@ -3441,19 +3460,20 @@ function renderOverview(){
           +'<td style="text-align:right">'+c.cur.count+'</td>'
           +'<td style="text-align:right">'+mtdGrowthHtml(c.cntGrowth)+'</td>'
           +attachCell
+          +potentialCell
           +'</tr>';
       }).join('');
     }
-    function mtdTableHtml(title,fieldArr,withAttach){
+    function mtdTableHtml(title,fieldArr,withAttach,potentialKey){
       return'<div style="margin-bottom:14px"><div style="font-size:11px;font-weight:700;color:var(--tx3);margin-bottom:4px">'+title+'</div>'
         +'<div class="tbl-wrap"><table class="summary-tbl">'
-        +'<thead><tr><th>Agen</th><th style="text-align:right">'+prevMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">'+currentMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">Growth Rp</th><th style="text-align:right">'+prevMonthKey+' Deal</th><th style="text-align:right">'+currentMonthKey+' Deal</th><th style="text-align:right">Growth Deal</th>'+(withAttach?'<th style="text-align:right">Attach Rate</th>':'')+'</tr></thead>'
-        +'<tbody>'+mtdRowsHtml(fieldArr,withAttach)+'</tbody></table></div></div>';
+        +'<thead><tr><th>Agen</th><th style="text-align:right">'+prevMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">'+currentMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">Growth Rp</th><th style="text-align:right">'+prevMonthKey+' Deal</th><th style="text-align:right">'+currentMonthKey+' Deal</th><th style="text-align:right">Growth Deal</th>'+(withAttach?'<th style="text-align:right">Attach Rate</th>':'')+'<th style="text-align:right" title="Invoice belum dibayar tapi belum expired (VALIDATED/APPROVED)">Potensi ('+currentMonthKey+', real-time)</th></tr></thead>'
+        +'<tbody>'+mtdRowsHtml(fieldArr,withAttach,potentialKey)+'</tbody></table></div></div>';
     }
     agentMtdSection='<div class="ov-section"><div class="ov-section-title">📊 MTD per-Agen ('+prevMonthKey+' s.d. hari ke-'+mtdDayCap+' vs '+currentMonthKey+' s.d. hari ke-'+mtdDayCap+') <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1), dua bulan apple-to-apple</span></div>'
       +(!mtdCurUT
         ?'<div class="card empty">Belum ada data — klik "📥 Sync Upsell Tim" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div>'
-        :'<div class="card">'+mtdTableHtml('💰 Renewal','renewalsRaw',true)+mtdTableHtml('📈 Upsell','upsellRaw',false)+'</div>')
+        :'<div class="card">'+mtdTableHtml('💰 Renewal','renewalsRaw',true,'renewal')+mtdTableHtml('📈 Upsell','upsellRaw',false,'upsell')+'</div>')
       +'</div>';
   }
 
