@@ -4202,6 +4202,11 @@ function renderResponseResults(){
       +'<span class="badge badge-'+respColor+'" style="flex-shrink:0">'+(hasResp?resp.category:'Belum')+'</span>'
       +'</div>'
       +'<div style="font-size:12px;color:var(--tx2)">Agen: <strong>'+(r.assignedAgent||'—')+'</strong></div>'
+      // 25 Jul (operator): Response Update diakses SEMUA agen -- munculin Paket Aktif/Expired
+      // Historical/Email User biar konteks lengkap tanpa buka detail. Nomor HP TETAP satu-satunya
+      // field yg di-restrict (mask via GC), 3 field ini NGGAK ada relasi ke privasi nomor sama sekali.
+      +'<div style="font-size:11px;color:var(--tx3)">Paket Aktif: '+(r.packageTier||'—')+' &nbsp;·&nbsp; Expired (Historical): '+fmtDate(r.expiredDateHistorical)+'</div>'
+      +(r.emailUser?'<div style="font-size:11px;color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Email User: '+r.emailUser+'</div>':'')
       +(hasResp
         ?'<div style="font-size:12px;color:var(--tx2)">Detail: '+(resp.detail||'—')+'</div>'
           +(resp.note?'<div style="font-size:11px;color:var(--tx3);font-style:italic">"'+resp.note+'"</div>':'')
