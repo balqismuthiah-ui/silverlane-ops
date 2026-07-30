@@ -3445,11 +3445,15 @@ function renderOverview(){
     var INV_POTENTIAL_STATUSDETAIL_ONLY=['VALIDATED-INVOICE','APPROVED-INVOICE','APPROVED-PROFORMA'];
     // Bandingin bulan created ke currentMonthKey via cohort-style match (bulan singkat 'Jul'),
     // konsisten sama pola scoping lain di app ini (r.cohortMonths dst) -- bukan string-compare 'YYYY-MM'.
+    // 30 Jul fix: MONTH_KEYS/currentMonthKey nggak bawa tahun -- dulu invoice Jul TAHUN LALU ikut
+    // kejumlah sebagai "bulan ini" (beda dari bug lama "Jun nyasar ke Jul" yg udah difix 25 Jul, ini
+    // celah terpisah: bulan sama, tahun beda). Sekarang wajib cek tahun juga.
+    var invCurrentYear=String(new Date().getFullYear());
     function invCreatedInCurrentMonth(r){
       var ds=localDateStr(r.createdDate); // 'YYYY-MM-DD'
       if(!ds)return false;
       var mi=parseInt(ds.slice(5,7),10)-1;
-      return MONTH_KEYS[mi]===currentMonthKey;
+      return MONTH_KEYS[mi]===currentMonthKey&&ds.slice(0,4)===invCurrentYear;
     }
     function computeAgentInvoicePotential(agentName){
       var out={renewal:0,upsell:0};
