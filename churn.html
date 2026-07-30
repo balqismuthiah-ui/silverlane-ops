@@ -2935,13 +2935,21 @@ function renderOverview(){
   }
 
   var pBlasted=total?Math.round((blasted/total)*100):0;
-  var pRenewal=total?Math.round((renewal/total)*100):0;
   // CLM-12: konversi MOVING-LEADS (basis expiry gerak, BUKAN respons agen) — headline baru card
   // Konversi Renewal. Denom = Hot & User-Trx (keputusan operator). myRecs belum di-scope bulan
   // (funnel scope-nya di dalam), jadi scope di sini. Respons-based (pRenewal) tetep dipertahanin
   // sbg sub-line konteks (selisih moving vs respons = bayar/renew tapi belum di-tag agen).
   var convMovRecs=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
   var convMov=computeMovingConversion(convBaseFilter(convMovRecs,'Hot'),currentMonthKey);
+  // 30 Jul (brief operator/Ubay): "basis respons agen" + Detail list di card TIM ("Konversi Renewal"
+  // & "Renewal Revenue") headline-nya udah month-scoped, tapi sub-line/Detail-nya masih pakai total/
+  // renewal all-time (myRecs mentah) -- 1 card nunjukin 2 cakupan waktu beda, bikin operator bingung.
+  // Var BARU khusus 2 card tim itu, dari convMovRecs (bulan berjalan). Var lama (total/renewal/
+  // blasted/catDetailMap) SENGAJA nggak diubah -- masih dipake card "Konversi Saya" personal
+  // (keputusan operator 30 Jul: personal belum perlu ikut di-scope sekarang).
+  var totalMov=convMovRecs.length;
+  var renewalMov=convMovRecs.filter(function(r){return respOutcome(r.response)==='renewal';}).length;
+  var pRenewalMov=totalMov?Math.round((renewalMov/totalMov)*100):0;
   var gcCount=Object.keys(gcFlagMap).length; // CLM-09: sheet-backed (confirmed+belum-resolve), bukan d.watchlist lokal
 
   // ── Review stats (team-wide) ──────────────────────────────────────────
@@ -2988,12 +2996,23 @@ function renderOverview(){
       catDetailMap[k]=(catDetailMap[k]||0)+1;
     }
   });
-  function buildDetailList(outcome,clr){
-    var dets=Object.keys(catDetailMap).filter(function(k){return k.startsWith(outcome+'||');});
-    dets.sort(function(a,b){return catDetailMap[b]-catDetailMap[a];});
+  // 30 Jul: versi month-scoped, khusus card TIM (lihat catatan totalMov/renewalMov di atas) -- var
+  // catDetailMap di atas TETAP dipakai apa adanya buat card "Konversi Saya" personal.
+  var catDetailMapMov={};
+  convMovRecs.forEach(function(r){
+    if(r.response&&r.response.category&&r.response.detail){
+      var oc=respOutcome(r.response);
+      var k=oc+'||'+r.response.category+' - '+r.response.detail;
+      catDetailMapMov[k]=(catDetailMapMov[k]||0)+1;
+    }
+  });
+  function buildDetailList(outcome,clr,map){
+    var m=map||catDetailMap;
+    var dets=Object.keys(m).filter(function(k){return k.startsWith(outcome+'||');});
+    dets.sort(function(a,b){return m[b]-m[a];});
     if(!dets.length)return'<div style="font-size:11px;color:var(--tx3);padding:4px 0">Belum ada data detail</div>';
     return dets.map(function(k){
-      var det=k.split('||')[1],cnt=catDetailMap[k];
+      var det=k.split('||')[1],cnt=m[k];
       return'<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed var(--bdr);font-size:12px">'
         +'<span style="color:var(--tx2)">'+det+'</span>'
         +'<span class="badge badge-'+clr+'" style="font-size:10px">'+cnt+'</span></div>';
@@ -3541,9 +3560,9 @@ function renderOverview(){
     +'<div style="font-size:18px;font-weight:700;color:var(--tx)">'+fmtRp(renewalAch)+'</div>'
     +'<div style="margin-top:6px">'+render2TierBars(renewalAch,'Rp',RENEWAL_TARGET,RENEWAL_TARGET_IMP)+'</div>'
     +'<div style="font-size:10px;color:var(--tx2);margin-top:5px">📈 Proyeksi closing (run-rate): <strong>'+fmtRp(runRateProjection(renewalAch))+'</strong></div>'
-    +'<div style="font-size:10px;color:var(--tx2);margin-top:2px">'+renewal+' outlet renewal</div>'
+    +'<div style="font-size:10px;color:var(--tx2);margin-top:2px">'+renewalMov+' outlet renewal ('+currentMonthKey+')</div>'
     +'<div onclick="var n=this.nextElementSibling;n.style.display=n.style.display===\'none\'?\'\':\'none\'" style="cursor:pointer;font-size:11px;color:var(--pri);margin-top:6px;user-select:none">▸ Detail Renewal</div>'
-    +'<div style="display:none;margin-top:4px">'+buildDetailList('renewal','grn')+'</div>'
+    +'<div style="display:none;margin-top:4px">'+buildDetailList('renewal','grn',catDetailMapMov)+'</div>'
     +'</div>'
     // Upselling — CLM-11 Fase C: Rupiah revenue 2-tier (view Total Nasional CLM+CC), ganti dari
     // count+attach v1 lock lama (Ryry AC-G4, 6 Jul).
@@ -3570,9 +3589,9 @@ function renderOverview(){
     +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+convMov.moving+' gerak dari '+convMov.total+' Hot (expiry pindah)</div>'
     // CLM-12: respons-based dipertahanin sbg sub-line konteks (keputusan operator: simpan dua-duanya).
     // Selisih moving vs respons = akun yg renew/bayar tapi respons belum di-tag agen.
-    +'<div style="font-size:11px;color:var(--tx3);margin-top:3px;padding-top:3px;border-top:1px solid var(--bdr)">basis respons agen: <strong>'+pRenewal+'%</strong> ('+renewal+'/'+total+' outlet)</div>'
+    +'<div style="font-size:11px;color:var(--tx3);margin-top:3px;padding-top:3px;border-top:1px solid var(--bdr)">basis respons agen ('+currentMonthKey+'): <strong>'+pRenewalMov+'%</strong> ('+renewalMov+'/'+totalMov+' outlet)</div>'
     +'<div onclick="var n=this.nextElementSibling;n.style.display=n.style.display===\'none\'?\'\':\'none\'" style="cursor:pointer;font-size:11px;color:var(--pri);margin-top:6px;user-select:none">▸ Detail Tidak Renewal</div>'
-    +'<div style="display:none;margin-top:4px">'+buildDetailList('churn','red')+'</div>'
+    +'<div style="display:none;margin-top:4px">'+buildDetailList('churn','red',catDetailMapMov)+'</div>'
     +'</div>'
     // Review
     +'<div class="card">'
