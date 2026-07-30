@@ -284,6 +284,7 @@ tr:hover td{background:var(--sur2)}
     <button class="ntab" data-tab="blast">📲 Blast WABA</button>
     <button class="ntab" data-tab="watchlist">🚫 Watchlist GC</button>
     <button class="ntab" data-tab="klopos">📅 KLOPOS Daily</button>
+    <button class="ntab" data-tab="churntrend">📈 Churn Trend</button>
     <button class="ntab" data-tab="invoice">🧾 Invoice Tracker</button>
     <button class="ntab" data-tab="invsummary">📆 Invoice Summary</button>
     <button class="ntab" data-tab="konfigakun">⚙️ Konfigurasi Akun</button>
@@ -5078,6 +5079,59 @@ function renderKlopos(){
     +'</table></div></div></div>';
 }
 
+// ── TAB: CHURN TREND ──────────────────────────────────────────────────────
+// Brief operator/Ubay 30 Jul (`brief_churn_user_overview_scope_fix_dan_tab_baru.md`, bagian B):
+// trend Remaining leads MoM (card gede+delta, reuse pola funnelCardHtml/funnelMomHtml Fase A) & DoD
+// (chart harian, reuse renderDailyTrendSVG dari Daily View). Populasi "Remaining" PERSIS definisi
+// card "Konversi Renewal" (convBaseFilter Hot + computeMovingConversion/kloposBucket) -- SATU sumber
+// kebenaran, nol logic paralel. Chart + angka doang, NOL drill-down ke daftar outlet (eksplisit brief)
+// -- validasi outlet spesifik tetap manual lewat Master/My Worksheet yang udah ada.
+function simpleMomCardHtml(label,color,nowVal,prevVal,prevMonthKey,prevHasData){
+  return'<div class="funnel-card"><div class="stat-lbl">'+label+'</div>'
+    +'<div class="stat-val" style="color:'+color+'">'+nowVal+'</div>'
+    +(prevMonthKey?funnelMomHtml(nowVal,prevVal,prevMonthKey,prevHasData):'')
+    +'</div>';
+}
+function renderChurnTrend(){
+  var d=Store.get(),recs=d.records;
+  var isSup=Auth.isSuperior();
+  var me=Auth.getActive();
+  var myRecs=isSup?recs:recs.filter(function(r){return r.assignedAgent===me;});
+  var currentMonthKey=MONTH_KEYS[new Date().getMonth()];
+  var prevMonthKey=MONTH_KEYS[(new Date().getMonth()+11)%12];
+  var todayDate=new Date();
+  var daysInMonth=new Date(2026,todayDate.getMonth()+1,0).getDate();
+  var daysInPrevMonth=new Date(2026,(todayDate.getMonth()+11)%12+1,0).getDate();
+  // CLM-11 Fase G convention: dikunci s.d. kemarin (H-1), samain Daily View/MTD -- hari berjalan
+  // sering baru sync sebagian.
+  var dayOfMonthLocked=Math.max(1,todayDate.getDate()-1);
+
+  // Populasi PERSIS card "Konversi Renewal": kloposScope (cohort-bulan, All Termin) + convBaseFilter
+  // Hot. Reuse primitive yang sama (kloposScope/convBaseFilter/computeMovingConversion/kloposBucket),
+  // nol re-implementasi.
+  var curSubset=convBaseFilter(kloposScope(myRecs,currentMonthKey,null),'Hot');
+  var prevSubset=convBaseFilter(kloposScope(myRecs,prevMonthKey,null),'Hot');
+  var curConv=computeMovingConversion(curSubset,currentMonthKey);
+  var prevConv=computeMovingConversion(prevSubset,prevMonthKey);
+  var prevHasData=prevConv.total>0;
+
+  var curDaily=kloposBucket(curSubset,currentMonthKey,daysInMonth,'remaining').daily;
+  var prevDaily=kloposBucket(prevSubset,prevMonthKey,daysInPrevMonth,'remaining').daily;
+
+  document.getElementById('tab-content').innerHTML=
+    '<div class="ov-section"><div class="ov-section-title">📈 Churn Trend <span style="font-size:10px;color:var(--tx3);font-weight:400">Remaining leads (Hot) — basis sama kayak card Konversi Renewal, dikunci s.d. kemarin (H-1)</span></div>'
+    +'<div class="grid4" style="margin-bottom:12px">'
+    +simpleMomCardHtml('Remaining ('+currentMonthKey+')','var(--red)',curConv.remaining,prevConv.remaining,prevMonthKey,prevHasData)
+    +'<div class="stat"><div class="stat-val">'+curConv.total+'</div><div class="stat-lbl">Total Hot ('+currentMonthKey+')</div></div>'
+    +'<div class="stat"><div class="stat-val" style="color:var(--grn)">'+curConv.moving+'</div><div class="stat-lbl">Moving ('+currentMonthKey+')</div></div>'
+    +'<div class="stat"><div class="stat-val" style="color:var(--blu)">'+curConv.actual+'%</div><div class="stat-lbl">Konversi Moving</div></div>'
+    +'</div>'
+    +'<div class="card"><div style="font-size:12px;font-weight:600;color:var(--tx2);margin-bottom:8px">Remaining per Hari — '+currentMonthKey+' (garis solid) vs '+prevMonthKey+' (garis putus-putus)</div>'
+    +renderDailyTrendSVG(curDaily,prevDaily,daysInPrevMonth,dayOfMonthLocked,'var(--red)')
+    +'</div>'
+    +'</div>';
+}
+
 // ── RENDER TAB ─────────────────────────────────────────────────────────────
 function renderTab(tab){
   if(tab!=='worksheet'){wsSelectedIds.clear();updateWsBulkBar();}
@@ -5091,6 +5145,7 @@ function renderTab(tab){
     case 'blast':renderBlast();break;
     case 'watchlist':renderWatchlist();break;
     case 'klopos':renderKlopos();break;
+    case 'churntrend':renderChurnTrend();break;
     case 'invoice':renderInvoiceTracker();break;
     case 'invsummary':renderInvoiceSummary();break;
     case 'konfigakun':renderKonfigurasiAkun();break;
