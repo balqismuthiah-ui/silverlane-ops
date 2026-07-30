@@ -2120,13 +2120,17 @@ var InvoiceTrackerStore={
   set:function(data,reassignments){localStorage.setItem(this.KEY,JSON.stringify({data:data,reassignments:reassignments||[],syncedAt:new Date().toISOString()}));},
   // CLM-10 §1b: optimistic local upsert-by-invCode abis submit tag/un-tag -- badge kepake instan,
   // sinkron beneran (dari sheet) nyusul lewat sync Invoice Tracker berikutnya (pola sama gcWatchlistData).
+  // 30 Jul: hapus entry lokal cuma kalau KETIGA field (reassignedAgent/isTcDeal/tcName) kosong --
+  // samain sama logic GAS (deleteRow cuma pas ketiga-tiganya kosong), biar local cache nggak ke-drop
+  // padahal server masih nyimpen baris (misal isTcDeal masih true, agent-nya doang yg di-untag).
   upsertReassignment:function(entry){
     var d=this.get();
     var i=d.reassignments.findIndex(function(r){return r.invCode===entry.invCode;});
-    if(entry.reassignedAgent){
+    var hasAnyValue=!!(entry.reassignedAgent||entry.isTcDeal||entry.tcName);
+    if(hasAnyValue){
       if(i>=0)d.reassignments[i]=entry;else d.reassignments.push(entry);
     }else if(i>=0){
-      d.reassignments.splice(i,1); // un-tag = hapus entry lokal juga (sama pola GAS deleteRow)
+      d.reassignments.splice(i,1); // ketiga field kosong = hapus entry lokal juga (sama pola GAS deleteRow)
     }
     localStorage.setItem(this.KEY,JSON.stringify(d));
   }
@@ -2378,6 +2382,8 @@ var invDay=''; // 'hari H' buat metrik #1 (dibuat) & #4 (terbayar) -- kosong = p
 // CLM-11 A4: filter Bulan + rentang tanggal -- ngontrol BARIS TABEL (invBasePool/invFilteredRows)
 // DOANG, terpisah total dari invDay (yang cuma ngontrol 2 metric card tanggal-spesifik di atas).
 var invBulanFilter=[],invStartDate='',invEndDate='';
+// 30 Jul: filter Deal TC (opsi 'yes'/'no') -- bonus dari brief flag Deal TC, pola sama filter lain di tab ini.
+var invTcFilter=[];
 // CLM-11 Fase G (Batch B): tab Invoice Summary — matrix agen×hari per status pembayaran.
 // invsumCat/invsumAgent = multi-select collapsible (reuse renderMultiSelect + G6). invsumMonth = 1
 // bulan (native select, default bulan berjalan). invsumMatrix = status aktif (pill). invsumUnit =
@@ -2582,19 +2588,28 @@ function openInvReassignModal(invCode){
     +'<p style="margin-bottom:12px">Outlet: '+row.outletName+' &nbsp;·&nbsp; Dibuat oleh: '+(row.creatorName||row.creatorEmail)+'</p>'
     +'<label>Deal ini sebenarnya kontribusi agen:</label>'
     +'<select id="invreassign-agent"><option value="">— Pilih Agen —</option>'+agentOpts+'</select>'
-    +(existing?'<p style="margin-top:10px;font-size:11px;color:var(--tx3)">Ditag oleh '+existing.taggedBy+' pada '+fmtDate(existing.taggedAt)+'. Pilih "— Pilih Agen —" lalu Simpan buat hapus tag.</p>':'');
+    // 30 Jul: Deal TC -- 2 field INDEPENDEN dari reassign agen di atas (brief 30 Jul). Checkbox +
+    // text bebas (TC_Name BUKAN dropdown/roster, leader ketik manual apa aja).
+    +'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--bdr)">'
+    +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="invreassign-tcdeal"'+(existing&&existing.isTcDeal?' checked':'')+'> Deal TC</label>'
+    +'<label style="margin-top:8px;display:block">Nama TC</label>'
+    +'<input type="text" id="invreassign-tcname" placeholder="Ketik nama TC bebas..." value="'+(existing&&existing.tcName?String(existing.tcName).replace(/"/g,'&quot;'):'')+'" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx)">'
+    +'</div>'
+    +(existing?'<p style="margin-top:10px;font-size:11px;color:var(--tx3)">Ditag oleh '+existing.taggedBy+' pada '+fmtDate(existing.taggedAt)+'. Kosongkan/uncheck field yang mau dihapus lalu Simpan.</p>':'');
   openModal('invreassign-modal');
 }
 function saveInvReassign(){
   if(!invReassignTargetInvCode)return;
   var agent=document.getElementById('invreassign-agent').value;
+  var isTcDeal=document.getElementById('invreassign-tcdeal').checked;
+  var tcName=document.getElementById('invreassign-tcname').value.trim();
   var btn=document.getElementById('invreassign-save-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Menyimpan...';}
-  _gasPost({action:'writeInvoiceReassignment',invCode:invReassignTargetInvCode,reassignedAgent:agent})
+  _gasPost({action:'writeInvoiceReassignment',invCode:invReassignTargetInvCode,reassignedAgent:agent,isTcDeal:isTcDeal,tcName:tcName})
     .then(function(json){
-      InvoiceTrackerStore.upsertReassignment({invCode:invReassignTargetInvCode,reassignedAgent:agent,taggedBy:Auth.getActive(),taggedAt:json.taggedAt||new Date().toISOString()});
+      InvoiceTrackerStore.upsertReassignment({invCode:invReassignTargetInvCode,reassignedAgent:agent,isTcDeal:isTcDeal,tcName:tcName,taggedBy:Auth.getActive(),taggedAt:json.taggedAt||new Date().toISOString()});
       closeModal('invreassign-modal');
-      toast(agent?'Invoice ditag ke '+agent:'Tag invoice dihapus');
+      toast(agent||isTcDeal||tcName?'Tag invoice tersimpan':'Tag invoice dihapus');
       renderTab(currentTab);
     }).catch(function(err){
       toast('Gagal simpan: '+err.message,5000);
@@ -3936,7 +3951,11 @@ function invEnrichedRows(){
       agentName: tag ? tag.reassignedAgent : baseAgent,
       reassigned: !!tag,
       reassignedBy: tag ? tag.taggedBy : null,
-      reassignedAt: tag ? tag.taggedAt : null
+      reassignedAt: tag ? tag.taggedAt : null,
+      // 30 Jul: Deal TC -- independen dari reassignedAgent (1 invoice bisa punya tag TC tanpa
+      // reassign agent, atau sebaliknya). Brief `brief_invoicetracker_flag_deal_tc_ke_rahul.md`.
+      isTcDeal: tag ? !!tag.isTcDeal : false,
+      tcName: tag ? (tag.tcName||'') : ''
     });
   });
 }
@@ -3969,6 +3988,8 @@ function invFilteredRows(enriched,me,isSup){
     if(invEndDate&&ds>invEndDate)return false;
     return true;
   });
+  // 30 Jul: filter Deal TC -- independen dari filter lain, dimensi sendiri (bonus, brief flag Deal TC).
+  if(invTcFilter.length)pool=pool.filter(function(r){return invTcFilter.indexOf(r.isTcDeal?'yes':'no')>=0;});
   if(!invSearch)return pool;
   var s=invSearch.toLowerCase();
   // 13 Jul: search box juga match creatorName (pembuat) -- biar bisa ketik nama buat cari cepet, bukan
@@ -3991,7 +4012,8 @@ function invRows(enriched,me,isSup){
   if(cnt)cnt.textContent=invCountText;
   // AC-A2: kolom Aksi (tombol Tag Ulang) SAMA SEKALI nggak dirender buat non-leader -- bukan cuma
   // disabled/CSS-hide (preseden bug panel bocor CLM-06, guard di titik generate HTML bukan tampilan).
-  var colspan=isSup?9:7;
+  // 30 Jul: +2 kolom Deal TC/Nama TC, leader-only (pola sama Agen/Aksi -- brief eksplisit "Leader view").
+  var colspan=isSup?11:7;
   if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada data</td></tr>';
   var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
   invPage=Math.min(invPage,totalPages-1);
@@ -4012,6 +4034,8 @@ function invRows(enriched,me,isSup){
       +'<td>'+invStatusBadge(r.statusDetail)+'</td>'
       +'<td>'+invPaymentBadge(r.paymentStatus)+'</td>'
       +'<td>'+fmtRpShort(r.total)+'</td>'
+      +(isSup?'<td>'+(r.isTcDeal?'<span class="badge badge-blu">✓ TC</span>':'')+'</td>':'')
+      +(isSup?'<td>'+(r.tcName||'')+'</td>':'')
       +(isSup?'<td>'+(canReassign?'<button class="action-btn ab-edit" data-act="reassign-invoice" data-id="'+r.invCode+'">'+(r.reassigned?'Edit Tag':'Tag Ulang')+'</button>':'')+'</td>':'')
       +'</tr>';
   }).join('')+pagerRow(colspan,invPage,totalPages,recs.length,'inv-prev-btn','inv-next-btn');
@@ -4060,6 +4084,8 @@ function renderInvoiceTracker(){
   // CLM-11 A4: filter Bulan (by createdDate) -- opsi diambil dari MONTH_KEYS statis (bukan cohortMonths
   // records KLOPOS, ini dataset Invoice Tracker terpisah), + filter Start/End Date custom range.
   var bulanFilterHtml=renderMultiSelect('invBulanFilter','Bulan (Dibuat)',MONTH_KEYS.map(function(m){return{value:m,label:m+' 26'};}),invBulanFilter);
+  // 30 Jul: filter Deal TC -- leader-only (kolomnya sendiri juga leader-only).
+  var tcFilterHtml=isSup?renderMultiSelect('invTcFilter','Deal TC',[{value:'yes',label:'Ya'},{value:'no',label:'Tidak'}],invTcFilter):'';
 
   var enriched=invEnrichedRows(); // 1x per render pass, dipakai bareng buat metrik + tabel (dulu 2x)
   var pool=invFilteredRows(enriched,me,isSup);
@@ -4081,6 +4107,7 @@ function renderInvoiceTracker(){
     +(agentFilterHtml||'')
     +(creatorFilterHtml||'')
     +bulanFilterHtml
+    +(tcFilterHtml||'')
     // CLM-11 A4: rentang tanggal custom -- filter BARIS TABEL doang, terpisah dari date-picker
     // "Tanggal" di atas (invDay, cuma ngontrol 2 metric card, TIDAK nyentuh baris tabel).
     +'<label style="font-size:11px;font-weight:600;color:var(--tx3);align-self:center">Rentang:</label>'
@@ -4090,7 +4117,7 @@ function renderInvoiceTracker(){
     +'<span id="inv-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+invCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr><th>No. Invoice</th><th>Nama Outlet</th>'+(isSup?'<th>Agen</th>':'')+'<th>Dibuat</th><th>Dibayar</th><th>Status Invoice</th><th>Status Pembayaran</th><th>Total</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
+    +'<thead><tr><th>No. Invoice</th><th>Nama Outlet</th>'+(isSup?'<th>Agen</th>':'')+'<th>Dibuat</th><th>Dibayar</th><th>Status Invoice</th><th>Status Pembayaran</th><th>Total</th>'+(isSup?'<th>Deal TC</th><th>Nama TC</th><th>Aksi</th>':'')+'</tr></thead>'
     +'<tbody id="inv-tbody">'+invRowsHtml+'</tbody></table></div></div>';
 }
 
@@ -6993,7 +7020,7 @@ var MSEL_REFRESH={
   mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
-  invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,
+  invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,invTcFilter:refreshInvoiceBody,
   blastAgentFilter:function(){blastPage=0;refreshBlastBody();},
   blastTerminFilter:function(){blastPage=0;refreshBlastBody();},
   blastExpMonthFilter:function(){blastPage=0;refreshBlastBody();},
