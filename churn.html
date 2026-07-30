@@ -5680,7 +5680,32 @@ function openCsvModal(){
   updateSplitInfo();
   var _pf=document.getElementById('csv-perfile');if(_pf)_pf.addEventListener('input',updateSplitInfo);
 
-  document.getElementById('csv-download-btn').onclick=function(){
+  // CLM-13 v56b: cek server-side (checkBlasted) SEBELUM generate CSV -- mutual-backup buat kasus
+  // jarang (2 agen/leader nembak nomor sama tanpa sadar), BUKAN pengganti proteksi BROADCASTLOG
+  // (badge/filter "Sudah pernah diblast" existing tetep jalan apa adanya). Fail-open: checkBlasted
+  // gagal (network/timeout) JANGAN block download -- ini backup, bukan gate keras.
+  var _downloadBtn=document.getElementById('csv-download-btn');
+  var candidatePhones=Array.from(new Set(filteredRows.map(function(row){return normPhone(row.phone);}).filter(Boolean)));
+  _downloadBtn.onclick=function(){
+    function runCheckThenDownload(){
+      if(!candidatePhones.length){doDownload();return;}
+      _downloadBtn.disabled=true;
+      _gasPost({action:'checkBlasted',numbers:candidatePhones}).then(function(res){
+        _downloadBtn.disabled=false;
+        var already=(res&&res.alreadyBlasted)||[];
+        if(already.length){
+          var ok=confirm(already.length+' dari '+candidatePhones.length+' nomor ini kemungkinan udah pernah di-blast dalam 2 minggu terakhir (batch lain/agen lain). Tetap lanjut download?');
+          if(!ok){toast('Download dibatalkan');return;}
+        }
+        doDownload();
+      }).catch(function(){
+        _downloadBtn.disabled=false;
+        doDownload(); // fail-open
+      });
+    }
+    runCheckThenDownload();
+  };
+  function doDownload(){
     // Format LOCKED (Ubay): name | e-mail | phone_number | 1 | 2 | ... | N -- kolom variabel = ANGKA sesuai urutan template, bukan label
     var headers=['name','e-mail','phone_number'].concat((tpl.variableMap||[]).map(function(vm){return String(vm.varNum);}));
     var headerLine=headers.map(cleanCsvField).join(',');
@@ -5735,7 +5760,9 @@ function openCsvModal(){
         if(Auth.isSuperior()&&realRows.length){
           var _scope=blastExpMonthFilter.length?blastExpMonthFilter.join('/'):(syncMonthFilter||'');
           var _lbl=(tpl.name||'blast')+'_'+dateStr+(_scope?(' ['+_scope+']'):'');
-          _gasPost({action:'saveBlastBatch',batch:{label:_lbl,template:tpl.name||'',monthScope:_scope,count:realRows.length,fileCount:totalFiles}})
+          // v56b: kirim juga nomor yg beneran ke-generate di batch ini -- GAS nyatet ke tab
+          // BLASTED_NUMBERS (dalam lock yang sama kayak metadata), dipake checkBlasted berikutnya.
+          _gasPost({action:'saveBlastBatch',batch:{label:_lbl,template:tpl.name||'',monthScope:_scope,count:realRows.length,fileCount:totalFiles},numbers:candidatePhones})
             .then(function(){if(typeof syncBlastBatchesFromServer==='function')syncBlastBatchesFromServer();}).catch(function(){});
         }
         return;
@@ -5748,7 +5775,7 @@ function openCsvModal(){
       setTimeout(dlNext,400);
     }
     dlNext();
-  };
+  }
   openModal('csv-modal');
 }
 
