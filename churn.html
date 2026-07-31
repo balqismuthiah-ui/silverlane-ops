@@ -2581,13 +2581,18 @@ function openInvReassignModal(invCode){
   if(!row)return;
   invReassignTargetInvCode=invCode;
   var existing=(d.reassignments||[]).find(function(r){return r.invCode===invCode;});
+  // AC-D1: reassign agen TETAP cuma buat invoice PAID buatan leader (anti-gaming achievement, invariant
+  // lama nggak berubah) -- Deal TC (di bawah) SEKARANG bebas dari batasan ini (klarifikasi operator 31
+  // Jul). Dicek DI SINI (dalam modal), bukan di titik render tombol lagi.
+  var canReassignAgent=row.paymentStatus==='PAID'&&invIsLeaderCreated(row);
   var agentOpts=AgentsConfig.getAll().filter(function(a){return a.role==='agent';})
     .map(function(a){return'<option value="'+a.name+'"'+(existing&&existing.reassignedAgent===a.name?' selected':'')+'>'+a.name+'</option>';}).join('');
   document.getElementById('invreassign-body').innerHTML=
     '<p style="margin-bottom:8px">Invoice: <strong>'+row.invCode+'</strong></p>'
     +'<p style="margin-bottom:12px">Outlet: '+row.outletName+' &nbsp;·&nbsp; Dibuat oleh: '+(row.creatorName||row.creatorEmail)+'</p>'
     +'<label>Deal ini sebenarnya kontribusi agen:</label>'
-    +'<select id="invreassign-agent"><option value="">— Pilih Agen —</option>'+agentOpts+'</select>'
+    +'<select id="invreassign-agent"'+(canReassignAgent?'':' disabled')+'><option value="">— Pilih Agen —</option>'+agentOpts+'</select>'
+    +(canReassignAgent?'':'<p style="margin-top:4px;font-size:11px;color:var(--tx3)">Reassign agen cuma bisa buat invoice PAID yang dibuat leader. Invoice ini nggak eligible — Deal TC di bawah tetap bisa diisi.</p>')
     // 30 Jul: Deal TC -- 2 field INDEPENDEN dari reassign agen di atas (brief 30 Jul). Checkbox +
     // text bebas (TC_Name BUKAN dropdown/roster, leader ketik manual apa aja).
     +'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--bdr)">'
@@ -4022,9 +4027,12 @@ function invRows(enriched,me,isSup){
     var agentCell=r.agentName
       ?(r.agentName+(r.reassigned?' <span class="badge badge-blu" style="font-size:9px" title="Ditag ulang oleh '+(r.reassignedBy||'?')+'">🏷️ ditag ulang</span>':''))
       :'<span style="color:var(--tx3)">— (belum teridentifikasi)</span>';
-    // AC-D1: tombol Tag Ulang CUMA muncul buat invoice buatan LEADER (bukan sales/CC/TC lain) yg
-    // udah PAID (AC-A1) -- itu satu-satunya kandidat yg genuinely butuh di-tag.
-    var canReassign=isSup&&r.paymentStatus==='PAID'&&invIsLeaderCreated(r);
+    // AC-D1 (agen): reassign agen TETAP cuma buat invoice buatan LEADER yg udah PAID (AC-A1) -- itu
+    // dicek di DALAM modal (openInvReassignModal), bukan di sini lagi. 31 Jul (klarifikasi operator):
+    // tombol "Tag Ulang" sendiri sekarang muncul buat SEMUA invoice (leader view) -- Deal TC boleh
+    // ditag ke invoice manapun (creator/status apapun), nol gate. Dalam modal, dropdown reassign agen
+    // otomatis disabled kalau invoice ini nggak eligible (bukan PAID/bukan buatan leader), TC section
+    // tetap selalu aktif.
     return'<tr>'
       +'<td>'+r.invCode+'</td>'
       +'<td>'+r.outletName+'</td>'
@@ -4036,7 +4044,7 @@ function invRows(enriched,me,isSup){
       +'<td>'+fmtRpShort(r.total)+'</td>'
       +(isSup?'<td>'+(r.isTcDeal?'<span class="badge badge-blu">✓ TC</span>':'')+'</td>':'')
       +(isSup?'<td>'+(r.tcName||'')+'</td>':'')
-      +(isSup?'<td>'+(canReassign?'<button class="action-btn ab-edit" data-act="reassign-invoice" data-id="'+r.invCode+'">'+(r.reassigned?'Edit Tag':'Tag Ulang')+'</button>':'')+'</td>':'')
+      +(isSup?'<td><button class="action-btn ab-edit" data-act="reassign-invoice" data-id="'+r.invCode+'">'+(r.reassigned?'Edit Tag':'Tag Ulang')+'</button></td>':'')
       +'</tr>';
   }).join('')+pagerRow(colspan,invPage,totalPages,recs.length,'inv-prev-btn','inv-next-btn');
 }
