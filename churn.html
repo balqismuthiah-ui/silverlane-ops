@@ -5145,6 +5145,25 @@ function renderChurnTrend(){
   var curDaily=kloposBucket(curSubset,currentMonthKey,daysInMonth,'remaining').daily;
   var prevDaily=kloposBucket(prevSubset,prevMonthKey,daysInPrevMonth,'remaining').daily;
 
+  // 31 Jul (follow-up operator): breakdown "kenapa remaining" per 5-kategori -- reuse rawUserCat/
+  // KLOPOS_CAT_DEFS, pola PERSIS drill-down KLOPOS Daily (termasuk Force Activation pakai populasi
+  // PRE-exclude buat visibilitas operasional, keputusan Ubay 25 Jul yang sama, lihat computeKloposSection).
+  // Nol drill-down ke daftar OUTLET (masih sesuai brief) -- ini cuma breakdown angka per-kategori.
+  var curSubsetPreForce=convBaseFilter(kloposScope(myRecs,currentMonthKey,null),'Hot',false);
+  var catBreakdown=KLOPOS_CAT_DEFS.map(function(cat){
+    var srcSubset=cat.key==='force'?curSubsetPreForce:curSubset;
+    var catSubset=srcSubset.filter(function(r){return rawUserCat(r)===cat.key;});
+    var catConv=computeMovingConversion(catSubset,currentMonthKey);
+    return{label:cat.label,total:catConv.total,moving:catConv.moving,remaining:catConv.remaining};
+  });
+  // Nol kolom "% dari Remaining" -- Force Activation SENGAJA pakai populasi beda (pre-exclude, lihat
+  // catatan di atas), jadi bukan bagian denominator yang sama kayak 4 kategori lain (%-nya bisa
+  // >100% kalau dipaksa dijumlah). Angka mentah doang, sama kayak tabel KLOPOS Daily aslinya.
+  var catRowsHtml=catBreakdown.map(function(c){
+    return'<tr><td>'+c.label+'</td><td style="text-align:right">'+c.total+'</td><td style="text-align:right;color:var(--grn)">'+c.moving+'</td>'
+      +'<td style="text-align:right;color:var(--red);font-weight:600">'+c.remaining+'</td></tr>';
+  }).join('');
+
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📈 Churn Trend <span style="font-size:10px;color:var(--tx3);font-weight:400">Remaining leads (Hot) — basis sama kayak card Konversi Renewal, dikunci s.d. kemarin (H-1)</span></div>'
     +'<div class="grid4" style="margin-bottom:12px">'
@@ -5156,6 +5175,9 @@ function renderChurnTrend(){
     +'<div class="card"><div style="font-size:12px;font-weight:600;color:var(--tx2);margin-bottom:8px">Remaining per Hari — '+currentMonthKey+' (garis solid) vs '+prevMonthKey+' (garis putus-putus)</div>'
     +renderDailyTrendSVG(curDaily,prevDaily,daysInPrevMonth,dayOfMonthLocked,'var(--red)')
     +'</div>'
+    +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Breakdown Remaining per Kategori ('+currentMonthKey+') <span style="font-size:10px;color:var(--tx3);font-weight:400">— kenapa lead ini masih remaining, sama kategori kayak KLOPOS Daily</span></div>'
+    +'<div class="tbl-wrap"><table><thead><tr><th>Kategori</th><th style="text-align:right">Total</th><th style="text-align:right">Moving</th><th style="text-align:right">Remaining</th></tr></thead>'
+    +'<tbody>'+catRowsHtml+'</tbody></table></div></div>'
     +'</div>';
 }
 
