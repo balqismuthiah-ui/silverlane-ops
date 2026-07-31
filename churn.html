@@ -2838,6 +2838,21 @@ function funnelCardHtml(label,val,color,nowB,prevB,key,prevMonthKey){
     +'</div>';
 }
 
+// Kategori+Detail respons (Response Update taksonomi, RESP_CATS) -> hitungan, key = outcome||category - detail.
+// Dipake bareng card "Detail Renewal"/"Detail Tidak Renewal" (renderOverview) DAN breakdown Churn
+// Reason di tab Churn Trend (renderChurnTrend) -- satu sumber, jangan reimplement loop yg sama 2x.
+function buildCatDetailMap(recs){
+  var map={};
+  recs.forEach(function(r){
+    if(r.response&&r.response.category&&r.response.detail){
+      var oc=respOutcome(r.response);
+      var k=oc+'||'+r.response.category+' - '+r.response.detail;
+      map[k]=(map[k]||0)+1;
+    }
+  });
+  return map;
+}
+
 // ── TAB: OVERVIEW ──────────────────────────────────────────────────────────
 function renderOverview(){
   var d=Store.get();
@@ -3009,24 +3024,10 @@ function renderOverview(){
   var appsPct=Math.min(REVIEW_TARGET_APPS?Math.round(appsAch/REVIEW_TARGET_APPS*100):0,100);
 
   // ── Detail breakdown (from myRecs) ────────────────────────────────────
-  var catDetailMap={};
-  myRecs.forEach(function(r){
-    if(r.response&&r.response.category&&r.response.detail){
-      var oc=respOutcome(r.response);
-      var k=oc+'||'+r.response.category+' - '+r.response.detail;
-      catDetailMap[k]=(catDetailMap[k]||0)+1;
-    }
-  });
+  var catDetailMap=buildCatDetailMap(myRecs);
   // 30 Jul: versi month-scoped, khusus card TIM (lihat catatan totalMov/renewalMov di atas) -- var
   // catDetailMap di atas TETAP dipakai apa adanya buat card "Konversi Saya" personal.
-  var catDetailMapMov={};
-  convMovRecs.forEach(function(r){
-    if(r.response&&r.response.category&&r.response.detail){
-      var oc=respOutcome(r.response);
-      var k=oc+'||'+r.response.category+' - '+r.response.detail;
-      catDetailMapMov[k]=(catDetailMapMov[k]||0)+1;
-    }
-  });
+  var catDetailMapMov=buildCatDetailMap(convMovRecs);
   function buildDetailList(outcome,clr,map){
     var m=map||catDetailMap;
     var dets=Object.keys(m).filter(function(k){return k.startsWith(outcome+'||');});
@@ -5172,6 +5173,32 @@ function renderChurnTrend(){
       +'<td style="text-align:right;color:var(--red);font-weight:600">'+c.remaining+'</td></tr>';
   }).join('');
 
+  // 31 Jul (follow-up operator, klarifikasi kedua): "Churn Reason" -- PERSIS taksonomi "Detail Tidak
+  // Renewal" yang udah ada di card Konversi Renewal (buildCatDetailMap, outcome 'churn' = RESPON
+  // NEGATIF), reuse fungsi shared BARU (nol reimplement loop) -- BUKAN pengganti breakdown 5-kategori
+  // di atas (beda tujuan: itu buat "user asli vs exclude", ini buat "kenapa nolak/churn"). Populasi
+  // SAMA persis "Detail Tidak Renewal": myRecs scoped cohort-bulan, TANPA filter HWCZ (bukan Hot doang).
+  // Ditampilin MoM (current vs bulan lalu) biar operator bisa liat trend alasan churn naik/turun.
+  var curMovRecsAll=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
+  var prevMovRecsAll=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(prevMonthKey)>=0;});
+  var curChurnMap=buildCatDetailMap(curMovRecsAll);
+  var prevChurnMap=buildCatDetailMap(prevMovRecsAll);
+  var churnKeys={};
+  Object.keys(curChurnMap).forEach(function(k){if(k.indexOf('churn||')===0)churnKeys[k.slice(7)]=true;});
+  Object.keys(prevChurnMap).forEach(function(k){if(k.indexOf('churn||')===0)churnKeys[k.slice(7)]=true;});
+  var churnReasonRows=Object.keys(churnKeys).map(function(det){
+    var curN=curChurnMap['churn||'+det]||0,prevN=prevChurnMap['churn||'+det]||0;
+    return{det:det,cur:curN,prev:prevN,delta:curN-prevN};
+  }).sort(function(a,b){return b.cur-a.cur;});
+  var churnReasonRowsHtml=churnReasonRows.length
+    ?churnReasonRows.map(function(c){
+      var arrow=c.delta>0?'▲':(c.delta<0?'▼':'—');
+      var clr=c.delta>0?'var(--red)':(c.delta<0?'var(--grn)':'var(--tx3)'); // naik alasan churn = merah (buruk)
+      return'<tr><td>'+c.det+'</td><td style="text-align:right;font-weight:600">'+c.cur+'</td><td style="text-align:right;color:var(--tx3)">'+c.prev+'</td>'
+        +'<td style="text-align:right;color:'+clr+'">'+arrow+' '+(c.delta>0?'+':'')+c.delta+'</td></tr>';
+    }).join('')
+    :'<tr><td colspan="4" style="text-align:center;color:var(--tx3);padding:12px">Belum ada data RESPON NEGATIF bulan ini/bulan lalu</td></tr>';
+
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📈 Churn Trend <span style="font-size:10px;color:var(--tx3);font-weight:400">Remaining leads (Hot) — basis sama kayak card Konversi Renewal, dikunci s.d. kemarin (H-1)</span></div>'
     +'<div class="grid4" style="margin-bottom:12px">'
@@ -5186,6 +5213,9 @@ function renderChurnTrend(){
     +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Breakdown Remaining per Kategori ('+currentMonthKey+') <span style="font-size:10px;color:var(--tx3);font-weight:400">— kenapa lead ini masih remaining, sama kategori kayak KLOPOS Daily</span></div>'
     +'<div class="tbl-wrap"><table><thead><tr><th>Kategori</th><th style="text-align:right">Total</th><th style="text-align:right">Moving</th><th style="text-align:right">Remaining</th></tr></thead>'
     +'<tbody>'+catRowsHtml+'</tbody></table></div></div>'
+    +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Churn Reason (RESPON NEGATIF) — MoM <span style="font-size:10px;color:var(--tx3);font-weight:400">— sama taksonomi "Detail Tidak Renewal" di card Konversi Renewal, '+currentMonthKey+' vs '+prevMonthKey+'</span></div>'
+    +'<div class="tbl-wrap"><table><thead><tr><th>Alasan</th><th style="text-align:right">'+currentMonthKey+'</th><th style="text-align:right">'+prevMonthKey+'</th><th style="text-align:right">Delta MoM</th></tr></thead>'
+    +'<tbody>'+churnReasonRowsHtml+'</tbody></table></div></div>'
     +'</div>';
 }
 
