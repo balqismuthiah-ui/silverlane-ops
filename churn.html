@@ -287,6 +287,7 @@ tr:hover td{background:var(--sur2)}
     <button class="ntab" data-tab="churntrend">📈 Churn Trend</button>
     <button class="ntab" data-tab="invoice">🧾 Invoice Tracker</button>
     <button class="ntab" data-tab="invsummary">📆 Invoice Summary</button>
+    <button class="ntab" data-tab="targetsmanage">🎯 Kelola Target</button>
     <button class="ntab" data-tab="konfigakun">⚙️ Konfigurasi Akun</button>
   </div>
 
@@ -2228,7 +2229,9 @@ function reorderTarget(id,dir){
   Targets.save(all);
   // Push cuma yg sortOrder-nya beneran berubah (hemat call GAS) -- objek group[i] identik, before[i] valid.
   group.forEach(function(g,i){if(before[i]!==g.sortOrder){_gasPost({action:'upsertTarget',target:g}).catch(function(){});}});
-  renderTab('overview');
+  // 1 Agu: renderTab(currentTab) bukan hardcode 'overview' -- reorder target sekarang bisa dipicu
+  // dari tab "Kelola Target" juga (dulu cuma dari Overview).
+  renderTab(currentTab);
 }
 
 // ── TEMPLATES STORE ────────────────────────────────────────────────────────
@@ -3256,61 +3259,10 @@ function renderOverview(){
     }).join('');
     configurableTargetSection='<div class="ov-section"><div class="ov-section-title">🎯 Progres vs Target ('+currentMonthKey+' 26)</div><div class="grid4">'+progCards+'</div></div>';
   }
-  // Panel kelola target (Sekar only) — semua target semua periode, CRUD
-  if(isSup){
-    // CLM-11 Fase G1: urut per (periode, sortOrder) biar row 1-bulan kontigu -> ▲/▼ swap tetangga
-    // yg keliatan sebelahan. First/last per grup periode buat disable tombol di ujung.
-    var sortedMgmt=allTargetsNow.slice().sort(targetSortCmp);
-    var mgmtRows=sortedMgmt.map(function(t,mi){
-      var isFirstInPeriod=(mi===0)||(sortedMgmt[mi-1].period!==t.period);
-      var isLastInPeriod=(mi===sortedMgmt.length-1)||(sortedMgmt[mi+1].period!==t.period);
-      var meta=targetMetricMeta(t.metricKey);
-      var scopeLabel=t.scope==='personal'?'Personal':'Team';
-      var targetDisp,actualDisp;
-      if(t.metricKey==='upsell_revenue_tier'){
-        // CLM-11 Fase F2: 4-tier warna itu GATE per-agen (diskrit, bukan angka additive/rata2) -- "total
-        // tim"/"rata2 tim" nggak masuk akal buat ini (nyampur 8 warna beda jadi 1 angka = misleading).
-        // Tampilin ringkasan tier threshold-nya di kolom Target, arahin ke kartu di atas buat Aktual.
-        targetDisp='T1:'+fmtMetricVal(t.tier1||0,'Rp')+' T2:'+fmtMetricVal(t.tier2||0,'Rp')+' T3:'+fmtMetricVal(t.tier3||0,'Rp');
-        actualDisp='lihat kartu per-agen di atas';
-      }else if(t.metricKey==='mrr_per_paket'){
-        // CLM-11 Fase F: 5 nilai terpisah per-paket, bukan 1 angka -- sama alasan tier di atas, jangan
-        // digabung jadi 1 total yg nyampur beda paket (misleading).
-        var resMrrRow=computeTargetActual(t,recs);
-        targetDisp=MRR_PAKET_TIERS.map(function(tn){return tn.split(' ')[0]+':'+fmtMetricVal(resMrrRow.targets[tn]||0,'Rp');}).join(' · ');
-        actualDisp='lihat kartu di atas';
-      }else if(t.scope==='personal'){
-        var unitP=computeTargetActual(t,recs,AGENTS[0]).unit;
-        targetDisp='default '+fmtMetricVal(t.targetValue,unitP);
-        var isNonAdditive=unitP==='%'||NON_ADDITIVE_METRICS.indexOf(t.metricKey)>=0;
-        var totalActual=AGENTS.reduce(function(s,ag){return s+computeTargetActual(t,recs,ag).actual;},0);
-        actualDisp=isNonAdditive?'rata2 tim':(fmtMetricVal(totalActual,unitP)+' (total tim)');
-      }else{
-        var resT=computeTargetActual(t,recs);
-        targetDisp=fmtMetricVal(t.targetValue,resT.unit);
-        // CLM-11 Fase C: tampilin tier Improved di tabel kelola kalau diisi, biar Sekar bisa cek sekilas
-        // tanpa buka modal edit tiap kali.
-        if(resT.effectiveTargetImproved!=null)targetDisp+=' <span style="color:var(--tx3)">/ Improved '+fmtMetricVal(resT.effectiveTargetImproved,resT.unit)+'</span>';
-        actualDisp=fmtMetricVal(resT.actual,resT.unit);
-      }
-      return'<tr><td>'+meta.label+'</td><td>'+(meta.family==='activity'?'Activity':'Outcome')+'</td><td>'+scopeLabel+'</td><td>'+t.period+' 26</td>'
-        +'<td>'+targetDisp+'</td>'
-        +'<td>'+actualDisp+'</td>'
-        +'<td>'+(t.visibleToAgent?'✓':'—')+'</td>'
-        +'<td><div class="row-tools">'
-        +'<button class="action-btn ab-view" data-act="target-up" data-id="'+t.id+'" title="Naikkan urutan"'+(isFirstInPeriod?' disabled style="opacity:.3;cursor:default"':'')+'>▲</button>'
-        +'<button class="action-btn ab-view" data-act="target-down" data-id="'+t.id+'" title="Turunkan urutan"'+(isLastInPeriod?' disabled style="opacity:.3;cursor:default"':'')+'>▼</button>'
-        +'<button class="action-btn ab-edit" data-act="edit-target" data-id="'+t.id+'">✏</button>'
-        +'<button class="action-btn ab-wl" data-act="del-target" data-id="'+t.id+'">✕</button>'
-        +'</div></td></tr>';
-    }).join('');
-    configurableTargetSection+='<div class="ov-section"><div class="ov-section-title">⚙️ Kelola Target Configurable</div>'
-      +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
-      +'<thead><tr><th>Metrik</th><th>Keluarga</th><th>Scope</th><th>Periode</th><th>Target</th><th>Aktual</th><th>Tampil Agen</th><th></th></tr></thead>'
-      +'<tbody>'+(mgmtRows||'<tr><td colspan="8" class="empty">Belum ada target</td></tr>')+'</tbody></table></div>'
-      +'<button class="btn btn-pri" id="add-target-btn" style="margin-top:8px;font-size:12px;padding:5px 10px">+ Tambah Target</button>'
-      +'</div></div>';
-  }
+  // 1 Agu (operator): panel "Kelola Target Configurable" (CRUD semua periode) PINDAH ke tab sendiri
+  // ("🎯 Kelola Target") -- dulu numpuk di sini, ngedorong Daily View/MTD/Ringkasan ke bawah pas
+  // daftar target makin panjang (nambah bulan baru). Lihat renderTargetsManage(). Card "Progres vs
+  // Target" (read-only, di atas) TETAP di Overview -- itu yang operator minta dibiarin.
 
   // CLM-11 Fase C: Daily view -- dashboard-native (BUKAN matrix 31-kolom Excel), trend chart bulan-ini
   // (solid, cuma sampai hari ini) vs bulan-lalu (putus-putus, penuh) per bucket roster-team,
@@ -3320,6 +3272,89 @@ function renderOverview(){
   // bawah grafik (yg sekarang dapet 3 kolom count+attach tambahan), tabel "Jenis Add-On" pindah ke
   // bawahnya ngikutin dropdown tim yg sama. computeUpsellTeamView/UPSELL_TEAM_VIEWS TETAP dipakai
   // kartu "Upselling (Nasional CLM+CC)" -- cuma section render-nya yg dilebur.
+  // 1 Agu (operator): "Summary Renewal Invoice" (+ kontribusi Deal TC) -- section baru, ditempel di
+  // bawah Daily View (pola sama Jenis Add-On) TAPI beda sumber data: InvoiceTrackerStore/
+  // invEnrichedRows() (Invoice Tracker), BUKAN UpsellTeamStore (RENEWAL & UPSELL 2026). Funnel status
+  // Expired/Active/Paid + breakdown per-agen (8 agen CLM) + breakdown per-TC (informational, BUKAN
+  // target -- operator eksplisit "cuma mau liat kontribusinya aja"). Aug vs Jul, H-1 lock (dayCap
+  // cuma diterapin ke bulan berjalan, bulan lalu udah kelar penuh -- pola sama MTD per-agen).
+  var invAllRowsForSummary=invEnrichedRows();
+  function invRenewalMonthRows(monthKey,dayCap){
+    var yr=String(new Date().getFullYear());
+    return invAllRowsForSummary.filter(function(r){
+      if(invsumCatOf(r.invCode)!=='RNW')return false; // scope "Renewal" doang, sesuai request operator
+      var ds=localDateStr(r.createdDate);
+      if(!ds)return false;
+      var mi=parseInt(ds.slice(5,7),10)-1;
+      if(MONTH_KEYS[mi]!==monthKey||ds.slice(0,4)!==yr)return false;
+      if(dayCap!=null&&parseInt(ds.slice(8,10),10)>dayCap)return false;
+      return true;
+    });
+  }
+  // Void/Rejected exclude eksplisit -- sama pola "Potensi" (bukan case beneran, jangan ikut funnel).
+  function invIsVoidOrRejected(r){
+    return r.paymentStatus==='REJECTED-PAYMENT'||r.paymentStatus==='VOID-PAYMENT'||r.statusDetail==='VOID-INVOICE';
+  }
+  function invFunnelStatus(r){
+    if(r.paymentStatus==='PAID')return'paid';
+    if(r.statusDetail==='EXPIRED-INVOICE')return'expired';
+    return'active'; // APPROVED-INVOICE/APPROVED-PROFORMA/VALIDATED-INVOICE/REQUESTED-PAYMENT-belum-PAID
+  }
+  function computeInvFunnel(rows){
+    var out={total:0,revenue:0,paid:0,paidRev:0,active:0,activeRev:0,expired:0,expiredRev:0};
+    rows.forEach(function(r){
+      if(invIsVoidOrRejected(r))return;
+      out.total++;out.revenue+=(r.subsOnly||0);
+      var st=invFunnelStatus(r);
+      out[st]++;out[st+'Rev']+=(r.subsOnly||0);
+    });
+    return out;
+  }
+  var invRenCurRows=invRenewalMonthRows(currentMonthKey,dayOfMonthLocked);
+  var invRenPrevRows=invRenewalMonthRows(prevMonthKey,null); // bulan lalu udah kelar, nol cap
+  var invRenCurFunnel=computeInvFunnel(invRenCurRows);
+  var invRenPrevFunnel=computeInvFunnel(invRenPrevRows);
+  var invRenAgentRowsHtml=AGENTS.map(function(ag){
+    var f=computeInvFunnel(invRenCurRows.filter(function(r){return r.agentName===ag;}));
+    return'<tr><td>'+ag+'</td><td style="text-align:right">'+f.total+'</td><td style="text-align:right">'+fmtRpFull(f.revenue)+'</td>'
+      +'<td style="text-align:right;color:var(--yel)">'+f.active+'</td><td style="text-align:right;color:var(--grn)">'+f.paid+'</td><td style="text-align:right;color:var(--red)">'+f.expired+'</td></tr>';
+  }).join('');
+  var invTcAgg={};
+  invRenCurRows.forEach(function(r){
+    if(invIsVoidOrRejected(r)||!r.isTcDeal||!r.tcName)return;
+    var k=r.tcName;
+    if(!invTcAgg[k])invTcAgg[k]={count:0,revenue:0};
+    invTcAgg[k].count++;invTcAgg[k].revenue+=(r.subsOnly||0);
+  });
+  var invTcRowsHtml=Object.keys(invTcAgg).sort(function(a,b){return invTcAgg[b].revenue-invTcAgg[a].revenue;}).map(function(tc){
+    return'<tr><td>'+tc+'</td><td style="text-align:right">'+invTcAgg[tc].count+'</td><td style="text-align:right">'+fmtRpFull(invTcAgg[tc].revenue)+'</td></tr>';
+  }).join('');
+  var invRenewalSummaryHtml=
+    '<div class="ov-section-title" style="margin-top:12px">📋 Summary Renewal Invoice ('+currentMonthKey+' 26 vs '+prevMonthKey+' 26) <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1) — dari Invoice Tracker</span></div>'
+    +'<div class="grid4" style="margin-bottom:8px">'
+    +'<div class="stat"><div class="stat-val">'+invRenCurFunnel.total+'</div><div class="stat-lbl">Total Invoice ('+currentMonthKey+')</div></div>'
+    +'<div class="stat"><div class="stat-val">'+fmtRpFull(invRenCurFunnel.revenue)+'</div><div class="stat-lbl">Revenue ('+currentMonthKey+')</div></div>'
+    +'<div class="stat"><div class="stat-val" style="color:var(--grn)">'+invRenCurFunnel.paid+'</div><div class="stat-lbl">Paid</div></div>'
+    +'<div class="stat"><div class="stat-val" style="color:var(--yel)">'+invRenCurFunnel.active+'</div><div class="stat-lbl">Active (belum bayar)</div></div>'
+    +'</div>'
+    +'<div class="card" style="padding:0;margin-bottom:8px"><div class="tbl-wrap"><table class="summary-tbl">'
+    +'<thead><tr><th></th><th style="text-align:right">'+prevMonthKey+' 26</th><th style="text-align:right">'+currentMonthKey+' 26</th></tr></thead>'
+    +'<tbody>'
+    +'<tr><td>Total Invoice</td><td style="text-align:right">'+invRenPrevFunnel.total+'</td><td style="text-align:right">'+invRenCurFunnel.total+'</td></tr>'
+    +'<tr><td>Revenue</td><td style="text-align:right">'+fmtRpFull(invRenPrevFunnel.revenue)+'</td><td style="text-align:right">'+fmtRpFull(invRenCurFunnel.revenue)+'</td></tr>'
+    +'<tr><td>Paid</td><td style="text-align:right">'+invRenPrevFunnel.paid+'</td><td style="text-align:right">'+invRenCurFunnel.paid+'</td></tr>'
+    +'<tr><td>Active (belum bayar)</td><td style="text-align:right">'+invRenPrevFunnel.active+'</td><td style="text-align:right">'+invRenCurFunnel.active+'</td></tr>'
+    +'<tr><td>Expired</td><td style="text-align:right">'+invRenPrevFunnel.expired+'</td><td style="text-align:right">'+invRenCurFunnel.expired+'</td></tr>'
+    +'</tbody></table></div></div>'
+    +'<div style="font-size:11px;font-weight:600;color:var(--tx2);margin:8px 0 4px">Per Agen ('+currentMonthKey+' 26)</div>'
+    +'<div class="card" style="padding:0;margin-bottom:8px"><div class="tbl-wrap"><table class="summary-tbl">'
+    +'<thead><tr><th>Agen</th><th style="text-align:right">Total</th><th style="text-align:right">Revenue</th><th style="text-align:right">Active</th><th style="text-align:right">Paid</th><th style="text-align:right">Expired</th></tr></thead>'
+    +'<tbody>'+invRenAgentRowsHtml+'</tbody></table></div></div>'
+    +(invTcRowsHtml?('<div style="font-size:11px;font-weight:600;color:var(--tx2);margin:8px 0 4px">Kontribusi TC ('+currentMonthKey+' 26) <span style="font-size:9px;color:var(--tx3);font-weight:400">informational, bukan target</span></div>'
+      +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+      +'<thead><tr><th>Nama TC</th><th style="text-align:right">Jumlah Invoice</th><th style="text-align:right">Revenue</th></tr></thead>'
+      +'<tbody>'+invTcRowsHtml+'</tbody></table></div></div>'):'');
+
   var dvCurUT=UpsellTeamStore.getMonth(currentMonthKey);
   var dvPrevUT=UpsellTeamStore.getMonth(prevMonthKey);
   var dailyViewSection='';
@@ -3445,6 +3480,7 @@ function renderOverview(){
       +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
       +'<thead><tr><th>Jenis Add-On</th><th style="text-align:right">Jumlah Deal</th><th style="text-align:right">Revenue</th></tr></thead>'
       +'<tbody>'+(dvAddonRows||'<tr><td colspan="3" class="empty">Belum ada deal upsell di tim ini bulan '+currentMonthKey+'</td></tr>')+'</tbody></table></div></div>'
+      +invRenewalSummaryHtml
       +'</div>';
   }
 
@@ -3692,6 +3728,73 @@ function renderOverview(){
     +monthlySummarySection
     +backlogSection
     +agentSection;
+}
+
+// ── TAB: KELOLA TARGET ────────────────────────────────────────────────────
+// 1 Agu (operator): pindahan panel "Kelola Target Configurable" dari renderOverview -- logic/markup
+// PERSIS sama (verbatim), cuma dipindah jadi render function sendiri + tab sendiri, biar nggak numpuk
+// ngedorong Daily View/MTD ke bawah pas daftar target makin panjang. Card "Progres vs Target"
+// (read-only) TETAP di Overview, nggak ikut pindah.
+function renderTargetsManage(){
+  if(!Auth.isSuperior()){
+    document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="card empty">Cuma leader yang bisa akses Kelola Target.</div></div>';
+    return;
+  }
+  var d=Store.get(),recs=d.records;
+  var allTargetsNow=Targets.getAll();
+  // CLM-11 Fase G1: urut per (periode, sortOrder) biar row 1-bulan kontigu -> ▲/▼ swap tetangga
+  // yg keliatan sebelahan. First/last per grup periode buat disable tombol di ujung.
+  var sortedMgmt=allTargetsNow.slice().sort(targetSortCmp);
+  var mgmtRows=sortedMgmt.map(function(t,mi){
+    var isFirstInPeriod=(mi===0)||(sortedMgmt[mi-1].period!==t.period);
+    var isLastInPeriod=(mi===sortedMgmt.length-1)||(sortedMgmt[mi+1].period!==t.period);
+    var meta=targetMetricMeta(t.metricKey);
+    var scopeLabel=t.scope==='personal'?'Personal':'Team';
+    var targetDisp,actualDisp;
+    if(t.metricKey==='upsell_revenue_tier'){
+      // CLM-11 Fase F2: 4-tier warna itu GATE per-agen (diskrit, bukan angka additive/rata2) -- "total
+      // tim"/"rata2 tim" nggak masuk akal buat ini (nyampur 8 warna beda jadi 1 angka = misleading).
+      // Tampilin ringkasan tier threshold-nya di kolom Target, arahin ke kartu di Overview buat Aktual.
+      targetDisp='T1:'+fmtMetricVal(t.tier1||0,'Rp')+' T2:'+fmtMetricVal(t.tier2||0,'Rp')+' T3:'+fmtMetricVal(t.tier3||0,'Rp');
+      actualDisp='lihat kartu per-agen di Overview';
+    }else if(t.metricKey==='mrr_per_paket'){
+      // CLM-11 Fase F: 5 nilai terpisah per-paket, bukan 1 angka -- sama alasan tier di atas, jangan
+      // digabung jadi 1 total yg nyampur beda paket (misleading).
+      var resMrrRow=computeTargetActual(t,recs);
+      targetDisp=MRR_PAKET_TIERS.map(function(tn){return tn.split(' ')[0]+':'+fmtMetricVal(resMrrRow.targets[tn]||0,'Rp');}).join(' · ');
+      actualDisp='lihat kartu di Overview';
+    }else if(t.scope==='personal'){
+      var unitP=computeTargetActual(t,recs,AGENTS[0]).unit;
+      targetDisp='default '+fmtMetricVal(t.targetValue,unitP);
+      var isNonAdditive=unitP==='%'||NON_ADDITIVE_METRICS.indexOf(t.metricKey)>=0;
+      var totalActual=AGENTS.reduce(function(s,ag){return s+computeTargetActual(t,recs,ag).actual;},0);
+      actualDisp=isNonAdditive?'rata2 tim':(fmtMetricVal(totalActual,unitP)+' (total tim)');
+    }else{
+      var resT=computeTargetActual(t,recs);
+      targetDisp=fmtMetricVal(t.targetValue,resT.unit);
+      // CLM-11 Fase C: tampilin tier Improved di tabel kelola kalau diisi, biar Sekar bisa cek sekilas
+      // tanpa buka modal edit tiap kali.
+      if(resT.effectiveTargetImproved!=null)targetDisp+=' <span style="color:var(--tx3)">/ Improved '+fmtMetricVal(resT.effectiveTargetImproved,resT.unit)+'</span>';
+      actualDisp=fmtMetricVal(resT.actual,resT.unit);
+    }
+    return'<tr><td>'+meta.label+'</td><td>'+(meta.family==='activity'?'Activity':'Outcome')+'</td><td>'+scopeLabel+'</td><td>'+t.period+' 26</td>'
+      +'<td>'+targetDisp+'</td>'
+      +'<td>'+actualDisp+'</td>'
+      +'<td>'+(t.visibleToAgent?'✓':'—')+'</td>'
+      +'<td><div class="row-tools">'
+      +'<button class="action-btn ab-view" data-act="target-up" data-id="'+t.id+'" title="Naikkan urutan"'+(isFirstInPeriod?' disabled style="opacity:.3;cursor:default"':'')+'>▲</button>'
+      +'<button class="action-btn ab-view" data-act="target-down" data-id="'+t.id+'" title="Turunkan urutan"'+(isLastInPeriod?' disabled style="opacity:.3;cursor:default"':'')+'>▼</button>'
+      +'<button class="action-btn ab-edit" data-act="edit-target" data-id="'+t.id+'">✏</button>'
+      +'<button class="action-btn ab-wl" data-act="del-target" data-id="'+t.id+'">✕</button>'
+      +'</div></td></tr>';
+  }).join('');
+  document.getElementById('tab-content').innerHTML=
+    '<div class="ov-section"><div class="ov-section-title">⚙️ Kelola Target Configurable</div>'
+    +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+    +'<thead><tr><th>Metrik</th><th>Keluarga</th><th>Scope</th><th>Periode</th><th>Target</th><th>Aktual</th><th>Tampil Agen</th><th></th></tr></thead>'
+    +'<tbody>'+(mgmtRows||'<tr><td colspan="8" class="empty">Belum ada target</td></tr>')+'</tbody></table></div>'
+    +'<button class="btn btn-pri" id="add-target-btn" style="margin-top:8px;font-size:12px;padding:5px 10px">+ Tambah Target</button>'
+    +'</div></div>';
 }
 
 // Baris pager reusable -- ditaruh sbg <tr> terakhir (colspan penuh) biar valid di dalam <tbody>.
@@ -5018,7 +5121,9 @@ function saveTarget(){
     toast(bulkMonths.length>1?('Target disimpan ke '+bulkMonths.length+' bulan ('+bulkMonths.join(', ')+')'):'Target disimpan');
   }
   closeModal('target-modal');
-  renderTab('overview');
+  // 1 Agu: renderTab(currentTab) bukan hardcode 'overview' -- modal ini sekarang bisa dipicu dari
+  // tab "Kelola Target" juga.
+  renderTab(currentTab);
 }
 
 // ── TEST PREVIEW ───────────────────────────────────────────────────────────
@@ -5238,6 +5343,7 @@ function renderTab(tab){
     case 'churntrend':renderChurnTrend();break;
     case 'invoice':renderInvoiceTracker();break;
     case 'invsummary':renderInvoiceSummary();break;
+    case 'targetsmanage':renderTargetsManage();break;
     case 'konfigakun':renderKonfigurasiAkun();break;
   }
 }
@@ -6924,7 +7030,7 @@ tabContent.addEventListener('click',function(e){
     else if(act==='target-down'){if(!btn.disabled)reorderTarget(id,1);}
     else if(act==='daily-view-metric'){dailyViewMetricSel=btn.dataset.metric;renderTab('overview');}
     else if(act==='reassign-invoice')openInvReassignModal(id);
-    else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab('overview');}}
+    else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab(currentTab);}}
     else if(act==='toggle-wl'){
       // CLM-09: sheet-backed -- resolveOnly write, nutup/buka kolom "Resolved At" (L), nggak
       // nyentuh kategori/status verifikasi GetContact (2 konsep beda, lihat catatan writeGcWatchlistToSheet).
