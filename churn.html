@@ -5173,31 +5173,34 @@ function renderChurnTrend(){
       +'<td style="text-align:right;color:var(--red);font-weight:600">'+c.remaining+'</td></tr>';
   }).join('');
 
-  // 31 Jul (follow-up operator, klarifikasi kedua): "Churn Reason" -- PERSIS taksonomi "Detail Tidak
-  // Renewal" yang udah ada di card Konversi Renewal (buildCatDetailMap, outcome 'churn' = RESPON
+  // 31 Jul (follow-up operator, klarifikasi kedua+ketiga): "Churn Reason" -- PERSIS taksonomi "Detail
+  // Tidak Renewal" yang udah ada di card Konversi Renewal (buildCatDetailMap, outcome 'churn' = RESPON
   // NEGATIF), reuse fungsi shared BARU (nol reimplement loop) -- BUKAN pengganti breakdown 5-kategori
   // di atas (beda tujuan: itu buat "user asli vs exclude", ini buat "kenapa nolak/churn"). Populasi
   // SAMA persis "Detail Tidak Renewal": myRecs scoped cohort-bulan, TANPA filter HWCZ (bukan Hot doang).
-  // Ditampilin MoM (current vs bulan lalu) biar operator bisa liat trend alasan churn naik/turun.
-  var curMovRecsAll=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
-  var prevMovRecsAll=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(prevMonthKey)>=0;});
-  var curChurnMap=buildCatDetailMap(curMovRecsAll);
-  var prevChurnMap=buildCatDetailMap(prevMovRecsAll);
+  // Ditampilin MATRIX Jan s.d. bulan berjalan (bukan cuma 2-bulan MoM) -- operator minta run-rate,
+  // biar trend alasan churn keliatan lintas bulan bukan cuma delta sebulan.
+  var churnMonths=MONTH_KEYS.slice(0,todayDate.getMonth()+1); // Jan..bulan berjalan, inklusif
+  var churnMonthMaps=churnMonths.map(function(mk){
+    var recsForMonth=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(mk)>=0;});
+    return buildCatDetailMap(recsForMonth);
+  });
   var churnKeys={};
-  Object.keys(curChurnMap).forEach(function(k){if(k.indexOf('churn||')===0)churnKeys[k.slice(7)]=true;});
-  Object.keys(prevChurnMap).forEach(function(k){if(k.indexOf('churn||')===0)churnKeys[k.slice(7)]=true;});
+  churnMonthMaps.forEach(function(map){
+    Object.keys(map).forEach(function(k){if(k.indexOf('churn||')===0)churnKeys[k.slice(7)]=true;});
+  });
   var churnReasonRows=Object.keys(churnKeys).map(function(det){
-    var curN=curChurnMap['churn||'+det]||0,prevN=prevChurnMap['churn||'+det]||0;
-    return{det:det,cur:curN,prev:prevN,delta:curN-prevN};
-  }).sort(function(a,b){return b.cur-a.cur;});
+    var counts=churnMonthMaps.map(function(map){return map['churn||'+det]||0;});
+    var total=counts.reduce(function(a,b){return a+b;},0);
+    return{det:det,counts:counts,total:total};
+  }).sort(function(a,b){return b.total-a.total;});
+  var churnMonthHeaderHtml=churnMonths.map(function(mk){return'<th style="text-align:right">'+mk+'</th>';}).join('');
   var churnReasonRowsHtml=churnReasonRows.length
     ?churnReasonRows.map(function(c){
-      var arrow=c.delta>0?'▲':(c.delta<0?'▼':'—');
-      var clr=c.delta>0?'var(--red)':(c.delta<0?'var(--grn)':'var(--tx3)'); // naik alasan churn = merah (buruk)
-      return'<tr><td>'+c.det+'</td><td style="text-align:right;font-weight:600">'+c.cur+'</td><td style="text-align:right;color:var(--tx3)">'+c.prev+'</td>'
-        +'<td style="text-align:right;color:'+clr+'">'+arrow+' '+(c.delta>0?'+':'')+c.delta+'</td></tr>';
+      var cellsHtml=c.counts.map(function(n){return'<td style="text-align:right'+(n>0?';color:var(--red);font-weight:600':';color:var(--tx3)')+'">'+n+'</td>';}).join('');
+      return'<tr><td>'+c.det+'</td>'+cellsHtml+'<td style="text-align:right;font-weight:700;border-left:1px solid var(--bdr)">'+c.total+'</td></tr>';
     }).join('')
-    :'<tr><td colspan="4" style="text-align:center;color:var(--tx3);padding:12px">Belum ada data RESPON NEGATIF bulan ini/bulan lalu</td></tr>';
+    :'<tr><td colspan="'+(churnMonths.length+2)+'" style="text-align:center;color:var(--tx3);padding:12px">Belum ada data RESPON NEGATIF</td></tr>';
 
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📈 Churn Trend <span style="font-size:10px;color:var(--tx3);font-weight:400">Remaining leads (Hot) — basis sama kayak card Konversi Renewal, dikunci s.d. kemarin (H-1)</span></div>'
@@ -5213,8 +5216,8 @@ function renderChurnTrend(){
     +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Breakdown Remaining per Kategori ('+currentMonthKey+') <span style="font-size:10px;color:var(--tx3);font-weight:400">— kenapa lead ini masih remaining, sama kategori kayak KLOPOS Daily</span></div>'
     +'<div class="tbl-wrap"><table><thead><tr><th>Kategori</th><th style="text-align:right">Total</th><th style="text-align:right">Moving</th><th style="text-align:right">Remaining</th></tr></thead>'
     +'<tbody>'+catRowsHtml+'</tbody></table></div></div>'
-    +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Churn Reason (RESPON NEGATIF) — MoM <span style="font-size:10px;color:var(--tx3);font-weight:400">— sama taksonomi "Detail Tidak Renewal" di card Konversi Renewal, '+currentMonthKey+' vs '+prevMonthKey+'</span></div>'
-    +'<div class="tbl-wrap"><table><thead><tr><th>Alasan</th><th style="text-align:right">'+currentMonthKey+'</th><th style="text-align:right">'+prevMonthKey+'</th><th style="text-align:right">Delta MoM</th></tr></thead>'
+    +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Churn Reason (RESPON NEGATIF) — Run Rate '+churnMonths[0]+'–'+currentMonthKey+' <span style="font-size:10px;color:var(--tx3);font-weight:400">— sama taksonomi "Detail Tidak Renewal" di card Konversi Renewal, per bulan</span></div>'
+    +'<div class="tbl-wrap"><table><thead><tr><th>Alasan</th>'+churnMonthHeaderHtml+'<th style="text-align:right;border-left:1px solid var(--bdr)">Total</th></tr></thead>'
     +'<tbody>'+churnReasonRowsHtml+'</tbody></table></div></div>'
     +'</div>';
 }
