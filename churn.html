@@ -3785,6 +3785,7 @@ function renderTargetsManage(){
       +'<button class="action-btn ab-view" data-act="target-up" data-id="'+t.id+'" title="Naikkan urutan"'+(isFirstInPeriod?' disabled style="opacity:.3;cursor:default"':'')+'>▲</button>'
       +'<button class="action-btn ab-view" data-act="target-down" data-id="'+t.id+'" title="Turunkan urutan"'+(isLastInPeriod?' disabled style="opacity:.3;cursor:default"':'')+'>▼</button>'
       +'<button class="action-btn ab-edit" data-act="edit-target" data-id="'+t.id+'">✏</button>'
+      +'<button class="action-btn ab-view" data-act="dup-target" data-id="'+t.id+'" title="Duplikat -- salinan baru, tinggal edit bulan/isinya">⎘</button>'
       +'<button class="action-btn ab-wl" data-act="del-target" data-id="'+t.id+'">✕</button>'
       +'</div></td></tr>';
   }).join('');
@@ -7026,6 +7027,21 @@ tabContent.addEventListener('click',function(e){
     }
     else if(act==='toggle-agent-status')toggleAgentStatus(agid);
     else if(act==='edit-target')openTargetModal(id);
+    // 1 Agu (operator): duplikat target -- clone semua field APA ADANYA (nol id, nol sortOrder biar
+    // jatuh di akhir grup periode-nya) lewat Targets.add() yang emang generate id baru sendiri. Leader
+    // tinggal klik ✏ Edit di baris salinannya buat ganti periode/isi -- nggak perlu ngetik ulang dari 0.
+    else if(act==='dup-target'){
+      var srcT=Targets.getAll().find(function(x){return x.id===id;});
+      if(!srcT)return;
+      var cloneT=JSON.parse(JSON.stringify(srcT));
+      delete cloneT.id;
+      cloneT.sortOrder=null;
+      cloneT.lastEditBy=Auth.getActive();
+      cloneT.lastEditAt=new Date().toISOString();
+      Targets.add(cloneT);
+      toast('Target diduplikat — klik ✏ di baris salinannya buat ganti bulan/isinya');
+      renderTab(currentTab);
+    }
     else if(act==='target-up'){if(!btn.disabled)reorderTarget(id,-1);}
     else if(act==='target-down'){if(!btn.disabled)reorderTarget(id,1);}
     else if(act==='daily-view-metric'){dailyViewMetricSel=btn.dataset.metric;renderTab('overview');}
