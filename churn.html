@@ -5493,8 +5493,23 @@ function openResp(id){
     }).join('');
     auditHtml='<div class="sep"></div><div style="font-weight:700;font-size:12px;color:var(--tx);margin-bottom:4px">🕘 Riwayat Perubahan</div>'+entries;
   }
+  // 4 Agu (operator): Evidence NPS -- field TERPISAH dari resp-response-evidence (evidence respon
+  // negatif), sengaja jangan digabung biar bisa jadi workorder approve/reject sendiri buat leader
+  // (bukan cuma link nempel tanpa status). Per-case, key sama kayak response biasa.
+  var nps=r.nps||{};
+  var npsStatusBadge=nps.status==='Approved'?'<span class="badge badge-grn">Approved</span>'
+    :nps.status==='Rejected'?'<span class="badge badge-red">Rejected'+(nps.rejectReason?' — '+nps.rejectReason:'')+'</span>'
+    :nps.status==='Pending'?'<span class="badge badge-yel">Menunggu review</span>'
+    :'<span style="color:var(--tx3);font-size:11px">Belum ada evidence</span>';
+  var npsReviewHtml=(isSup&&nps.status==='Pending')
+    ?'<div style="margin-top:6px;display:flex;gap:8px">'
+      +'<button type="button" class="btn btn-grn btn-sm" onclick="reviewNpsEvidenceUI(\'approved\')">✓ Approve</button>'
+      +'<button type="button" class="btn btn-red btn-sm" onclick="reviewNpsEvidenceUI(\'rejected\')">✕ Reject</button>'
+      +'</div>'
+    :'';
   document.getElementById('resp-body').innerHTML=
     '<div style="font-weight:700;margin-bottom:2px;font-size:14px">'+r.outletName+'</div>'
+    +'<div style="font-size:11px;color:var(--tx3);margin-bottom:8px">Last Termin: <strong style="color:var(--tx2)">'+(r.termin||'—')+'</strong></div>'
     +agentField
     +'<label>Kategori Respon</label>'
     +'<select id="resp-cat"><option value="">— Pilih Kategori —</option>'+catOpts+'</select>'
@@ -5516,6 +5531,13 @@ function openResp(id){
     +'<div class="sep"></div>'
     +'<div style="font-weight:700;font-size:13px;color:var(--tx);margin-bottom:8px">⭐ Klaim Upselling (Maps / PlayStore)</div>'
     +UPSELL_PLATFORMS.map(function(p){return buildUpsellFieldset(p,r.upsell&&r.upsell[p.key],isSup);}).join('')
+    +'<div class="sep"></div>'
+    +'<div style="font-weight:700;font-size:13px;color:var(--tx);margin-bottom:8px">📋 Ajak Isi NPS</div>'
+    +'<label>Evidence ajakan isi NPS (link chat / screenshot)</label>'
+    +'<input type="text" id="resp-nps-evidence" value="'+(nps.evidence||'')+'" placeholder="https://...">'
+    +'<div style="margin-top:4px">Status: '+npsStatusBadge+'</div>'
+    +'<button type="button" class="btn btn-sec btn-sm" style="margin-top:6px" onclick="submitNpsEvidenceUI()">📤 Submit Evidence NPS</button>'
+    +npsReviewHtml
     +auditHtml;
 
   // CLM-03: toggle textarea alasan reject cuma muncul kalau status=rejected dipilih
@@ -5549,6 +5571,46 @@ function openResp(id){
     }else{sel.innerHTML='<option value="">—</option>';}
   });
   openModal('resp-modal');
+}
+
+// 4 Agu (operator): submit/review Evidence NPS -- action GAS TERPISAH dari writeResponse (bukan
+// bagian dari saveResp), sengaja: submit = deklarasi eksplisit "tolong direview ulang", bukan efek
+// samping nyimpen field lain yang nggak terkait. Key sama persis kayak buildWbPayload (r.id).
+function submitNpsEvidenceUI(){
+  if(!respTargetId)return;
+  var d=Store.get();
+  var r=d.records.find(function(x){return x.id===respTargetId;});
+  if(!r)return;
+  var evidEl=document.getElementById('resp-nps-evidence');
+  var evidence=((evidEl&&evidEl.value)||'').trim();
+  if(!evidence){toast('Isi link evidence dulu');return;}
+  var me=Auth.getActive();
+  _gasPost({action:'submitNpsEvidence',key:r.id,evidence:evidence}).then(function(){
+    r.nps={evidence:evidence,status:'Pending',rejectReason:'',submittedBy:me,submittedAt:new Date().toISOString()};
+    Store.set(d);
+    toast('Evidence NPS terkirim, menunggu review leader');
+    openResp(respTargetId);
+  }).catch(function(err){toast('Gagal submit evidence NPS: '+err.message,5000);});
+}
+
+function reviewNpsEvidenceUI(decision){
+  if(!respTargetId)return;
+  var d=Store.get();
+  var r=d.records.find(function(x){return x.id===respTargetId;});
+  if(!r)return;
+  var rejectReason='';
+  if(decision==='rejected'){
+    rejectReason=(prompt('Alasan reject:','')||'').trim();
+    if(!rejectReason){toast('Alasan reject wajib diisi');return;}
+  }
+  _gasPost({action:'reviewNpsEvidence',key:r.id,decision:decision,rejectReason:rejectReason}).then(function(){
+    r.nps=r.nps||{};
+    r.nps.status=decision==='rejected'?'Rejected':'Approved';
+    r.nps.rejectReason=decision==='rejected'?rejectReason:'';
+    Store.set(d);
+    toast('Evidence NPS di-'+(decision==='rejected'?'reject':'approve'));
+    openResp(respTargetId);
+  }).catch(function(err){toast('Gagal review evidence NPS: '+err.message,5000);});
 }
 
 function saveResp(){
@@ -6922,6 +6984,23 @@ function mergeResponseFromRemote(local,remoteRow){
   };
 }
 
+// 4 Agu: merge Evidence NPS dari delta-poll -- pola sama mergeResponseFromRemote (remote menang
+// HANYA kalau lebih baru), object TERPISAH dari r.response (bukan digabung ke evidence respon negatif).
+function mergeNpsFromRemote(local,remoteRow){
+  var remoteEvid=String(remoteRow['NPS Evidence']||'').trim();
+  if(!remoteEvid)return local;
+  var remoteSubmittedAt=String(remoteRow['NPS Submitted At']||'');
+  var localSubmittedAt=local?String(local.submittedAt||''):'';
+  if(local&&remoteSubmittedAt&&localSubmittedAt&&remoteSubmittedAt<=localSubmittedAt)return local;
+  return{
+    evidence:remoteEvid,
+    status:String(remoteRow['NPS Status']||'').trim()||'Pending',
+    rejectReason:String(remoteRow['NPS Reject Reason']||'').trim(),
+    submittedBy:String(remoteRow['NPS Submitted By']||'').trim(),
+    submittedAt:remoteSubmittedAt
+  };
+}
+
 // CLM-08: auto-poll respons agen lain -- RINGAN (delta dash-block, bukan full 22k-row responses).
 // on-load + tiap 5 menit (dipanggil dari startApp). Diam2 kalau nggak ada perubahan; toast cuma
 // muncul kalau beneran ada respons baru dari agen lain. Aman terhadap concurrency CLM-02: guard
@@ -6945,6 +7024,8 @@ function pollResponsesDelta(){
           var rec=idx[jc];if(!rec)return;
           var merged=mergeResponseFromRemote(rec.response,row);
           if(merged!==rec.response){rec.response=merged;n++;}
+          var mergedNps=mergeNpsFromRemote(rec.nps,row);
+          if(mergedNps!==rec.nps)rec.nps=mergedNps;
         });
         if(n){
           Store.set(d);renderTab(currentTab);
@@ -6991,6 +7072,17 @@ function syncResponsesOnly(){
       if(staff)resp.updatedBy=staff;
       if(link)resp.evidenceLink=link;
       rec.response=resp;n++;
+      // 4 Agu: NPS TERPISAH dari resp.evidenceLink -- object sendiri, jangan digabung.
+      var npsEvid=String(row['NPS Evidence']||'').trim();
+      if(npsEvid){
+        rec.nps={
+          evidence:npsEvid,
+          status:String(row['NPS Status']||'').trim()||'Pending',
+          rejectReason:String(row['NPS Reject Reason']||'').trim(),
+          submittedBy:String(row['NPS Submitted By']||'').trim(),
+          submittedAt:String(row['NPS Submitted At']||'').trim()
+        };
+      }
     });
     Store.set(d);renderMaster();
     var pctUnmatched=rows.length?Math.round(unmatched/rows.length*100):0;
