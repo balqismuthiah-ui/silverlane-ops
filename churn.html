@@ -2496,9 +2496,9 @@ function _gasPost(payload){
 //   - updatedPhone & waStatus -> local-only, nggak ada di DASH_HEADERS (lihat mergeResponseFromRemote)
 //   - Tgl Response / Last Edit At/By -> selalu now/me, kalau diikutin fingerprint nggak akan pernah sama
 //     (= dirty-check mati total, balik ke bug semula)
-function respSheetFingerprint(resp,agent){
+function respSheetFingerprint(resp,agent,npsEvidence){
   resp=resp||{};
-  return JSON.stringify([resp.category||null,resp.detail||null,resp.note||'',resp.evidenceLink||null,agent||'']);
+  return JSON.stringify([resp.category||null,resp.detail||null,resp.note||'',resp.evidenceLink||null,agent||'',npsEvidence||'']);
 }
 function buildWbPayload(r,me){
   var resp=r.response||{};
@@ -2513,6 +2513,7 @@ function buildWbPayload(r,me){
     'Keterangan':resp.detail||'',
     'Note':resp.note||'',
     'Link Evidence':resp.evidenceLink||'',
+    'NPS Evidence':(r.nps&&r.nps.evidence)||'',
     'Tgl Response':now,
     'Agen':r.assignedAgent||'',
     'Last Edit By':me||'',
@@ -4419,6 +4420,9 @@ function renderResponseResults(){
       +'<div style="font-size:11px;color:var(--tx3)">#'+r.id+' · '+r.productPackage+'</div></div>'
       +'<span class="badge badge-'+respColor+'" style="flex-shrink:0">'+(hasResp?resp.category:'Belum')+'</span>'
       +'</div>'
+      // 4 Agu (operator): ID Outlet/Exp Date/Termin nempel bareng 1 baris di card depan -- biar
+      // keliatan tanpa buka modal Update Respon dulu.
+      +'<div style="font-size:11px;color:var(--tx3)">ID Outlet: '+(r.outletId||r.id)+' &nbsp;·&nbsp; Exp Date: '+fmtDate(r.expiryDate)+' &nbsp;·&nbsp; Termin: '+(r.termin||'—')+'</div>'
       +'<div style="font-size:12px;color:var(--tx2)">Agen: <strong>'+(r.assignedAgent||'—')+'</strong></div>'
       // 25 Jul (operator): Response Update diakses SEMUA agen -- munculin Paket Aktif/Expired
       // Historical/Email User biar konteks lengkap tanpa buka detail. Nomor HP TETAP satu-satunya
@@ -5509,7 +5513,7 @@ function openResp(id){
     :'';
   document.getElementById('resp-body').innerHTML=
     '<div style="font-weight:700;margin-bottom:2px;font-size:14px">'+r.outletName+'</div>'
-    +'<div style="font-size:11px;color:var(--tx3);margin-bottom:8px">Last Termin: <strong style="color:var(--tx2)">'+(r.termin||'—')+'</strong></div>'
+    +'<div style="font-size:11px;color:var(--tx3);margin-bottom:8px">ID Outlet: <strong style="color:var(--tx2)">'+(r.outletId||r.id)+'</strong> &nbsp;·&nbsp; Exp Date: <strong style="color:var(--tx2)">'+fmtDate(r.expiryDate)+'</strong> &nbsp;·&nbsp; Termin: <strong style="color:var(--tx2)">'+(r.termin||'—')+'</strong></div>'
     +agentField
     +'<label>Kategori Respon</label>'
     +'<select id="resp-cat"><option value="">— Pilih Kategori —</option>'+catOpts+'</select>'
@@ -5531,12 +5535,9 @@ function openResp(id){
     +'<div class="sep"></div>'
     +'<div style="font-weight:700;font-size:13px;color:var(--tx);margin-bottom:8px">⭐ Klaim Upselling (Maps / PlayStore)</div>'
     +UPSELL_PLATFORMS.map(function(p){return buildUpsellFieldset(p,r.upsell&&r.upsell[p.key],isSup);}).join('')
-    +'<div class="sep"></div>'
-    +'<div style="font-weight:700;font-size:13px;color:var(--tx);margin-bottom:8px">📋 Ajak Isi NPS</div>'
-    +'<label>Evidence ajakan isi NPS (link chat / screenshot)</label>'
+    +'<label>Evidence ajakan isi NPS <span style="color:var(--tx3);font-weight:400">— tersimpan bareng tombol Simpan</span></label>'
     +'<input type="text" id="resp-nps-evidence" value="'+(nps.evidence||'')+'" placeholder="https://...">'
-    +'<div style="margin-top:4px">Status: '+npsStatusBadge+'</div>'
-    +'<button type="button" class="btn btn-sec btn-sm" style="margin-top:6px" onclick="submitNpsEvidenceUI()">📤 Submit Evidence NPS</button>'
+    +'<div style="font-size:11px;margin:4px 0 8px">Status NPS: '+npsStatusBadge+'</div>'
     +npsReviewHtml
     +auditHtml;
 
@@ -5573,26 +5574,9 @@ function openResp(id){
   openModal('resp-modal');
 }
 
-// 4 Agu (operator): submit/review Evidence NPS -- action GAS TERPISAH dari writeResponse (bukan
-// bagian dari saveResp), sengaja: submit = deklarasi eksplisit "tolong direview ulang", bukan efek
-// samping nyimpen field lain yang nggak terkait. Key sama persis kayak buildWbPayload (r.id).
-function submitNpsEvidenceUI(){
-  if(!respTargetId)return;
-  var d=Store.get();
-  var r=d.records.find(function(x){return x.id===respTargetId;});
-  if(!r)return;
-  var evidEl=document.getElementById('resp-nps-evidence');
-  var evidence=((evidEl&&evidEl.value)||'').trim();
-  if(!evidence){toast('Isi link evidence dulu');return;}
-  var me=Auth.getActive();
-  _gasPost({action:'submitNpsEvidence',key:r.id,evidence:evidence}).then(function(){
-    r.nps={evidence:evidence,status:'Pending',rejectReason:'',submittedBy:me,submittedAt:new Date().toISOString()};
-    Store.set(d);
-    toast('Evidence NPS terkirim, menunggu review leader');
-    openResp(respTargetId);
-  }).catch(function(err){toast('Gagal submit evidence NPS: '+err.message,5000);});
-}
-
+// 4 Agu (operator, revisi): submit Evidence NPS DILEBUR ke tombol Simpan utama (bukan tombol
+// terpisah lagi) -- lihat saveResp(). Review (approve/reject) TETAP action GAS terpisah, khusus
+// leader, karena itu keputusan leader sendiri bukan side-effect dari save agent.
 function reviewNpsEvidenceUI(decision){
   if(!respTargetId)return;
   var d=Store.get();
@@ -5630,6 +5614,8 @@ function saveResp(){
   var note=document.getElementById('resp-note').value.trim();
   var evidEl2=document.getElementById('resp-response-evidence');
   var evidenceLink=((evidEl2&&evidEl2.value)||'').trim();
+  var npsEvidEl=document.getElementById('resp-nps-evidence');
+  var npsEvidenceIn=((npsEvidEl&&npsEvidEl.value)||'').trim();
   if(phone&&!isValidPhone(phone)){toast('Nomor HP tidak valid (min 10 digit)');return;}
   var catFinal=cat||null;
   var detailFinal=detail||null;
@@ -5648,6 +5634,9 @@ function saveResp(){
   // 'Agen') TAPI di-mutasi in-place di r (bukan di r.response), jadi kalau nggak dicatat sekarang
   // nilai lamanya keburu hilang -> ganti agen nggak ke-write = silent-loss BARU.
   var prevAgent=r.assignedAgent||'';
+  // 4 Agu: snapshot evidence NPS pra-edit -- dipakai dirty-check (respSheetFingerprint) biar
+  // perubahan NPS-doang (tanpa field respon lain berubah) tetap trigger write-back.
+  var prevNpsEvidence=(r.nps&&r.nps.evidence)||'';
   if(respOpenSnapshot&&respOpenSnapshot.id===respTargetId
      &&(prevResp.updatedAt||null)!==(respOpenSnapshot.updatedAt||null)){
     var proceed=confirm(
@@ -5661,6 +5650,15 @@ function saveResp(){
 
   var normP=phone?normPhone(phone):null;
   r.response={category:catFinal,detail:detailFinal,evidenceLink:evidenceLink||prevResp.evidenceLink||null,updatedPhone:normP||prevResp.updatedPhone||null,waStatus:wa,note:note,updatedAt:new Date().toISOString(),updatedBy:me};
+
+  // 4 Agu: Evidence NPS -- object TERPISAH (r.nps), bukan bagian r.response. Ganti evidence ->
+  // status balik jadi Pending (perlu direview ulang) + reset reject reason. Sama isi -> preserve
+  // status Approved/Rejected yang udah ada (bukan optimistic Pending nyasar).
+  if(npsEvidenceIn&&npsEvidenceIn!==prevNpsEvidence){
+    r.nps={evidence:npsEvidenceIn,status:'Pending',rejectReason:'',submittedBy:me,submittedAt:new Date().toISOString()};
+  }else if(npsEvidenceIn&&r.nps){
+    r.nps.evidence=npsEvidenceIn;
+  }
 
   // P1-1: audit trail perubahan kategori/detail (siapa/dari/ke/kapan)
   if(prevCat!==catFinal||prevDetail!==detailFinal){
@@ -5765,7 +5763,7 @@ function saveResp(){
   // 17 Jul: cuma kalau ADA yang berubah (pola sama `changed` di writeBackUpsell atas). Leader yang
   // cuma approve/reject klaim upsell -> nol write respons -> nol clobber. Baseline = prevResp/prevAgent
   // (PRA-edit), bukan r.response yang udah ke-reassign di atas.
-  if(respSheetFingerprint(prevResp,prevAgent)!==respSheetFingerprint(r.response,r.assignedAgent)){
+  if(respSheetFingerprint(prevResp,prevAgent,prevNpsEvidence)!==respSheetFingerprint(r.response,r.assignedAgent,(r.nps&&r.nps.evidence)||'')){
     writeBackResponse(r,me);
   }
   closeModal('resp-modal');
