@@ -6436,6 +6436,10 @@ function syncFromGAS(opts){
   var monthParam=syncMonthFilter||(opts.auto?currentMonthAbbr():'');
   var url=GAS_URL+'?action=data&token='+encodeURIComponent(Auth.getToken()||'');
   if(monthParam)url+='&month='+encodeURIComponent(monthParam);
+  // 4 Agu: cache-bust -- ketauan 2 akun beda dapet hasil PERSIS sama berulang kali walau udah
+  // Reset+sync ulang (19435 konsisten), padahal akun lain dapet 36501. Ciri response ke-cache
+  // (bukan timeout, yang harusnya variatif tiap percobaan). Timestamp unik maksa request dianggap baru.
+  url+='&_cb='+Date.now();
 
   var controller=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=controller?setTimeout(function(){controller.abort();},90000):null;
