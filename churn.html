@@ -4421,6 +4421,8 @@ function renderResponseResults(){
     return;
   }
   var d=Store.get();
+  var me=Auth.getActive();
+  var isSup=Auth.isSuperior();
   var pool=d.records;
   var s=respSearch.toLowerCase();
   var filtered=pool.filter(function(r){
@@ -4442,55 +4444,42 @@ function renderResponseResults(){
   var respTotalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
   respPage=Math.min(respPage,respTotalPages-1);
   var respPaged=filtered.slice(respPage*PAGE_SIZE,(respPage+1)*PAGE_SIZE);
+  // 4 Agu (operator): tabel gaya "My Worksheet" (wsRows) -- ganti dari card list. Detail lengkap
+  // (Termin/ID Outlet/Exp Date/evidence/klaim upsell/NPS) TETAP ada, cuma pindah ke modal Lihat/Respon
+  // (nggak muat di baris tabel ringkas), bukan hilang.
   var cards=respPaged.map(function(r){
     var resp=r.response||{};
-    var hasResp=!!resp.category;
-    var respColor=hasResp?(RESP_CATS[resp.category]?RESP_CATS[resp.category].color:'gray'):'gray';
-    var upsellLines=UPSELL_PLATFORMS.filter(function(p){return r.upsell&&r.upsell[p.key];}).map(function(p){
-      var line=r.upsell[p.key];
-      return p.icon+' '+line.count+' '+upsellLineBadge(line);
-    });
-    var reviewLine=upsellLines.length?('<div style="font-size:11px;color:var(--tx3);margin-top:6px;padding-top:6px;border-top:1px solid var(--bdr)">'+upsellLines.join(' &nbsp;·&nbsp; ')+'</div>'):'';
+    var canSeePhone=(me===r.assignedAgent)||isSup||phoneIsGcFlagged(r);
     var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
-    var gcBtn=isGC?gcWatchlistBadge(r.phone)
-      :'<button class="action-btn ab-wl" data-act="gc" data-id="'+r.id+'" style="padding:3px 6px;font-size:11px">⚠ GC</button>';
-    return'<div class="card" style="display:flex;flex-direction:column;gap:5px">'
-      +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">'
-      +'<div style="min-width:0"><div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r.outletName+'</div>'
-      +'<div style="font-size:11px;color:var(--tx3)">#'+r.id+' · '+r.productPackage+'</div></div>'
-      +'<span class="badge badge-'+respColor+'" style="flex-shrink:0">'+(hasResp?resp.category:'Belum')+'</span>'
-      +'</div>'
-      // 4 Agu (operator): ID Outlet/Exp Date/Termin nempel bareng 1 baris di card depan -- biar
-      // keliatan tanpa buka modal Update Respon dulu.
-      +'<div style="font-size:11px;color:var(--tx3)">ID Outlet: '+(r.outletId||r.id)+' &nbsp;·&nbsp; Exp Date: '+fmtDate(r.expiryDate)+' &nbsp;·&nbsp; Termin: '+(r.termin||'—')+'</div>'
-      +'<div style="font-size:12px;color:var(--tx2)">Agen: <strong>'+(r.assignedAgent||'—')+'</strong></div>'
-      // 25 Jul (operator): Response Update diakses SEMUA agen -- munculin Paket Aktif/Expired
-      // Historical/Email User biar konteks lengkap tanpa buka detail. Nomor HP TETAP satu-satunya
-      // field yg di-restrict (mask via GC), 3 field ini NGGAK ada relasi ke privasi nomor sama sekali.
-      +'<div style="font-size:11px;color:var(--tx3)">Paket Aktif: '+(r.packageTier||'—')+' &nbsp;·&nbsp; Expired (Historical): '+fmtDate(r.expiredDateHistorical)+'</div>'
-      +(r.emailUser?'<div style="font-size:11px;color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Email User: '+r.emailUser+'</div>':'')
-      +(hasResp
-        ?'<div style="font-size:12px;color:var(--tx2)">Detail: '+(resp.detail||'—')+'</div>'
-          +(resp.note?'<div style="font-size:11px;color:var(--tx3);font-style:italic">"'+resp.note+'"</div>':'')
-          +'<div style="font-size:11px;color:var(--tx3)">oleh '+resp.updatedBy+' · '+fmtDate(resp.updatedAt)+'</div>'
-        :'<div style="font-size:11px;color:var(--tx3);font-style:italic">Belum ada respon</div>')
-      +reviewLine
-      +'<div style="display:flex;gap:6px;margin-top:6px">'
-      +'<button class="btn btn-pri" style="flex:1;padding:5px 8px;font-size:12px" data-act="resp" data-id="'+r.id+'">✎ Update Respon</button>'
-      +gcBtn
-      +'</div></div>';
-  }).join('');
-  var respPagerHtml=respTotalPages<=1?'':'<div style="text-align:center;padding:10px">'
-    +'<button class="btn btn-sec" id="resp-prev-btn" style="padding:4px 10px;font-size:12px" '+(respPage<=0?'disabled':'')+'>‹ Sebelumnya</button>'
-    +' <span style="font-size:12px;color:var(--tx3);margin:0 10px">Halaman '+(respPage+1)+'/'+respTotalPages+' ('+filtered.length+' cocok)</span> '
-    +'<button class="btn btn-sec" id="resp-next-btn" style="padding:4px 10px;font-size:12px" '+(respPage>=respTotalPages-1?'disabled':'')+'>Berikutnya ›</button>'
-    +'</div>';
-  // 4 Agu (operator): grid multi-kolom -> list 1 kolom, biar urutan Z-A by Expired Date (baru
-  // ditambahin di atas) kebaca top-to-bottom -- di grid, urutan sort zigzag antar kolom, susah dibaca.
+    var isDummy=isDummyPhone(r.phone);
+    var phoneDisp=canSeePhone?'<span class="phone-full">'+r.phone+'</span>':'<span class="phone-mask">'+maskPhone(r.phone)+'</span>';
+    var updPhone=resp.updatedPhone;
+    var updPhoneDisp='—';
+    if(updPhone){updPhoneDisp=canSeePhone?'<span class="phone-full">'+updPhone+'</span>':'<span class="phone-mask">'+maskPhone(updPhone)+'</span>';}
+    return'<tr>'
+      +'<td>'+r.id+'</td>'
+      +'<td>'+r.outletName+(isGC?'<br>'+gcWatchlistBadge(r.phone):'')+'</td>'
+      +'<td>'+fmtDate(r.expiryDate)+'</td>'
+      +'<td>'+phoneDisp+(isDummy?'<br><span class="dummy-flag">🚫 Dummy</span>':'')+'</td>'
+      +'<td>'+updPhoneDisp+'</td>'
+      +'<td>'+(r.assignedAgent||'—')+'</td>'
+      +'<td>'+blastBadge(r.blastStatus)+'</td>'
+      +'<td>'+respBadge(resp.category)+'</td>'
+      +'<td>'+waIcon(resp.waStatus)+'</td>'
+      +'<td><div class="row-tools">'
+      +'<button class="action-btn ab-view" data-act="view" data-id="'+r.id+'">Lihat</button>'
+      +'<button class="action-btn ab-wa" data-act="wa" data-id="'+r.id+'">WA</button>'
+      +'<button class="action-btn ab-edit" data-act="resp" data-id="'+r.id+'">Respon</button>'
+      +(isGC?'':'<button class="action-btn ab-wl" data-act="gc" data-id="'+r.id+'">GC</button>')
+      +'</div></td></tr>';
+  }).join('')+pagerRow(10,respPage,respTotalPages,filtered.length,'resp-prev-btn','resp-next-btn');
+  // 4 Agu (operator): list card -> table (pola sama My Worksheet/wsRows), diurutkan Z-A by Expired
+  // Date (baru ditambahin di atas). Kosong -> 1 baris colspan, bukan card-empty.
   el.innerHTML='<div style="margin-bottom:10px;font-size:12px;color:var(--tx3)">'+filtered.length+' dari '+pool.length+' outlet · diurutkan Exp Date terbaru dulu</div>'
-    +'<div style="display:flex;flex-direction:column;gap:10px">'
-    +(cards||'<div class="empty">Tidak ada outlet yang cocok</div>')+'</div>'
-    +respPagerHtml;
+    +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
+    +'<thead><tr><th>ID</th><th>Nama Outlet</th><th>Expired</th><th>HP Utama</th><th>HP Update</th><th>Agen</th><th>Blast</th><th>Respon</th><th>WA</th><th>Aksi</th></tr></thead>'
+    +'<tbody>'+(filtered.length?cards:'<tr><td colspan="10" class="empty">Tidak ada outlet yang cocok</td></tr>')+'</tbody>'
+    +'</table></div></div>';
 }
 
 function renderResponse(){
