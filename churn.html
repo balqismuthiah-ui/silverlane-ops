@@ -4450,15 +4450,19 @@ function renderResponseResults(){
   var cards=respPaged.map(function(r){
     var resp=r.response||{};
     var canSeePhone=(me===r.assignedAgent)||isSup||phoneIsGcFlagged(r);
-    var isGC=!!gcFlagMap[r.phone]; // CLM-09: sheet-backed
+    var gcEntry=gcFlagMap[normPhone(r.phone)]; // CLM-09: sheet-backed
+    var isGC=!!gcEntry;
     var isDummy=isDummyPhone(r.phone);
     var phoneDisp=canSeePhone?'<span class="phone-full">'+r.phone+'</span>':'<span class="phone-mask">'+maskPhone(r.phone)+'</span>';
+    // 4 Agu (operator, revisi): badge GC pindah dari Nama Outlet ke bawah HP Utama, ganti dari
+    // badge pill (badge-red, suka wrap jadi tinggi banget di kolom sempit) jadi teks 1 baris ringkas.
+    var gcNote=isGC?('<div style="font-size:10px;color:var(--red);margin-top:2px">⚠️ '+gcEntry.category+(gcEntry.label?': '+gcEntry.label:'')+'</div>'):'';
     var updPhone=resp.updatedPhone;
     var updPhoneDisp='—';
     if(updPhone){updPhoneDisp=canSeePhone?'<span class="phone-full">'+updPhone+'</span>':'<span class="phone-mask">'+maskPhone(updPhone)+'</span>';}
     return'<tr>'
       +'<td>'+r.id+'</td>'
-      +'<td>'+r.outletName+(isGC?'<br>'+gcWatchlistBadge(r.phone):'')+'</td>'
+      +'<td>'+r.outletName+'</td>'
       +'<td>'+fmtDate(r.expiryDate)+'</td>'
       // 4 Agu (operator, revisi): 5 kolom balik ditampilin di depan (sempet cuma di modal) --
       // Exp (Historical) [sort key], Termin, Kategori Merchant (kolom Z, Multi/Single), Kategori
@@ -4468,7 +4472,7 @@ function renderResponseResults(){
       +'<td>'+(r.merchantKategori||'—')+'</td>'
       +'<td>'+(r.outletKategori||'—')+'</td>'
       +'<td>'+(r.emailUser||'—')+'</td>'
-      +'<td>'+phoneDisp+(isDummy?'<br><span class="dummy-flag">🚫 Dummy</span>':'')+'</td>'
+      +'<td>'+phoneDisp+(isDummy?'<br><span class="dummy-flag">🚫 Dummy</span>':'')+gcNote+'</td>'
       +'<td>'+updPhoneDisp+'</td>'
       +'<td>'+(r.assignedAgent||'—')+'</td>'
       +'<td>'+blastBadge(r.blastStatus)+'</td>'
