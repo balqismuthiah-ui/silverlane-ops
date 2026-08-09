@@ -4438,9 +4438,9 @@ function renderResponseResults(){
     }
     return true;
   });
-  // 4 Agu (operator): urutan default Z-A by Expired Date (terbaru duluan) -- expiryDate format
-  // 'YYYY-MM-DD' (localDateStr), lexicographic compare = chronological compare, valid tanpa parse Date.
-  filtered.sort(function(a,b){return String(b.expiryDate||'').localeCompare(String(a.expiryDate||''));});
+  // 4 Agu (operator, revisi): sort key ganti ke Expired Date HISTORICAL (bukan expiryDate/"latest")
+  // -- format 'YYYY-MM-DD' (localDateStr), lexicographic compare = chronological compare.
+  filtered.sort(function(a,b){return String(b.expiredDateHistorical||'').localeCompare(String(a.expiredDateHistorical||''));});
   var respTotalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
   respPage=Math.min(respPage,respTotalPages-1);
   var respPaged=filtered.slice(respPage*PAGE_SIZE,(respPage+1)*PAGE_SIZE);
@@ -4460,6 +4460,14 @@ function renderResponseResults(){
       +'<td>'+r.id+'</td>'
       +'<td>'+r.outletName+(isGC?'<br>'+gcWatchlistBadge(r.phone):'')+'</td>'
       +'<td>'+fmtDate(r.expiryDate)+'</td>'
+      // 4 Agu (operator, revisi): 5 kolom balik ditampilin di depan (sempet cuma di modal) --
+      // Exp (Historical) [sort key], Termin, Kategori Merchant (kolom Z, Multi/Single), Kategori
+      // Outlet (kolom AA, Master/Cabang), Email.
+      +'<td>'+fmtDate(r.expiredDateHistorical)+'</td>'
+      +'<td>'+(r.termin||'—')+'</td>'
+      +'<td>'+(r.merchantKategori||'—')+'</td>'
+      +'<td>'+(r.outletKategori||'—')+'</td>'
+      +'<td>'+(r.emailUser||'—')+'</td>'
       +'<td>'+phoneDisp+(isDummy?'<br><span class="dummy-flag">🚫 Dummy</span>':'')+'</td>'
       +'<td>'+updPhoneDisp+'</td>'
       +'<td>'+(r.assignedAgent||'—')+'</td>'
@@ -4472,13 +4480,13 @@ function renderResponseResults(){
       +'<button class="action-btn ab-edit" data-act="resp" data-id="'+r.id+'">Respon</button>'
       +(isGC?'':'<button class="action-btn ab-wl" data-act="gc" data-id="'+r.id+'">GC</button>')
       +'</div></td></tr>';
-  }).join('')+pagerRow(10,respPage,respTotalPages,filtered.length,'resp-prev-btn','resp-next-btn');
+  }).join('')+pagerRow(15,respPage,respTotalPages,filtered.length,'resp-prev-btn','resp-next-btn');
   // 4 Agu (operator): list card -> table (pola sama My Worksheet/wsRows), diurutkan Z-A by Expired
-  // Date (baru ditambahin di atas). Kosong -> 1 baris colspan, bukan card-empty.
-  el.innerHTML='<div style="margin-bottom:10px;font-size:12px;color:var(--tx3)">'+filtered.length+' dari '+pool.length+' outlet · diurutkan Exp Date terbaru dulu</div>'
+  // Date Historical. Kosong -> 1 baris colspan, bukan card-empty.
+  el.innerHTML='<div style="margin-bottom:10px;font-size:12px;color:var(--tx3)">'+filtered.length+' dari '+pool.length+' outlet · diurutkan Exp Date (Historical) terbaru dulu</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr><th>ID</th><th>Nama Outlet</th><th>Expired</th><th>HP Utama</th><th>HP Update</th><th>Agen</th><th>Blast</th><th>Respon</th><th>WA</th><th>Aksi</th></tr></thead>'
-    +'<tbody>'+(filtered.length?cards:'<tr><td colspan="10" class="empty">Tidak ada outlet yang cocok</td></tr>')+'</tbody>'
+    +'<thead><tr><th>ID</th><th>Nama Outlet</th><th>Expired</th><th>Exp (Historical)</th><th>Termin</th><th>Kategori Merchant</th><th>Kategori Outlet</th><th>Email</th><th>HP Utama</th><th>HP Update</th><th>Agen</th><th>Blast</th><th>Respon</th><th>WA</th><th>Aksi</th></tr></thead>'
+    +'<tbody>'+(filtered.length?cards:'<tr><td colspan="15" class="empty">Tidak ada outlet yang cocok</td></tr>')+'</tbody>'
     +'</table></div></div>';
 }
 
