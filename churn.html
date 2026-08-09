@@ -911,6 +911,13 @@ function computeMetricRaw(metricKey,recs,period){
     // CLM-08 (4b): generik lewat UPSELL_PLATFORMS biar hardware ikut dihitung (brief: "dihitung metrik")
     return{actual:recs.reduce(function(s,r){return s+UPSELL_PLATFORMS.reduce(function(s2,p){return s2+upsellApprovedCount(r,p.key);},0);},0),unit:'count'};
   }
+  // 4 Agu (operator): ARPU (Team) ganti sumber ke UpsellTeamStore/Tim CX -- intercept SEBELUM
+  // FIN_METRIC_KEYS generik (yang lain: renewal_revenue/mrr/conversion_rate/upsell_attach TETAP
+  // dari FinancialsStore, nol perubahan).
+  if(metricKey==='renewal_arpu'){
+    var arpuCX=computeRenewalArpuTeamCX(period);
+    return{actual:arpuCX.arpu,unit:'Rp',denom:arpuCX.count,synced:arpuCX.synced};
+  }
   if(FIN_METRIC_KEYS.indexOf(metricKey)>=0){
     return computeFinancialsMetric(metricKey,recs,period);
   }
@@ -1260,6 +1267,26 @@ function computeRenewalArpuPersonal(period,agentName){
   var agents=AgentsConfig.getAll();
   var rows=fin.renewalsRaw.filter(function(r){
     return matchAgentFuzzy(r.creatorName,agents)===agentName;
+  });
+  var sum=rows.reduce(function(s,r){return s+r.subtotal;},0);
+  var outletSet={};var hasOutletId=false;
+  rows.forEach(function(r){if(r.outletId){hasOutletId=true;outletSet[r.outletId]=true;}});
+  var denom=hasOutletId?Object.keys(outletSet).length:rows.length;
+  return{arpu:denom?Math.round(sum/denom):0,count:denom,synced:true};
+}
+// 4 Agu (operator): ARPU (Team) versi Tim CX -- ganti sumber dari FinancialsStore (Data Invoice CX)
+// ke UpsellTeamStore (sheet RENEWAL & UPSELL 2026), scope roster Tim CX (CLM+CC+TC, definisi SAMA
+// kayak UPSELL_TEAM_VIEWS.TOTAL_CX). Definisi ARPU-nya REUSE persis computeRenewalArpuPersonal
+// (Sigma subtotal / DISTINCT Outlet_ID) -- cuma scope-nya roster CX, bukan 1 agen.
+function computeRenewalArpuTeamCX(period){
+  var fin=period?UpsellTeamStore.getMonth(period):null;
+  if(!fin||!fin.renewalsRaw||!fin.renewalsRaw.length||!fin.roster||!fin.roster.length)return{arpu:0,count:0,synced:false};
+  var rosterMap={};
+  fin.roster.forEach(function(r){rosterMap[r.name]=r.team;});
+  var cxTeams=UPSELL_TEAM_VIEWS.TOTAL_CX.teams;
+  var rows=fin.renewalsRaw.filter(function(r){
+    var tm=rosterMap[r.creatorName];
+    return tm&&cxTeams.indexOf(tm)>=0;
   });
   var sum=rows.reduce(function(s,r){return s+r.subtotal;},0);
   var outletSet={};var hasOutletId=false;
@@ -4399,6 +4426,9 @@ function renderResponseResults(){
     }
     return true;
   });
+  // 4 Agu (operator): urutan default Z-A by Expired Date (terbaru duluan) -- expiryDate format
+  // 'YYYY-MM-DD' (localDateStr), lexicographic compare = chronological compare, valid tanpa parse Date.
+  filtered.sort(function(a,b){return String(b.expiryDate||'').localeCompare(String(a.expiryDate||''));});
   var respTotalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
   respPage=Math.min(respPage,respTotalPages-1);
   var respPaged=filtered.slice(respPage*PAGE_SIZE,(respPage+1)*PAGE_SIZE);
@@ -4445,8 +4475,10 @@ function renderResponseResults(){
     +' <span style="font-size:12px;color:var(--tx3);margin:0 10px">Halaman '+(respPage+1)+'/'+respTotalPages+' ('+filtered.length+' cocok)</span> '
     +'<button class="btn btn-sec" id="resp-next-btn" style="padding:4px 10px;font-size:12px" '+(respPage>=respTotalPages-1?'disabled':'')+'>Berikutnya ›</button>'
     +'</div>';
-  el.innerHTML='<div style="margin-bottom:10px;font-size:12px;color:var(--tx3)">'+filtered.length+' dari '+pool.length+' outlet</div>'
-    +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;align-items:start">'
+  // 4 Agu (operator): grid multi-kolom -> list 1 kolom, biar urutan Z-A by Expired Date (baru
+  // ditambahin di atas) kebaca top-to-bottom -- di grid, urutan sort zigzag antar kolom, susah dibaca.
+  el.innerHTML='<div style="margin-bottom:10px;font-size:12px;color:var(--tx3)">'+filtered.length+' dari '+pool.length+' outlet · diurutkan Exp Date terbaru dulu</div>'
+    +'<div style="display:flex;flex-direction:column;gap:10px">'
     +(cards||'<div class="empty">Tidak ada outlet yang cocok</div>')+'</div>'
     +respPagerHtml;
 }
