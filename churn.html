@@ -7580,8 +7580,13 @@ function startApp(){
   // CLM-11 A3: sembunyiin tombol nav "Konfigurasi Akun" dari agent biasa. Lapisan TAMBAHAN/polish
   // doang -- guard beneran tetap function-level di renderKonfigurasiAkun() (defense-in-depth,
   // preseden panel-bocor CLM-06 -- nav-hide CSS-level sendirian BISA di-bypass).
-  var konfigTab=document.querySelector('.ntab[data-tab="konfigakun"]');
-  if(konfigTab)konfigTab.style.display=Auth.isSuperior()?'':'none';
+  // 4 Agu (operator): "Master & Assign" + "Kelola Target" juga -- dua-duanya UDAH punya guard
+  // function-level (renderMaster/renderTargetsManage nolak non-leader), cuma tombol nav-nya belum
+  // ikut disembunyiin. Pola sama persis, list-driven biar nggak dupikasi 3x querySelector.
+  ['konfigakun','master','targetsmanage'].forEach(function(tabKey){
+    var tabBtn=document.querySelector('.ntab[data-tab="'+tabKey+'"]');
+    if(tabBtn)tabBtn.style.display=Auth.isSuperior()?'':'none';
+  });
   var savedTheme=localStorage.getItem('klopos_theme')||'light';
   document.documentElement.setAttribute('data-theme',savedTheme);
   document.getElementById('theme-btn').textContent=savedTheme==='dark'?'☀️':'🌙';
