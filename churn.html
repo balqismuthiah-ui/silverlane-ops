@@ -565,6 +565,37 @@ function respOutcome(resp){
   if(cat==='RESPON NEGATIF')return'churn';
   return'other'; // NO RESPONSE, NOMOR TIDAK VALID, BUKAN RENEWAL
 }
+// 4 Agu (operator): auto-mark response jadi RESPON POSITIF/PAID CRM atau PAID SELF ONBOARD begitu
+// paymentStatus sync jadi 'paid' -- agent nggak perlu update manual buat case yang emang udah kebayar.
+// Exclude SEMUA rawExcludeCat (cockpit/force-activation/XL1BIZ) -- konsisten sama definisi "bukan
+// renewal customer asli" yang udah dipakai metrik konversi (operator konfirmasi ikut exclude, bukan
+// cockpit doang). Channel dari r.pembayaranMelalui ('Pembayaran Melalui'): 'dashboard' = Self Onboard,
+// SELAIN itu (CRM dkk) = default PAID CRM. Override respons manual APA PUN (termasuk Respon Negatif)
+// di record yang SAMA -- compound-key id udah per-cohort-month, jadi "record yang sama" otomatis =
+// "periode yang sama" (beda bulan = beda id/record, nggak kesenggol).
+function computeAutoPaidResponse(r){
+  if(r.paymentStatus!=='paid')return null;
+  if(rawExcludeCat(r))return null;
+  var isDashboard=String(r.pembayaranMelalui||'').trim().toLowerCase()==='dashboard';
+  return{category:'RESPON POSITIF',detail:isDashboard?'PAID SELF ONBOARD':'PAID CRM'};
+}
+// Mutasi in-place + balikin true kalau BERUBAH (idempotent -- sync ulang tanpa perubahan nyata nggak
+// nge-trigger apa-apa). Caller kumpulin record yang balik true, write-back BATCH abis Store.set(),
+// bukan di tengah loop -- field lain (note/evidenceLink/updatedPhone/waStatus) TETAP dipertahankan,
+// cuma category/detail yang ke-promote.
+function applyAutoPaidResponse(r){
+  var target=computeAutoPaidResponse(r);
+  if(!target)return false;
+  var cur=r.response||{};
+  if(cur.category===target.category&&cur.detail===target.detail)return false;
+  var prevCat=cur.category||null,prevDetail=cur.detail||null;
+  r.response=Object.assign({},cur,{category:target.category,detail:target.detail,updatedAt:new Date().toISOString(),updatedBy:'Sistem (Auto-Paid)'});
+  r.responseAudit=r.responseAudit||[];
+  r.responseAudit.push({by:'Sistem (Auto-Paid)',at:new Date().toISOString(),field:'kategori',
+    from:prevCat?(prevCat+(prevDetail?' - '+prevDetail:'')):'Belum Dikategorikan',
+    to:target.category+' - '+target.detail});
+  return true;
+}
 
 const MONTH_KEYS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 // ── CADENCE BLAST H-3/H+2/H+8 (sumber tunggal, dipakai CLM-04 & CLM-05) ──────
@@ -6291,6 +6322,10 @@ function syncMonthList(months,opts){
         if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
         var rows=json.data||[];
         var d=Store.get();
+        // 4 Agu (operator): auto-mark RESPON POSITIF/PAID CRM/SELF ONBOARD begitu paymentStatus jadi
+        // 'paid' -- ditumpuk dulu di sini, write-back BATCH abis Store.set() (bukan per-baris di tengah
+        // loop, biar nggak nembak GAS 1-per-1 sinkron sebelum lanjut baris berikutnya).
+        var autoPaidChanged=[];
         rows.forEach(function(row){
           var outletId=String(row['ID Outlet']!=null?row['ID Outlet']:'').trim();if(!outletId)return;
           var bulanRaw=String(row['__bulan']||'').trim();
@@ -6359,14 +6394,21 @@ function syncMonthList(months,opts){
             if(bulan&&_oc.indexOf(bulan)<0)_oc.push(bulan);
             Object.keys(nf).forEach(function(k){ex[k]=nf[k];});
             ex.cohortMonths=_oc.join(',');
+            if(applyAutoPaidResponse(ex))autoPaidChanged.push(ex);
           }else{
             var rec=mkRec(recId,nf.outletName,expiry,phone,'',null,nf.email,nf.productPackage);
             Object.keys(nf).forEach(function(k){rec[k]=nf[k];});
             if(bulan)rec.cohortMonths=bulan;
             d.records.push(rec);
+            if(applyAutoPaidResponse(rec))autoPaidChanged.push(rec);
           }
         });
         Store.set(d);
+        if(autoPaidChanged.length){
+          console.log('[auto-paid] '+autoPaidChanged.length+' respons ter-update otomatis (paid CRM/Self Onboard), write-back berjalan di background');
+          if(!opts.silent)toast('✅ '+autoPaidChanged.length+' respons auto-update jadi Paid CRM/Self Onboard',4000);
+          autoPaidChanged.forEach(function(r){writeBackResponse(r,'Sistem (Auto-Paid)');});
+        }
         setTimeout(function(){doNext(idx+1);},1500);
       })
       .catch(function(err){
@@ -6502,6 +6544,8 @@ function syncFromGAS(opts){
       if(!rows.length){toast('Tidak ada data dari sheet (total: '+( json.total||0)+')');return;}
       var d=Store.get();
       var imported=0,updated=0,skipped=0;
+      // 4 Agu (operator): auto-mark RESPON POSITIF/PAID CRM/SELF ONBOARD (lihat catatan di syncMonthList)
+      var autoPaidChanged=[];
       rows.forEach(function(row){
         var outletId=String(row['ID Outlet']!=null?row['ID Outlet']:'').trim();
         if(!outletId)return;
@@ -6571,15 +6615,22 @@ function syncFromGAS(opts){
           Object.keys(newFields).forEach(function(k){existing[k]=newFields[k];});
           existing.cohortMonths=_ec.join(',');
           updated++;
+          if(applyAutoPaidResponse(existing))autoPaidChanged.push(existing);
         }else{
           var rec=mkRec(recId,newFields.outletName,expiry,phone,'',null,newFields.email,newFields.productPackage);
           Object.keys(newFields).forEach(function(k){rec[k]=newFields[k];});
           if(bulan)rec.cohortMonths=bulan;
           d.records.push(rec);
           imported++;
+          if(applyAutoPaidResponse(rec))autoPaidChanged.push(rec);
         }
       });
       Store.set(d);
+      if(autoPaidChanged.length){
+        console.log('[auto-paid] '+autoPaidChanged.length+' respons ter-update otomatis (paid CRM/Self Onboard), write-back berjalan di background');
+        toast('✅ '+autoPaidChanged.length+' respons auto-update jadi Paid CRM/Self Onboard',4000);
+        autoPaidChanged.forEach(function(r){writeBackResponse(r,'Sistem (Auto-Paid)');});
+      }
       setLastSyncAt(Date.now());
       var lbl=monthParam?monthParam+' 26':'semua bulan';
       toast('Sync '+lbl+': '+imported+' baru, '+updated+' update — '+d.records.length+' total records. Mengambil data agen...',5000);
