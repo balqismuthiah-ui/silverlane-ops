@@ -288,6 +288,7 @@ tr:hover td{background:var(--sur2)}
     <button class="ntab" data-tab="invoice">🧾 Invoice Tracker</button>
     <button class="ntab" data-tab="invsummary">📆 Invoice Summary</button>
     <button class="ntab" data-tab="targetsmanage">🎯 Kelola Target</button>
+    <button class="ntab" data-tab="myjourney">🚀 My Journey</button>
     <button class="ntab" data-tab="konfigakun">⚙️ Konfigurasi Akun</button>
   </div>
 
@@ -1310,6 +1311,111 @@ function computeRenewalArpuPersonal(period,agentName){
   var denom=hasOutletId?Object.keys(outletSet).length:rows.length;
   return{arpu:denom?Math.round(sum/denom):0,count:denom,synced:true};
 }
+// 10-11 Agu (operator): "My Journey" -- laporan performa personal per-agen, granularitas day/week/
+// month/year, lintas berapa pun bulan UpsellTeamStore yang KEBETULAN udah tersync (UpsellTeamStore
+// cuma auto-sync bulan berjalan+sebelumnya -- lihat autoSyncFinancialsStores -- jadi year/week view
+// defaultnya BAKAL parsial kalau leader belum sync manual per-bulan; sync metadata di return value
+// dipakai UI buat nunjukin "X/N bulan tersync" TANPA nyembunyiin angka yang emang udah ada).
+// periodSel shape per granularity:
+//   day:   {date:'YYYY-MM-DD'}
+//   week:  {weekStart:'YYYY-MM-DD', weekEnd:'YYYY-MM-DD'}  (Senin-Minggu, bisa lintas 2 bulan)
+//   month: {monthKey:'Jan'..'Dec'}
+//   year:  {} (discope oleh param `year`, nggak butuh field tambahan)
+function myJourneyMonthsForPeriod(granularity,periodSel){
+  if(granularity==='day')return[MONTH_KEYS[parseInt(periodSel.date.slice(5,7),10)-1]];
+  if(granularity==='week'){
+    var m1=MONTH_KEYS[parseInt(periodSel.weekStart.slice(5,7),10)-1];
+    var m2=MONTH_KEYS[parseInt(periodSel.weekEnd.slice(5,7),10)-1];
+    return m1===m2?[m1]:[m1,m2];
+  }
+  if(granularity==='month')return[periodSel.monthKey];
+  return MONTH_KEYS.slice(); // 'year'
+}
+// localDateStr (WIB-safe) dipake di sini, BUKAN paidDate.slice(8,10) -- itu cuma valid buat
+// day-of-month dalam 1 bulan yang udah diketahui (lihat buildDailyCumulativeSeries), My Journey
+// butuh bucketing lintas-bulan buat week/year.
+function myJourneyRowInPeriod(r,granularity,periodSel,year){
+  var d=localDateStr(r.paidDate);
+  if(!d||d.slice(0,4)!==String(year))return false;
+  if(granularity==='day')return d===periodSel.date;
+  if(granularity==='week')return d>=periodSel.weekStart&&d<=periodSel.weekEnd;
+  if(granularity==='month')return d.slice(5,7)===String(MONTH_KEYS.indexOf(periodSel.monthKey)+1).padStart(2,'0');
+  return true; // 'year' -- udah discope d.slice(0,4) di atas
+}
+// 1 agen, 1 periode. Join creatorName->agen pakai matchAgentFuzzy yang sama kayak fungsi personal
+// lain di atas (exact-match dulu, fuzzy fallback, ambiguous->null bukan nebak -- row unmatched
+// NGGAK masuk hitungan siapa pun, konsisten kebijakan "0 jujur" yang udah ada).
+function computeMyJourneyPersonal(agentName,granularity,periodSel,year){
+  var agents=AgentsConfig.getAll();
+  var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
+  var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
+  var renewalRows=[],upsellRows=[];
+  syncedMonths.forEach(function(m){
+    var fin=UpsellTeamStore.getMonth(m);
+    (fin.renewalsRaw||[]).forEach(function(r){
+      if(matchAgentFuzzy(r.creatorName,agents)===agentName&&myJourneyRowInPeriod(r,granularity,periodSel,year))renewalRows.push(r);
+    });
+    (fin.upsellRaw||[]).forEach(function(r){
+      if(matchAgentFuzzy(r.creatorName,agents)===agentName&&myJourneyRowInPeriod(r,granularity,periodSel,year))upsellRows.push(r);
+    });
+  });
+  var lowest=null,highest=null;
+  renewalRows.forEach(function(r){
+    if(lowest===null||r.subtotal<lowest)lowest=r.subtotal;
+    if(highest===null||r.subtotal>highest)highest=r.subtotal;
+  });
+  var mrr=renewalRows.reduce(function(s,r){return s+r.subtotal;},0); // KONFIRMASI operator: subtotal apa adanya, TANPA normalisasi termin Bulanan/Tahunan
+  var outletSet={};var hasOutletId=false;
+  renewalRows.forEach(function(r){if(r.outletId){hasOutletId=true;outletSet[r.outletId]=true;}});
+  var denom=hasOutletId?Object.keys(outletSet).length:renewalRows.length;
+  var arpu=denom?Math.round(mrr/denom):0; // formula sama persis computeRenewalArpuPersonal di atas
+  var upsellRevenue=upsellRows.reduce(function(s,r){return s+r.subtotal;},0);
+  return{
+    agentName:agentName,
+    renewal:{lowest:lowest||0,highest:highest||0,mrr:mrr,arpu:arpu,dealCount:renewalRows.length},
+    upsell:{revenue:upsellRevenue,count:upsellRows.length,claims:upsellRows.map(function(r){
+      return{addonType:r.addonType,subtotal:r.subtotal,bundleName:r.bundleName,paidDate:r.paidDate};
+    })},
+    sync:{relevantMonths:relevantMonths,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})}
+  };
+}
+// Total tim (buat "kontribusi % ke tim" di agent view -- SATU-SATUNYA bentuk pembanding yang boleh
+// ditampilin ke agen, jangan pernah bocorin angka individu agen lain). Filter row SAMA persis kayak
+// personal, row yang matchAgentFuzzy-nya null dikeluarin dari kedua sisi biar rasio apple-to-apple.
+function computeMyJourneyTeamTotal(granularity,periodSel,year){
+  var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
+  var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
+  var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
+  var mrr=0,upsellRevenue=0;
+  syncedMonths.forEach(function(m){
+    var fin=UpsellTeamStore.getMonth(m);
+    (fin.renewalsRaw||[]).forEach(function(r){
+      if(myJourneyRowInPeriod(r,granularity,periodSel,year)&&matchAgentFuzzy(r.creatorName,agents))mrr+=r.subtotal;
+    });
+    (fin.upsellRaw||[]).forEach(function(r){
+      if(myJourneyRowInPeriod(r,granularity,periodSel,year)&&matchAgentFuzzy(r.creatorName,agents))upsellRevenue+=r.subtotal;
+    });
+  });
+  return{mrr:mrr,upsellRevenue:upsellRevenue,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})};
+}
+// Exclude leaderboard default: nonaktif (CLM-06) ATAU tanggal selesai udah lewat. resignDate SENGAJA
+// independen dari `status` (nggak otomatis flip satu sama lain) -- data historis tetap kebaca kalau
+// leader drill-in langsung ke agen ybs, cuma nggak nongol di daftar leaderboard default.
+function isMyJourneyExcluded(a){
+  return a.status==='inactive'||(a.resignDate&&a.resignDate<=localDateStr(new Date()));
+}
+// Senin-Minggu dari 1 tanggal anchor (buat granularitas 'week'). Format masuk/keluar YYYY-MM-DD,
+// konsisten sama localDateStr.
+function myJourneyWeekRange(anchorStr){
+  var d=new Date(anchorStr+'T00:00:00');
+  if(isNaN(d.getTime()))d=new Date();
+  var dow=d.getDay(); // 0=Minggu..6=Sabtu
+  var diffToMon=dow===0?-6:1-dow;
+  var mon=new Date(d);mon.setDate(d.getDate()+diffToMon);
+  var sun=new Date(mon);sun.setDate(mon.getDate()+6);
+  function toStr(x){return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');}
+  return{weekStart:toStr(mon),weekEnd:toStr(sun)};
+}
 // 4 Agu (operator): Renewal Revenue+ARPU (Team) versi Tim CX -- ganti sumber dari FinancialsStore
 // (Data Invoice CX) ke UpsellTeamStore (sheet RENEWAL & UPSELL 2026), scope roster Tim CX (CLM+CC+TC,
 // definisi SAMA kayak UPSELL_TEAM_VIEWS.TOTAL_CX). ARPU REUSE persis computeRenewalArpuPersonal
@@ -2006,17 +2112,17 @@ var AgentsConfig={
   // -> begitu ke-sync ke server, server nolak (invalid_payload, name-tanpa-email) -- ketauan pas dry-run
   // domain baru. Email di bawah WAJIB match persis roster BOOTSTRAP_ALLOWLIST_ONCE di GAS.
   DEFS:[
-    {id:'a1',name:'Erizka',email:'erizka.dewanty@majoo.id',initials:'ED',displayName:'Erizka',role:'agent',status:'active'},
-    {id:'a2',name:'Elly',email:'eliyawati.eli@majoo.id',initials:'EL',displayName:'Elly (Eliyawati)',role:'agent',status:'active'},
-    {id:'a3',name:'Finne',email:'finne.fadhilla@majoo.id',initials:'FF',displayName:'Finne',role:'agent',status:'active'},
-    {id:'a4',name:'Fauziyah',email:'fauziyah.nisa@majoo.id',initials:'FC',displayName:'Fauziyah',role:'agent',status:'active'},
-    {id:'a5',name:'Novianty',email:'novianty@majoo.id',initials:'NV',displayName:'Novianty',role:'agent',status:'active'},
-    {id:'a6',name:'Sarah',email:'sarah.elizabeth@majoo.id',initials:'SE',displayName:'Sarah',role:'agent',status:'active'},
-    {id:'a7',name:'Sunarti',email:'sunarti@majoo.id',initials:'SN',displayName:'Sunarti',role:'agent',status:'active'},
-    {id:'a8',name:'Shevtya',email:'shevtya.rahma@majoo.id',initials:'SR',displayName:'Shevtya',role:'agent',status:'active'},
-    {id:'a9',name:'Sekar',email:'sekar@majoo.id',initials:'SK',displayName:'Sekar',role:'leader',status:'active'},
-    {id:'a10',name:'Muthia',email:'balqis.muthiah@majoo.id',initials:'BM',displayName:'Muthia',role:'leader',status:'active'},
-    {id:'a11',name:'Ryan',email:'ryanza.rudiananda@majoo.id',initials:'RR',displayName:'Ryan',role:'leader',status:'active'}
+    {id:'a1',name:'Erizka',email:'erizka.dewanty@majoo.id',initials:'ED',displayName:'Erizka',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a2',name:'Elly',email:'eliyawati.eli@majoo.id',initials:'EL',displayName:'Elly (Eliyawati)',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a3',name:'Finne',email:'finne.fadhilla@majoo.id',initials:'FF',displayName:'Finne',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a4',name:'Fauziyah',email:'fauziyah.nisa@majoo.id',initials:'FC',displayName:'Fauziyah',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a5',name:'Novianty',email:'novianty@majoo.id',initials:'NV',displayName:'Novianty',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a6',name:'Sarah',email:'sarah.elizabeth@majoo.id',initials:'SE',displayName:'Sarah',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a7',name:'Sunarti',email:'sunarti@majoo.id',initials:'SN',displayName:'Sunarti',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a8',name:'Shevtya',email:'shevtya.rahma@majoo.id',initials:'SR',displayName:'Shevtya',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a9',name:'Sekar',email:'sekar@majoo.id',initials:'SK',displayName:'Sekar',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a10',name:'Muthia',email:'balqis.muthiah@majoo.id',initials:'BM',displayName:'Muthia',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a11',name:'Ryan',email:'ryanza.rudiananda@majoo.id',initials:'RR',displayName:'Ryan',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''}
   ],
   _cache:null,
   getAll:function(){
@@ -2044,7 +2150,7 @@ var AgentsConfig={
     var all=this.getAll();
     var existing=all.find(function(a){return a.name===ag.name;});
     if(existing){Object.assign(existing,ag,{id:existing.id,role:existing.role,status:existing.status});}
-    else{all.push(Object.assign({role:'agent',status:'active'},ag,{id:uid()}));}
+    else{all.push(Object.assign({role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},ag,{id:uid()}));}
     this.save(all);
   },
   update:function(id,ag){var all=this.getAll();var i=all.findIndex(function(a){return a.id===id;});if(i>=0){all[i]=Object.assign({},all[i],ag,{id:id});this.save(all);}},
@@ -2440,6 +2546,13 @@ var syncMonthFilter='';
 var dailyViewBucketSel='NASIONAL'; // CLM-11 Fase C (rev. QA round 2): bucket aktif Daily view (NASIONAL/CLM/CC/TC/SELF_ONBOARD/SALES)
 var dailyViewMetricSel='renewal'; // CLM-11 Fase C: metrik aktif Daily view (renewal/upsell revenue)
 var dailyViewSeriesMode='cumulative'; // CLM-11 Fase G (25 Jul): 'cumulative' (MTD berjalan) atau 'daily' (per-hari, buat liat tren gap)
+// 10-11 Agu (operator): "My Journey" -- state filter granularitas+periode+drill-in agen (leader-only).
+var myJourneyGranularity='month'; // 'day'|'week'|'month'|'year'
+var myJourneyDaySel=localDateStr(new Date());
+var myJourneyWeekAnchor=localDateStr(new Date()); // tanggal apa aja dalam minggu target, Senin-Minggu dihitung dari sini
+var myJourneyMonthSel=MONTH_KEYS[new Date().getMonth()];
+var myJourneyYearSel='2026'; // param, bukan magic-string ditebar -- gampang extend pas ada data 2024/2025
+var myJourneySelectedAgent=null; // leader-only: null=leaderboard, nama=drill-in ke 1 agen
 // CLM-10 §1: Invoice Tracker state -- invAgentFilter cuma relevan buat leader (pola sama wsAgentFilter)
 // invCreatorFilter (13 Jul, feedback operator): filter by PEMBUAT invoice (creatorName) -- beda dari
 // invAgentFilter (agentName hasil join/tag). Dipake buat gampangin cari invoice buatan leader yg
@@ -4837,6 +4950,9 @@ function renderKonfigurasiAkun(){
       +'<td><input class="ag-inp" style="width:46px" type="text" value="'+a.initials+'" data-agid="'+a.id+'" data-field="initials" maxlength="4"></td>'
       +'<td><input class="ag-inp" style="width:130px" type="text" value="'+a.displayName+'" data-agid="'+a.id+'" data-field="displayName"></td>'
       +'<td><input class="ag-inp" style="width:160px" type="email" value="'+(a.email||'')+'" data-agid="'+a.id+'" data-field="email" placeholder="nama@majoo.id"></td>'
+      +'<td><input class="ag-inp" style="width:100px" type="text" value="'+(a.nip||'')+'" data-agid="'+a.id+'" data-field="nip" placeholder="NIP"></td>'
+      +'<td><input class="ag-inp" style="width:130px" type="date" value="'+(a.joinDate||'')+'" data-agid="'+a.id+'" data-field="joinDate"></td>'
+      +'<td><input class="ag-inp" style="width:130px" type="date" value="'+(a.resignDate||'')+'" data-agid="'+a.id+'" data-field="resignDate"></td>'
       +'<td><button class="action-btn '+(isInactive?'ab-view':'ab-wl')+'" data-act="toggle-agent-status" data-agid="'+a.id+'" title="'+(isInactive?'Aktifkan kembali — bisa login & masuk pool assignment lagi':'Nonaktifkan — dicabut dari login & pool assignment, data historis tetap utuh')+'">'+(isInactive?'🟢 Aktifkan':'🔴 Nonaktifkan')+'</button></td>'
       +'</tr>';
   }).join('');
@@ -4846,8 +4962,8 @@ function renderKonfigurasiAkun(){
     +'<div class="cfg-panel">'
     +'<div class="cfg-title">👤 Inisial Agen</div>'
     +'<div class="tbl-wrap" style="margin-bottom:8px"><table class="ctbl">'
-    +'<thead><tr><th>Nama</th><th>Inisial</th><th>Tampilan</th><th>Email</th><th></th></tr></thead>'
-    +'<tbody>'+(agentRows||'<tr><td colspan="5" class="empty">—</td></tr>')+'</tbody>'
+    +'<thead><tr><th>Nama</th><th>Inisial</th><th>Tampilan</th><th>Email</th><th>NIP</th><th>Tgl Join</th><th>Tgl Selesai</th><th></th></tr></thead>'
+    +'<tbody>'+(agentRows||'<tr><td colspan="8" class="empty">—</td></tr>')+'</tbody>'
     +'</table></div>'
     +'<button class="btn btn-sec" id="add-agent-btn" style="font-size:12px;padding:5px 10px">+ Tambah Info Agen</button>'
     +'<div class="pay-info" style="margin-top:6px">Inisial digunakan sebagai variabel penutup template</div>'
@@ -4863,6 +4979,111 @@ function renderKonfigurasiAkun(){
     +'<div id="emergency-otp-result" style="margin-top:8px"></div>'
     +'</div>'
     +'</div>';
+}
+
+// ── TAB: MY JOURNEY (10-11 Agu) ───────────────────────────────────────────
+// Laporan performa personal per-agen. Agen liat diri sendiri doang (pembanding cuma % kontribusi
+// ke total tim, NGGAK PERNAH angka individu agen lain). Leader liat leaderboard compare-semua-agen,
+// ATAU drill-in ke 1 agen -- drill-in manggil FUNGSI YANG SAMA (renderMyJourneyPersonalView) yg
+// dipake buat agen liat diri sendiri, biar view-nya identik & nggak ada 2 markup yg bisa divergen.
+function myJourneyMetricCard(label,valueHtml){
+  return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+label+'</div>'
+    +'<div style="font-size:20px;font-weight:800;color:var(--tx)">'+valueHtml+'</div></div>';
+}
+// 1 fungsi, 2 caller (agent's own view & leader drill-in) -- lihat komentar di atas.
+function renderMyJourneyPersonalView(agentName,granularity,periodSel,year){
+  var personal=computeMyJourneyPersonal(agentName,granularity,periodSel,year);
+  var team=computeMyJourneyTeamTotal(granularity,periodSel,year);
+  var mrrShare=team.mrr?Math.round(personal.renewal.mrr/team.mrr*100):0;
+  var upsellShare=team.upsellRevenue?Math.round(personal.upsell.revenue/team.upsellRevenue*100):0;
+  var shareHtml='<div class="pay-info" style="margin-bottom:8px">Kontribusi ke total tim: MRR '+mrrShare+'%, Upsell '+upsellShare+'%</div>';
+  var syncNote=personal.sync.missingMonths.length
+    ?'<div class="pay-info" style="margin-bottom:8px;color:var(--org)">⚠ Data '+personal.sync.syncedMonths.length+'/'+personal.sync.relevantMonths.length+' bulan tersync ('+personal.sync.missingMonths.join(', ')+' belum) — angka di bawah cuma dari bulan yang udah disync.</div>'
+    :'';
+  var cards='<div class="grid4">'
+    +myJourneyMetricCard('Harga Terendah',fmtRpShort(personal.renewal.lowest))
+    +myJourneyMetricCard('Harga Tertinggi',fmtRpShort(personal.renewal.highest))
+    +myJourneyMetricCard('MRR',fmtRpShort(personal.renewal.mrr))
+    +myJourneyMetricCard('ARPU',fmtRpShort(personal.renewal.arpu))
+    +'</div>';
+  var upsellRowsHtml=personal.upsell.claims.length
+    ?personal.upsell.claims.map(function(c){
+      return'<tr><td>'+fmtDate(c.paidDate)+'</td><td>'+(c.addonType||'—')+'</td><td>'+(c.bundleName||'—')+'</td><td>'+fmtRpFull(c.subtotal)+'</td></tr>';
+    }).join('')
+    :'<tr><td colspan="4" class="empty">Belum ada upsell di periode ini</td></tr>';
+  return'<div class="ov-section"><div class="ov-section-title">💰 Renewal — '+agentName+'</div>'+syncNote+shareHtml+cards+'</div>'
+    +'<div class="ov-section"><div class="ov-section-title">🧩 List Upsell ('+personal.upsell.count+' klaim, '+fmtRpFull(personal.upsell.revenue)+')</div>'
+    +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+    +'<thead><tr><th>Tanggal</th><th>Add-On</th><th>Produk</th><th>Nilai</th></tr></thead>'
+    +'<tbody>'+upsellRowsHtml+'</tbody></table></div></div></div>';
+}
+function myJourneyLeaderboardHtml(granularity,periodSel,year){
+  var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent'&&!isMyJourneyExcluded(a);});
+  var rowsHtml=agents.map(function(a){
+    var p=computeMyJourneyPersonal(a.name,granularity,periodSel,year);
+    var syncFlag=p.sync.missingMonths.length?' <span style="font-size:9px;color:var(--org)" title="'+p.sync.missingMonths.join(', ')+' belum sync">⚠</span>':'';
+    return'<tr><td><strong>'+a.name+'</strong>'+syncFlag+'</td>'
+      +'<td>'+fmtRpFull(p.renewal.lowest)+'</td>'
+      +'<td>'+fmtRpFull(p.renewal.highest)+'</td>'
+      +'<td>'+fmtRpFull(p.renewal.mrr)+'</td>'
+      +'<td>'+fmtRpFull(p.renewal.arpu)+'</td>'
+      +'<td>'+p.upsell.count+' ('+fmtRpFull(p.upsell.revenue)+')</td></tr>';
+  }).join('');
+  return'<div class="ov-section"><div class="ov-section-title">👥 Compare Semua Agen</div>'
+    +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+    +'<thead><tr><th>Agen</th><th>Harga Terendah</th><th>Harga Tertinggi</th><th>MRR</th><th>ARPU</th><th>Upsell</th></tr></thead>'
+    +'<tbody>'+(rowsHtml||'<tr><td colspan="6" class="empty">Belum ada agen aktif</td></tr>')+'</tbody></table></div></div></div>';
+}
+function renderMyJourney(){
+  var isSup=Auth.isSuperior();
+  var me=Auth.getActive();
+
+  var periodSel;
+  if(myJourneyGranularity==='day')periodSel={date:myJourneyDaySel};
+  else if(myJourneyGranularity==='week')periodSel=myJourneyWeekRange(myJourneyWeekAnchor);
+  else if(myJourneyGranularity==='month')periodSel={monthKey:myJourneyMonthSel};
+  else periodSel={};
+
+  var granLabels={day:'Harian',week:'Mingguan',month:'Bulanan',year:'Tahunan'};
+  var granSelHtml='<select id="mj-gran-sel" style="width:auto;padding:4px 8px;font-size:11px">'
+    +['day','week','month','year'].map(function(g){return'<option value="'+g+'"'+(myJourneyGranularity===g?' selected':'')+'>'+granLabels[g]+'</option>';}).join('')
+    +'</select>';
+
+  var periodCtrlHtml='';
+  if(myJourneyGranularity==='day'){
+    periodCtrlHtml='<input type="date" id="mj-day-sel" value="'+myJourneyDaySel+'" style="padding:4px 8px;font-size:11px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx)">';
+  }else if(myJourneyGranularity==='week'){
+    periodCtrlHtml='<input type="date" id="mj-week-sel" value="'+myJourneyWeekAnchor+'" style="padding:4px 8px;font-size:11px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx)">'
+      +'<span style="font-size:10px;color:var(--tx3)">'+fmtDate(periodSel.weekStart)+' – '+fmtDate(periodSel.weekEnd)+'</span>';
+  }else if(myJourneyGranularity==='month'){
+    periodCtrlHtml='<select id="mj-month-sel" style="width:auto;padding:4px 8px;font-size:11px">'
+      +MONTH_KEYS.map(function(m){return'<option value="'+m+'"'+(myJourneyMonthSel===m?' selected':'')+'>'+m+'</option>';}).join('')
+      +'</select>';
+  }
+  var yearSelHtml='<select id="mj-year-sel" style="width:auto;padding:4px 8px;font-size:11px"><option value="2026"'+(myJourneyYearSel==='2026'?' selected':'')+'>2026</option></select>';
+
+  var agentPickerHtml='';
+  if(isSup){
+    var pickerAgents=AgentsConfig.getAll().filter(function(a){return a.role==='agent'&&!isMyJourneyExcluded(a);});
+    agentPickerHtml='<select id="mj-agent-sel" style="width:auto;padding:4px 8px;font-size:11px">'
+      +'<option value="">— Semua Agen (Compare) —</option>'
+      +pickerAgents.map(function(a){return'<option value="'+a.name+'"'+(myJourneySelectedAgent===a.name?' selected':'')+'>'+a.name+'</option>';}).join('')
+      +'</select>';
+  }
+
+  var controlsHtml='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">'
+    +granSelHtml+periodCtrlHtml+yearSelHtml+agentPickerHtml+'</div>';
+
+  var bodyHtml;
+  if(!isSup){
+    bodyHtml=renderMyJourneyPersonalView(me,myJourneyGranularity,periodSel,myJourneyYearSel);
+  }else if(!myJourneySelectedAgent){
+    bodyHtml=myJourneyLeaderboardHtml(myJourneyGranularity,periodSel,myJourneyYearSel);
+  }else{
+    bodyHtml=renderMyJourneyPersonalView(myJourneySelectedAgent,myJourneyGranularity,periodSel,myJourneyYearSel);
+  }
+
+  document.getElementById('tab-content').innerHTML=controlsHtml+bodyHtml;
 }
 
 // ── TAB: WATCHLIST ─────────────────────────────────────────────────────────
@@ -5463,6 +5684,7 @@ function renderTab(tab){
     case 'invoice':renderInvoiceTracker();break;
     case 'invsummary':renderInvoiceSummary();break;
     case 'targetsmanage':renderTargetsManage();break;
+    case 'myjourney':renderMyJourney();break;
     case 'konfigakun':renderKonfigurasiAkun();break;
   }
 }
@@ -7487,6 +7709,12 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='daily-view-metric-sel'){dailyViewMetricSel=tgt.value;renderTab('overview');return;} // 18 Jul: dropdown metrik (renewal/upsell/total)
   if(tgt.id==='daily-view-mode-sel'){dailyViewSeriesMode=tgt.value;renderTab('overview');return;} // 25 Jul: dropdown kumulatif/harian
   if(tgt.id==='invsum-month'){invsumMonth=tgt.value;renderTab('invsummary');return;}
+  if(tgt.id==='mj-gran-sel'){myJourneyGranularity=tgt.value;renderTab('myjourney');return;}
+  if(tgt.id==='mj-day-sel'){myJourneyDaySel=tgt.value;renderTab('myjourney');return;}
+  if(tgt.id==='mj-week-sel'){myJourneyWeekAnchor=tgt.value;renderTab('myjourney');return;}
+  if(tgt.id==='mj-month-sel'){myJourneyMonthSel=tgt.value;renderTab('myjourney');return;}
+  if(tgt.id==='mj-year-sel'){myJourneyYearSel=tgt.value;renderTab('myjourney');return;}
+  if(tgt.id==='mj-agent-sel'){myJourneySelectedAgent=tgt.value||null;renderTab('myjourney');return;}
   if(tgt.id==='tarik-cp-sel'){tarikCp=tgt.value;blastPage=0;refreshBlastBody();return;} // CLM-05: Jadwal Blast = filter tabel (WYSIWYG)
   if(tgt.classList.contains('blast-chk')){
     if(tgt.checked)csvSelectedIds.add(tgt.dataset.key);
