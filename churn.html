@@ -2704,14 +2704,43 @@ function writeBackGcWatchlist(payload){
   });
 }
 // Kirim ulang antrean yang tertunda (dipanggil saat startApp & setelah sync)
+// (10 Agu, insiden auto-paid 1724-item flood): dulu loop tanpa jeda+tanpa circuit-breaker -- kalau
+// GAS lagi down/overload, tetep maksa lewatin SELURUH antrean satu-satu (bisa jam-an) sambil terus
+// nyerbu server yg lagi struggling, dan nyandera SEMUA write lain (lewat _wbChain yg sama) selama itu.
+// Sekarang: jeda WB_FLUSH_GAP_MS antar-item (kasih napas ke server+operasi lain), dan berhenti abis
+// WB_FLUSH_MAX_CONSEC_FAIL gagal beruntun -- sisa antrean disimpen, dicoba lagi di panggilan berikutnya
+// (sync/startApp selanjutnya), bukan digebrak terus di pass yang sama.
+var WB_FLUSH_GAP_MS=400,WB_FLUSH_MAX_CONSEC_FAIL=5;
 function wbFlush(){
   var q=wbQueueGet();if(!q.length)return;
-  var remaining=[];var i=0;
+  var remaining=[];var i=0;var consecFail=0;
   (function next(){
-    if(i>=q.length){wbQueueSet(remaining);if(remaining.length<q.length&&remaining.length===0)toast('✓ Antrean write-back terkirim');return;}
+    if(i>=q.length||consecFail>=WB_FLUSH_MAX_CONSEC_FAIL){
+      remaining=remaining.concat(q.slice(i));
+      wbQueueSet(remaining);
+      if(remaining.length<q.length&&remaining.length===0)toast('✓ Antrean write-back terkirim');
+      return;
+    }
     var item=q[i++];
-    _gasPost(item).then(function(){next();}).catch(function(){remaining.push(item);next();});
+    _gasPost(item).then(function(){consecFail=0;setTimeout(next,WB_FLUSH_GAP_MS);}).catch(function(){consecFail++;remaining.push(item);setTimeout(next,WB_FLUSH_GAP_MS);});
   })();
+}
+// Auto-paid bisa nge-generate ratusan/ribuan perubahan sekaligus pas first-run full-sync (semua
+// record historis yg udah paid tp belum ke-mark kesapu bareng). Nembak writeBackResponse buat SEMUANYA
+// serentak nyumpelin _wbChain (dipakai bareng SEMUA write lain, termasuk Sync Agen yg auto-jalan abis
+// sync) -- itu yg bikin insiden 10 Agu (1724 item ngantre, Sync Agen ikut nyangkut). Sekarang: cuma
+// WB_AUTOPAID_IMMEDIATE_CAP item pertama yg coba kirim LIVE (di-stagger, kasih slot ke operasi lain
+// yg jalan susulan spt syncAssignOnly), sisanya langsung masuk antrean lokal & ditarik pelan-pelan
+// lewat wbFlush (yg udah ada jeda+circuit-breaker di atas).
+var WB_AUTOPAID_IMMEDIATE_CAP=15,WB_AUTOPAID_STAGGER_MS=400;
+function writeBackAutoPaidBatch(list){
+  list.forEach(function(r,i){
+    if(i<WB_AUTOPAID_IMMEDIATE_CAP){
+      setTimeout(function(){writeBackResponse(r,'Sistem (Auto-Paid)');},i*WB_AUTOPAID_STAGGER_MS);
+    }else{
+      var q=wbQueueGet();q.push(buildWbPayload(r,'Sistem (Auto-Paid)'));wbQueueSet(q);
+    }
+  });
 }
 
 // ── RENDER HELPERS ─────────────────────────────────────────────────────────
@@ -6407,7 +6436,7 @@ function syncMonthList(months,opts){
         if(autoPaidChanged.length){
           console.log('[auto-paid] '+autoPaidChanged.length+' respons ter-update otomatis (paid CRM/Self Onboard), write-back berjalan di background');
           if(!opts.silent)toast('✅ '+autoPaidChanged.length+' respons auto-update jadi Paid CRM/Self Onboard',4000);
-          autoPaidChanged.forEach(function(r){writeBackResponse(r,'Sistem (Auto-Paid)');});
+          writeBackAutoPaidBatch(autoPaidChanged);
         }
         setTimeout(function(){doNext(idx+1);},1500);
       })
@@ -6629,7 +6658,7 @@ function syncFromGAS(opts){
       if(autoPaidChanged.length){
         console.log('[auto-paid] '+autoPaidChanged.length+' respons ter-update otomatis (paid CRM/Self Onboard), write-back berjalan di background');
         toast('✅ '+autoPaidChanged.length+' respons auto-update jadi Paid CRM/Self Onboard',4000);
-        autoPaidChanged.forEach(function(r){writeBackResponse(r,'Sistem (Auto-Paid)');});
+        writeBackAutoPaidBatch(autoPaidChanged);
       }
       setLastSyncAt(Date.now());
       var lbl=monthParam?monthParam+' 26':'semua bulan';
