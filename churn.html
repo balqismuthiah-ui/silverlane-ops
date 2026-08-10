@@ -7709,6 +7709,12 @@ function startApp(){
   // barengan) + tiap 5 menit selama halaman kebuka (visibility-gated -- lihat startRespPolling).
   setTimeout(pollResponsesDelta,jms(1800));
   startRespPolling();
+  // (10 Agu, insiden auto-paid flood): wbFlush cuma ke-trigger otomatis abis WRITE SUKSES (_wbWarned)
+  // atau pas startApp -- kalau circuit-breaker kepicu (5 gagal beruntun) pas GAS lagi down total, nggak
+  // ada write sukses yg bakal nge-retrigger dia, jadi antrean bisa diem TERUS nunggu reload manual.
+  // Nudge periodik jaga-jaga biar antrean tetep dicoba lagi pelan-pelan begitu GAS pulih. wbFlush sendiri
+  // udah no-op kalau antrean kosong, dan udah ada jeda+circuit-breaker internal -- aman dipanggil berkala.
+  setInterval(wbFlush,5*60*1000);
   if(!window._respVisibilityWired){
     window._respVisibilityWired=true;
     document.addEventListener('visibilitychange',function(){
