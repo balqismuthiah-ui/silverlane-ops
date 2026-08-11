@@ -2375,6 +2375,27 @@ function applyBlastMonthGate(recs,isSup){
   });
 }
 
+// 11 Agu (insiden operator: "Gagal sync financials ... exceeded the quota" abis sync dari Jan):
+// FinancialsStore/UpsellTeamStore numpuk payload SEMUA bulan yg ke-sync dalam SATU localStorage key
+// tanpa batas -- browser localStorage per-origin cuma ~5-10MB, jadi sync banyak bulan sekaligus
+// (apalagi sekarang My Journey butuh 12-bulan buat view Tahunan) gampang kepenuhan & GAGAL TOTAL
+// (localStorage.setItem throw, bulan yg baru mau disync ikut nggak kesimpen). Fix: write-with-eviction
+// -- kalau quota exceeded, USIR bulan TERLAMA (MONTH_KEYS order, bukan urutan sync) dari blob itu,
+// retry, ulang sampe muat atau abis. Ini bikin app degrade graceful (bulan lama "hilang" dari cache
+// lokal, balik ke status "belum sync" -- ke-cover UI existing kayak strip "X/N bulan tersync" di My
+// Journey / null-guard "belum ada data" di Overview) DAKASIH TAU sinyal error kayak lama, bukan malah
+// nge-block sync bulan baru yg justru lagi dibutuhin.
+function storageSetMonthWithEviction(key,allData,keepMonth){
+  try{localStorage.setItem(key,JSON.stringify(allData));return true;}
+  catch(e){
+    if(e.name!=='QuotaExceededError'&&e.code!==22)return false; // error laen, jangan sok tau ngoprek data
+    var months=Object.keys(allData).filter(function(m){return m!==keepMonth;});
+    if(!months.length)return false; // tinggal 1 bulan (yg lagi coba ditulis) tapi masih kepenuhan -- nggak ada lagi yg bisa dievict
+    months.sort(function(a,b){return MONTH_KEYS.indexOf(a)-MONTH_KEYS.indexOf(b);});
+    delete allData[months[0]];
+    return storageSetMonthWithEviction(key,allData,keepMonth);
+  }
+}
 // ── CLM-04 FASE 2: FINANCIALS STORE (per bulan, dari GAS ?action=financials) ─
 // GAS cuma nyediain fakta duit per-Outlet_ID + mrr agregat 1 bulan; join Outlet_ID->case->agen
 // (scope Team/Personal) dikerjain di computeMetricRaw saat compute, BUKAN disimpan per record
@@ -2382,7 +2403,10 @@ function applyBlastMonthGate(recs,isSup){
 var FinancialsStore={
   KEY:'klopos_financials_v1',
   getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
-  setMonth:function(month,payload){var all=this.getAll();all[month]=payload;localStorage.setItem(this.KEY,JSON.stringify(all));},
+  setMonth:function(month,payload){
+    var all=this.getAll();all[month]=payload;
+    if(!storageSetMonthWithEviction(this.KEY,all,month))toast('⚠ Data financials '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
+  },
   getMonth:function(month){return this.getAll()[month]||null;}
 };
 
@@ -2393,7 +2417,10 @@ var FinancialsStore={
 var UpsellTeamStore={
   KEY:'klopos_upsellteam_v1',
   getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
-  setMonth:function(month,payload){var all=this.getAll();all[month]=payload;localStorage.setItem(this.KEY,JSON.stringify(all));},
+  setMonth:function(month,payload){
+    var all=this.getAll();all[month]=payload;
+    if(!storageSetMonthWithEviction(this.KEY,all,month))toast('⚠ Data Upsell Tim '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
+  },
   getMonth:function(month){return this.getAll()[month]||null;}
 };
 
