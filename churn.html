@@ -1365,14 +1365,41 @@ function myJourneyTerminMonths(termin){
   if(termin==='Bulanan')return 1;
   return null;
 }
+// Package-tier breakdown per-agen (creatorName) -- operator (11 Agu) minta breakdown per-paket
+// (Starter Basic/Starter/Advance/Enterprise/Prime Plus) di My Journey, KONSISTEN sama atribusi
+// creatorName yang dipake Total Revenue/MRR/ARPU (BUKAN assignedAgent kayak "MRR per-paket" di
+// Overview -- itu reuse FinancialsStore+join case-owner, beda konsep atribusi, sengaja DIPISAH biar
+// nggak nyampur 2 metode join dalam 1 fitur). renewalsRaw nggak punya field paket sendiri -> paket
+// diambil dari record Master (d.records.packageTier, kolom "Support Name Historical") via outletId,
+// pakai normalizePaketBucket yang SAMA persis dipake Overview (~line 1633) biar konsisten taksonomi
+// 5-bucket + disambiguasi Prime/Prime Plus. Row yang outletId-nya nggak ketemu match, ATAU
+// packageTier kosong/anomali -> dikeluarin (normalizePaketBucket balikin null), dihitung di
+// `paketExcluded` biar keliatan di UI kalau join ini nggak nemu apa-apa (bukan diem2 nunjukin 0).
+//
+// CATATAN: versi simplified dari cohort-priority tie-break yg dipake computeMrrPerPaketActual (line
+// ~1667) -- di sana prioritasin record yg cohort-nya match 1 `period` tunggal; My Journey punya 4
+// granularitas (day/week/month/year) jadi "1 period" nggak selalu berlaku, fallback lebih simpel:
+// expiryDate PALING BARU menang kalau 1 outlet punya >1 record.
+function myJourneyRecsByOutletId(){
+  var map={};
+  (Store.get().records||[]).forEach(function(r){
+    if(!r.outletId)return;
+    var prev=map[r.outletId];
+    if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))map[r.outletId]=r;
+  });
+  return map;
+}
 // 1 agen, 1 periode. Join creatorName->agen pakai matchAgentFuzzy yang sama kayak fungsi personal
 // lain di atas (exact-match dulu, fuzzy fallback, ambiguous->null bukan nebak -- row unmatched
 // NGGAK masuk hitungan siapa pun, konsisten kebijakan "0 jujur" yang udah ada). `terminMap` opsional
 // (caller di renderMyJourney bangun sekali lalu di-passing ke semua agen biar nggak rebuild dari
 // d.records ~36ribu baris berkali-kali per render leaderboard -- fallback bangun sendiri kalau
 // dipanggil langsung/lewat console).
-function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap){
+// `terminMap`/`recsByOutletId` opsional -- caller di renderMyJourney bangun sekali lalu di-passing
+// ke semua agen biar leaderboard (s.d. 11 agen) nggak rebuild dari d.records ~36ribu baris tiap agen.
+function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap,recsByOutletId){
   terminMap=terminMap||myJourneyOutletTerminMap();
+  recsByOutletId=recsByOutletId||myJourneyRecsByOutletId();
   var agents=AgentsConfig.getAll();
   var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
   var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
@@ -1386,11 +1413,6 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
       if(matchAgentFuzzy(r.creatorName,agents)===agentName&&myJourneyRowInPeriod(r,granularity,periodSel,year))upsellRows.push(r);
     });
   });
-  var lowest=null,highest=null;
-  renewalRows.forEach(function(r){
-    if(lowest===null||r.subtotal<lowest)lowest=r.subtotal;
-    if(highest===null||r.subtotal>highest)highest=r.subtotal;
-  });
   var totalRevenue=renewalRows.reduce(function(s,r){return s+r.subtotal;},0); // total apa adanya, nggak exclude apa pun
   var mrrRevSum=0,mrrMonthsSum=0,mrrExcluded=0;
   renewalRows.forEach(function(r){
@@ -1400,9 +1422,16 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
   var mrr=mrrMonthsSum?Math.round(mrrRevSum/mrrMonthsSum):0;
   var outletSet={};var hasOutletId=false;
   renewalRows.forEach(function(r){if(r.outletId){hasOutletId=true;outletSet[r.outletId]=true;}});
-  var denom=hasOutletId?Object.keys(outletSet).length:renewalRows.length;
-  var arpu=denom?Math.round(totalRevenue/denom):0; // formula sama persis computeRenewalArpuPersonal di atas, TETAP pakai totalRevenue (bukan mrr)
+  var renewalUserCount=hasOutletId?Object.keys(outletSet).length:renewalRows.length;
+  var arpu=renewalUserCount?Math.round(totalRevenue/renewalUserCount):0; // formula sama persis computeRenewalArpuPersonal di atas, TETAP pakai totalRevenue (bukan mrr)
   var upsellTotalRevenue=upsellRows.reduce(function(s,r){return s+r.subtotal;},0);
+  // "User Upsell" = OUTLET UNIK yg upsell (operator: beda dari jumlah klaim/baris -- 1 outlet bisa
+  // upsell >1 addonType). Upsell Rate = user upsell / user renewal (sama denom ARPU) -- "dari semua
+  // yang renewal, berapa % yang juga upsell".
+  var upsellOutletSet={};var hasUpsellOutletId=false;
+  upsellRows.forEach(function(r){if(r.outletId){hasUpsellOutletId=true;upsellOutletSet[r.outletId]=true;}});
+  var upsellUserCount=hasUpsellOutletId?Object.keys(upsellOutletSet).length:upsellRows.length;
+  var upsellRate=renewalUserCount?Math.round(upsellUserCount/renewalUserCount*1000)/10:0; // 1 desimal
   // Grup upsell per addonType (operator: "gausah semua disebutin, grup per nama produk + revenue")
   var upsellGroupMap={};
   upsellRows.forEach(function(r){
@@ -1412,10 +1441,28 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
     upsellGroupMap[key].revenue+=r.subtotal;
   });
   var upsellGroups=Object.keys(upsellGroupMap).map(function(k){return upsellGroupMap[k];}).sort(function(a,b){return b.revenue-a.revenue;});
+  // Breakdown per-paket (Starter Basic/Starter/Advance/Enterprise (Prime)/Prime Plus) -- lihat
+  // komentar myJourneyRecsByOutletId di atas soal atribusi+disambiguasi. paketExcluded = row yang
+  // nggak ketemu match Master ATAU packageTier-nya kosong/anomali (normalizePaketBucket -> null).
+  var paketMap={};MRR_PAKET_TIERS.forEach(function(t){paketMap[t]={bucket:t,count:0,revenue:0};});
+  var paketExcluded=0;
+  renewalRows.forEach(function(r){
+    var rec=recsByOutletId[r.outletId];
+    var bucket=rec?normalizePaketBucket(rec.packageTier,r.outletId,recsByOutletId):null;
+    if(bucket&&paketMap[bucket]){paketMap[bucket].count++;paketMap[bucket].revenue+=r.subtotal;}
+    else paketExcluded++;
+  });
+  var paketBreakdown=MRR_PAKET_TIERS.map(function(t){
+    var p=paketMap[t];
+    return{bucket:t,count:p.count,revenue:p.revenue,arpu:p.count?Math.round(p.revenue/p.count):0};
+  }).sort(function(a,b){return b.count-a.count;});
+  var topPaket=paketBreakdown.length&&paketBreakdown[0].count?paketBreakdown[0]:null;
   return{
     agentName:agentName,
-    renewal:{lowest:lowest||0,highest:highest||0,totalRevenue:totalRevenue,mrr:mrr,mrrExcluded:mrrExcluded,arpu:arpu,dealCount:renewalRows.length},
-    upsell:{totalRevenue:upsellTotalRevenue,count:upsellRows.length,groups:upsellGroups},
+    renewal:{totalRevenue:totalRevenue,mrr:mrr,mrrExcluded:mrrExcluded,arpu:arpu,dealCount:renewalRows.length,userCount:renewalUserCount},
+    upsell:{totalRevenue:upsellTotalRevenue,userCount:upsellUserCount,rate:upsellRate,groups:upsellGroups},
+    totalRevenueCombined:totalRevenue+upsellTotalRevenue,
+    paket:{breakdown:paketBreakdown,excluded:paketExcluded,top:topPaket},
     sync:{relevantMonths:relevantMonths,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})}
   };
 }
@@ -1439,6 +1486,29 @@ function computeMyJourneyTeamTotal(granularity,periodSel,year){
     });
   });
   return{totalRevenueRenewal:totalRevenueRenewal,totalRevenueUpsell:totalRevenueUpsell,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})};
+}
+// Breakdown per-paket AGREGAT SELURUH TIM (leaderboard "Top Sold Subscription") -- filter row SAMA
+// persis kayak computeMyJourneyTeamTotal (cuma row yg matchAgentFuzzy-nya kenal agen, biar konsisten
+// sama total tim yg lain), atribusi paket pakai join SAMA persis kayak versi personal di atas.
+function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOutletId){
+  recsByOutletId=recsByOutletId||myJourneyRecsByOutletId();
+  var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
+  var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
+  var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
+  var paketMap={};MRR_PAKET_TIERS.forEach(function(t){paketMap[t]={bucket:t,count:0,revenue:0};});
+  syncedMonths.forEach(function(m){
+    var fin=UpsellTeamStore.getMonth(m);
+    (fin.renewalsRaw||[]).forEach(function(r){
+      if(!myJourneyRowInPeriod(r,granularity,periodSel,year)||!matchAgentFuzzy(r.creatorName,agents))return;
+      var rec=recsByOutletId[r.outletId];
+      var bucket=rec?normalizePaketBucket(rec.packageTier,r.outletId,recsByOutletId):null;
+      if(bucket&&paketMap[bucket]){paketMap[bucket].count++;paketMap[bucket].revenue+=r.subtotal;}
+    });
+  });
+  return MRR_PAKET_TIERS.map(function(t){
+    var p=paketMap[t];
+    return{bucket:t,count:p.count,revenue:p.revenue,arpu:p.count?Math.round(p.revenue/p.count):0};
+  }).sort(function(a,b){return b.count-a.count;});
 }
 // Seri data buat grafik trend (day-bucket buat week/month, month-bucket buat year). 'day' granularity
 // sengaja NGGAK dikasih grafik (1 titik doang nggak ada tren buat ditunjukin).
@@ -4181,7 +4251,7 @@ function masterRows(d){
     // 11 Agu (operator): search kelewat email -- outlet ID/Nama/Merchant doang, agen sering nyari
     // pakai email (r.email = Email Outlet||Email User, r.emailUser = kolom Email User mentah/CLM-12,
     // bisa beda -- cek dua-duanya biar nggak kelewat).
-    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s)&&!String(r.email||'').toLowerCase().includes(s)&&!String(r.emailUser||'').toLowerCase().includes(s))return false;
+    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s)&&!String(r.email||'').toLowerCase().includes(s)&&!String(r.emailUser||'').toLowerCase().includes(s)&&!String(r.phone||'').toLowerCase().includes(s)&&!(r.phoneAlts||[]).join(' ').toLowerCase().includes(s))return false;
     // CLM-08 (e): semua filter di bawah multi-select (array) -- OR di dalam 1 filter (match SALAH
     // SATU value terpilih), AND lintas filter (semua filter harus match). Kosong=semua (skip check).
     if(mAgent.length&&!mAgent.some(function(v){return v==='__unassigned__'?!r.assignedAgent:r.assignedAgent===v;}))return false;
@@ -4286,7 +4356,7 @@ function renderMaster(){
     +'<button class="btn btn-red" id="reset-records-btn" style="margin-left:auto" title="Hapus semua records (response & blast tetap aman di backup)">🗑 Reset Records</button>'
     +'</div>'
     +'<div class="frow">'
-    +'<input class="fsearch" type="search" id="m-search" placeholder="🔍 Cari nama / ID / merchant / email..." value="'+mSearch+'">'
+    +'<input class="fsearch" type="search" id="m-search" placeholder="🔍 Cari nama / ID / merchant / email / HP..." value="'+mSearch+'">'
     +renderMultiSelect('mAgent','Agen',agentOptsArr,mAgent)
     +renderMultiSelect('mBulan','Periode',bulanOptsArr,mBulan)
     +renderMultiSelect('mLifecycle','Lifecycle',lcOptsArr,mLifecycle)
@@ -4322,7 +4392,7 @@ function wsFilteredRecs(d,me,isSup){
   // CLM-05 UX fix (operator 13 Jul): guard toLowerCase -- ADA record dgn id/outletName null di pool
   // leader → `r.id.toLowerCase()` throw → seluruh search My Worksheet mati diam2 ("search gak jalan").
   // 11 Agu (operator): tambah email (r.email + r.emailUser, sama pola kayak masterRows).
-  return pool.filter(function(r){return String(r.id||'').toLowerCase().includes(s)||String(r.outletName||'').toLowerCase().includes(s)||String(r.namaMerchant||'').toLowerCase().includes(s)||String(r.email||'').toLowerCase().includes(s)||String(r.emailUser||'').toLowerCase().includes(s);});
+  return pool.filter(function(r){return String(r.id||'').toLowerCase().includes(s)||String(r.outletName||'').toLowerCase().includes(s)||String(r.namaMerchant||'').toLowerCase().includes(s)||String(r.email||'').toLowerCase().includes(s)||String(r.emailUser||'').toLowerCase().includes(s)||String(r.phone||'').toLowerCase().includes(s)||(r.phoneAlts||[]).join(' ').toLowerCase().includes(s);});
 }
 
 function wsRows(d,me,isSup){
@@ -4380,7 +4450,7 @@ function renderWorksheet(){
 
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
-    +'<input class="fsearch" type="search" id="ws-search" placeholder="🔍 Cari nama / ID outlet / email..." value="'+wsSearch+'">'
+    +'<input class="fsearch" type="search" id="ws-search" placeholder="🔍 Cari nama / ID outlet / email / HP..." value="'+wsSearch+'">'
     +(agentFilter||'')
     +payFilter
     // 18 Jul (Ubay approve): tombol Sync Upsell buat agen. Klaim upsell dulu cuma auto-sync ON-LOAD
@@ -4747,7 +4817,7 @@ function renderResponseResults(){
   var s=respSearch.toLowerCase();
   var filtered=pool.filter(function(r){
     // 11 Agu (operator): search kelewat email -- sama fix kayak masterRows/wsFilteredRecs.
-    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s)&&!String(r.email||'').toLowerCase().includes(s)&&!String(r.emailUser||'').toLowerCase().includes(s))return false;
+    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s)&&!String(r.email||'').toLowerCase().includes(s)&&!String(r.emailUser||'').toLowerCase().includes(s)&&!String(r.phone||'').toLowerCase().includes(s)&&!(r.phoneAlts||[]).join(' ').toLowerCase().includes(s))return false;
     if(respCatFilter.length&&!respCatFilter.some(function(v){return v==='__none__'?!(r.response&&r.response.category):(r.response&&r.response.category===v);}))return false;
     if(respAgentFilter.length&&respAgentFilter.indexOf(r.assignedAgent)<0)return false;
     // CLM-08 (4a): work-order queue -- filter "Klaim Upsell: Menunggu Validasi" biar leader nggak
@@ -4824,7 +4894,7 @@ function renderResponse(){
   var upsellOptsArr=[{value:'pending',label:'Menunggu Validasi'},{value:'approved',label:'Approved'},{value:'rejected',label:'Rejected'}];
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
-    +'<input class="fsearch" type="search" id="resp-search" placeholder="🔍 Cari nama / ID outlet / email..." value="'+respSearch+'">'
+    +'<input class="fsearch" type="search" id="resp-search" placeholder="🔍 Cari nama / ID outlet / email / HP..." value="'+respSearch+'">'
     +renderMultiSelect('respCatFilter','Status',catOptsArr,respCatFilter)
     +renderMultiSelect('respAgentFilter','Agen',agentOptsArr,respAgentFilter)
     +renderMultiSelect('respUpsellFilter','Klaim Upsell',upsellOptsArr,respUpsellFilter)
@@ -5138,9 +5208,21 @@ function myJourneyMetricCard(label,valueHtml){
   return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+label+'</div>'
     +'<div style="font-size:20px;font-weight:800;color:var(--tx)">'+valueHtml+'</div></div>';
 }
+// Tabel breakdown per-paket (dipake personal view & leaderboard team-wide) -- baris pertama (count
+// terbesar) di-highlight sebagai "top sold". Reusable biar 2 tempat nggak divergen strukturnya.
+function myJourneyPaketTableHtml(breakdown,titleSuffix){
+  var rowsHtml=breakdown.map(function(p,i){
+    var isTop=i===0&&p.count>0;
+    return'<tr'+(isTop?' style="background:var(--sur2)"':'')+'><td>'+(isTop?'🏆 ':'')+p.bucket+'</td><td>'+p.count+'</td><td>'+fmtRpFull(p.revenue)+'</td><td>'+fmtRpFull(p.arpu)+'</td></tr>';
+  }).join('');
+  return'<div class="ov-section"><div class="ov-section-title">🏆 Top Sold Subscription'+(titleSuffix?' — '+titleSuffix:'')+'</div>'
+    +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+    +'<thead><tr><th>Paket</th><th>Terjual</th><th>Total Revenue</th><th>ARPU</th></tr></thead>'
+    +'<tbody>'+rowsHtml+'</tbody></table></div></div></div>';
+}
 // 1 fungsi, 2 caller (agent's own view & leader drill-in) -- lihat komentar di atas.
-function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,terminMap){
-  var personal=computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap);
+function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,terminMap,recsByOutletId){
+  var personal=computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap,recsByOutletId);
   var team=computeMyJourneyTeamTotal(granularity,periodSel,year);
   var renewalShare=team.totalRevenueRenewal?Math.round(personal.renewal.totalRevenue/team.totalRevenueRenewal*100):0;
   var upsellShare=team.totalRevenueUpsell?Math.round(personal.upsell.totalRevenue/team.totalRevenueUpsell*100):0;
@@ -5151,14 +5233,14 @@ function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,termin
   var mrrExclNote=personal.renewal.mrrExcluded
     ?'<div style="font-size:10px;color:var(--tx3);margin-top:-4px;margin-bottom:8px">('+personal.renewal.mrrExcluded+' deal di-exclude dari MRR — termin/outlet nggak ketemu di data Master)</div>'
     :'';
+  var headlineHtml='<div class="grid2" style="margin-bottom:12px">'
+    +myJourneyMetricCard('Total Revenue (Renewal+Upsell)',fmtRpShort(personal.totalRevenueCombined))
+    +myJourneyMetricCard('Top Sold Subscription',(personal.paket.top?personal.paket.top.bucket+' ('+personal.paket.top.count+'x)':'—'))
+    +'</div>';
   var cardsRow1='<div class="grid3">'
     +myJourneyMetricCard('Total Revenue Renewal',fmtRpShort(personal.renewal.totalRevenue))
     +myJourneyMetricCard('MRR',fmtRpShort(personal.renewal.mrr))
     +myJourneyMetricCard('ARPU',fmtRpShort(personal.renewal.arpu))
-    +'</div>';
-  var cardsRow2='<div class="grid2" style="margin-top:12px">'
-    +myJourneyMetricCard('Harga Terendah',fmtRpShort(personal.renewal.lowest))
-    +myJourneyMetricCard('Harga Tertinggi',fmtRpShort(personal.renewal.highest))
     +'</div>';
   var chartHtml=granularity!=='day'
     ?'<div class="card" style="margin-top:12px">'+renderMyJourneySVGChart(myJourneySeriesForChart(agentName,granularity,periodSel,year))+'</div>'
@@ -5168,33 +5250,56 @@ function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,termin
       return'<tr><td>'+g.addonType+'</td><td>'+g.count+'</td><td>'+fmtRpFull(g.revenue)+'</td></tr>';
     }).join('')
     :'<tr><td colspan="3" class="empty">Belum ada upsell di periode ini</td></tr>';
-  return'<div class="ov-section"><div class="ov-section-title">💰 Renewal — '+agentName+'</div>'+syncNote+shareHtml+cardsRow1+mrrExclNote+cardsRow2+chartHtml+'</div>'
+  var paketExclNote=personal.paket.excluded
+    ?'<div style="font-size:10px;color:var(--tx3);margin-top:-4px;margin-bottom:8px">('+personal.paket.excluded+' deal di-exclude dari breakdown paket — outlet/paket nggak ketemu di data Master)</div>'
+    :'';
+  return headlineHtml
+    +'<div class="ov-section"><div class="ov-section-title">💰 Renewal — '+agentName+'</div>'+syncNote+shareHtml+cardsRow1+mrrExclNote+chartHtml+'</div>'
     +'<div class="ov-section"><div class="ov-section-title">🧩 Upsell — '+agentName+'</div>'
-    +'<div class="grid2" style="margin-bottom:12px">'
-    +myJourneyMetricCard('Total Revenue Upsell',fmtRpShort(personal.upsell.totalRevenue))
-    +myJourneyMetricCard('Jumlah Klaim',String(personal.upsell.count))
+    +'<div class="grid3" style="margin-bottom:12px">'
+    +myJourneyMetricCard('Revenue Upsell',fmtRpShort(personal.upsell.totalRevenue))
+    +myJourneyMetricCard('User Upsell',String(personal.upsell.userCount))
+    +myJourneyMetricCard('Upsell Rate',personal.upsell.rate+'%')
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
     +'<thead><tr><th>Add-On</th><th>Jumlah</th><th>Total Revenue</th></tr></thead>'
-    +'<tbody>'+upsellRowsHtml+'</tbody></table></div></div></div>';
+    +'<tbody>'+upsellRowsHtml+'</tbody></table></div></div></div>'
+    +paketExclNote+myJourneyPaketTableHtml(personal.paket.breakdown,agentName);
 }
-function myJourneyLeaderboardHtml(granularity,periodSel,year,terminMap){
+function myJourneyLeaderboardHtml(granularity,periodSel,year,terminMap,recsByOutletId){
   var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent'&&!isMyJourneyExcluded(a);});
-  var rowsHtml=agents.map(function(a){
-    var p=computeMyJourneyPersonal(a.name,granularity,periodSel,year,terminMap);
+  var rows=agents.map(function(a){return computeMyJourneyPersonal(a.name,granularity,periodSel,year,terminMap,recsByOutletId);});
+  // Ranking (operator: "rank berdasarkan total revenue renewal+upsell dari tertinggi terendah")
+  rows.sort(function(a,b){return b.totalRevenueCombined-a.totalRevenueCombined;});
+  // Ringkasan Total+Average SEMUA agen (operator: "paling atas"), TETAP flat per-agen di bawahnya
+  // (bukan digrup per tim CLM/CC/TC -- dikonfirmasi operator).
+  var n=rows.length;
+  var sumCombined=rows.reduce(function(s,p){return s+p.totalRevenueCombined;},0);
+  var sumRenewal=rows.reduce(function(s,p){return s+p.renewal.totalRevenue;},0);
+  var sumUpsell=rows.reduce(function(s,p){return s+p.upsell.totalRevenue;},0);
+  var summaryHtml='<div class="grid4" style="margin-bottom:14px">'
+    +myJourneyMetricCard('Total Revenue Tim (Gabungan)',fmtRpShort(sumCombined))
+    +myJourneyMetricCard('Rata-rata / Agen',fmtRpShort(n?Math.round(sumCombined/n):0))
+    +myJourneyMetricCard('Total Revenue Renewal',fmtRpShort(sumRenewal))
+    +myJourneyMetricCard('Total Revenue Upsell',fmtRpShort(sumUpsell))
+    +'</div>';
+  var teamPaket=computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOutletId);
+  var paketSectionHtml=myJourneyPaketTableHtml(teamPaket,'Tim');
+  var rowsHtml=rows.map(function(p,i){
     var syncFlag=p.sync.missingMonths.length?' <span style="font-size:9px;color:var(--org)" title="'+p.sync.missingMonths.join(', ')+' belum sync">⚠</span>':'';
-    return'<tr><td><strong>'+a.name+'</strong>'+syncFlag+'</td>'
-      +'<td>'+fmtRpFull(p.renewal.lowest)+'</td>'
-      +'<td>'+fmtRpFull(p.renewal.highest)+'</td>'
+    return'<tr><td>#'+(i+1)+'</td><td><strong>'+p.agentName+'</strong>'+syncFlag+'</td>'
       +'<td>'+fmtRpFull(p.renewal.totalRevenue)+'</td>'
+      +'<td>'+fmtRpFull(p.upsell.totalRevenue)+'</td>'
+      +'<td><strong>'+fmtRpFull(p.totalRevenueCombined)+'</strong></td>'
       +'<td>'+fmtRpFull(p.renewal.mrr)+'</td>'
       +'<td>'+fmtRpFull(p.renewal.arpu)+'</td>'
-      +'<td>'+p.upsell.count+' ('+fmtRpFull(p.upsell.totalRevenue)+')</td></tr>';
+      +'<td>'+p.upsell.userCount+' ('+p.upsell.rate+'%)</td></tr>';
   }).join('');
-  return'<div class="ov-section"><div class="ov-section-title">👥 Compare Semua Agen</div>'
+  return summaryHtml+paketSectionHtml
+    +'<div class="ov-section"><div class="ov-section-title">👥 Compare Semua Agen (Rank by Total Revenue Gabungan)</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
-    +'<thead><tr><th>Agen</th><th>Harga Terendah</th><th>Harga Tertinggi</th><th>Total Revenue</th><th>MRR</th><th>ARPU</th><th>Upsell</th></tr></thead>'
-    +'<tbody>'+(rowsHtml||'<tr><td colspan="7" class="empty">Belum ada agen aktif</td></tr>')+'</tbody></table></div></div></div>';
+    +'<thead><tr><th>#</th><th>Agen</th><th>Revenue Renewal</th><th>Revenue Upsell</th><th>Total Gabungan</th><th>MRR</th><th>ARPU</th><th>Upsell (User/Rate)</th></tr></thead>'
+    +'<tbody>'+(rowsHtml||'<tr><td colspan="8" class="empty">Belum ada agen aktif</td></tr>')+'</tbody></table></div></div></div>';
 }
 function renderMyJourney(){
   var isSup=Auth.isSuperior();
@@ -5236,15 +5341,17 @@ function renderMyJourney(){
   var controlsHtml='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">'
     +granSelHtml+periodCtrlHtml+yearSelHtml+agentPickerHtml+'</div>';
 
-  var terminMap=myJourneyOutletTerminMap(); // bangun sekali per render, di-passing biar leaderboard (s.d. 11 agen) nggak rebuild dari d.records berkali-kali
+  // Bangun sekali per render, di-passing biar leaderboard (s.d. 11 agen) nggak rebuild dari d.records berkali-kali
+  var terminMap=myJourneyOutletTerminMap();
+  var recsByOutletId=myJourneyRecsByOutletId();
 
   var bodyHtml;
   if(!isSup){
-    bodyHtml=renderMyJourneyPersonalView(me,myJourneyGranularity,periodSel,myJourneyYearSel,terminMap);
+    bodyHtml=renderMyJourneyPersonalView(me,myJourneyGranularity,periodSel,myJourneyYearSel,terminMap,recsByOutletId);
   }else if(!myJourneySelectedAgent){
-    bodyHtml=myJourneyLeaderboardHtml(myJourneyGranularity,periodSel,myJourneyYearSel,terminMap);
+    bodyHtml=myJourneyLeaderboardHtml(myJourneyGranularity,periodSel,myJourneyYearSel,terminMap,recsByOutletId);
   }else{
-    bodyHtml=renderMyJourneyPersonalView(myJourneySelectedAgent,myJourneyGranularity,periodSel,myJourneyYearSel,terminMap);
+    bodyHtml=renderMyJourneyPersonalView(myJourneySelectedAgent,myJourneyGranularity,periodSel,myJourneyYearSel,terminMap,recsByOutletId);
   }
 
   document.getElementById('tab-content').innerHTML=controlsHtml+bodyHtml;
