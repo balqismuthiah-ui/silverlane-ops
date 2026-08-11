@@ -1370,11 +1370,20 @@ function myJourneyTerminMonths(termin){
 // creatorName yang dipake Total Revenue/MRR/ARPU (BUKAN assignedAgent kayak "MRR per-paket" di
 // Overview -- itu reuse FinancialsStore+join case-owner, beda konsep atribusi, sengaja DIPISAH biar
 // nggak nyampur 2 metode join dalam 1 fitur). renewalsRaw nggak punya field paket sendiri -> paket
-// diambil dari record Master (d.records.packageTier, kolom "Support Name Historical") via outletId,
-// pakai normalizePaketBucket yang SAMA persis dipake Overview (~line 1633) biar konsisten taksonomi
-// 5-bucket + disambiguasi Prime/Prime Plus. Row yang outletId-nya nggak ketemu match, ATAU
-// packageTier kosong/anomali -> dikeluarin (normalizePaketBucket balikin null), dihitung di
-// `paketExcluded` biar keliatan di UI kalau join ini nggak nemu apa-apa (bukan diem2 nunjukin 0).
+// diambil dari record Master via outletId.
+//
+// REVISI (11 Agu, empiris via console diag operator): percobaan pertama pakai d.records.packageTier
+// (kolom "Support Name Historical") + normalizePaketBucket (fungsi yg sama dipake Overview) -- TERNYATA
+// SALAH, ketauan breakdown-nya nol semua. Diag ketauan packageTier itu TAKSONOMI BEDA (cuma 3 nilai
+// UPPERCASE: STARTER/ADVANCE/ENTERPRISE, dari kolom yg beda) dari yg diasumsikan (Basic/Starter/
+// Advance/Prime titlecase, sumber asli normalizePaketBucket = FinancialsStore.f.paket, BUKAN
+// packageTier -- 2 kolom Master yg beda, kebetulan sama-sama "soal paket" tapi nggak compatible).
+// FIX: pakai d.records.productPackage (kolom "Jenis Paket (yang dibayar)") DIBUANG suffix
+// continue/upgrade/downgrade -- diag kedua ketemu taksonomi PERSIS 5-bucket yg dibutuhin (Starter
+// Basic/Starter/Advance/Enterprise/Prime Plus, + "—" blank & "Add On" yg exclude), JAUH lebih simpel
+// dari normalizePaketBucket (nggak butuh disambiguasi Prime vs Prime Plus -- 2 nilai ITU SENDIRI udah
+// keliatan beda literal di kolom ini). myJourneyNormalizePaket() di bawah = fungsi baru KHUSUS buat
+// My Journey, BUKAN reuse normalizePaketBucket (beda kolom sumber, beda logic, jangan disamain).
 //
 // CATATAN: versi simplified dari cohort-priority tie-break yg dipake computeMrrPerPaketActual (line
 // ~1667) -- di sana prioritasin record yg cohort-nya match 1 `period` tunggal; My Journey punya 4
@@ -1388,6 +1397,18 @@ function myJourneyRecsByOutletId(){
     if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))map[r.outletId]=r;
   });
   return map;
+}
+// Normalisasi productPackage -> bucket paket, KHUSUS My Journey (lihat catatan REVISI di atas --
+// JANGAN diganti balik ke normalizePaketBucket, itu kolom/taksonomi beda). Bucket label DISAMAIN sama
+// MRR_PAKET_TIERS (Overview) biar konsisten SECARA TAMPILAN walau sumber datanya independen.
+function myJourneyNormalizePaket(productPackageRaw){
+  var p=String(productPackageRaw||'').replace(/\s+(continue|upgrade|downgrade)\s*$/i,'').trim();
+  if(p==='Starter Basic')return'Starter Basic';
+  if(p==='Starter')return'Starter';
+  if(p==='Advance')return'Advance';
+  if(p==='Enterprise')return'Enterprise (Prime)';
+  if(p==='Prime Plus')return'Prime Plus';
+  return null; // "—" (blank), "Add On" (bukan paket dasar), atau nilai lain yg nggak dikenal -> exclude
 }
 // 1 agen, 1 periode. Join creatorName->agen pakai matchAgentFuzzy yang sama kayak fungsi personal
 // lain di atas (exact-match dulu, fuzzy fallback, ambiguous->null bukan nebak -- row unmatched
@@ -1448,7 +1469,7 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
   var paketExcluded=0;
   renewalRows.forEach(function(r){
     var rec=recsByOutletId[r.outletId];
-    var bucket=rec?normalizePaketBucket(rec.packageTier,r.outletId,recsByOutletId):null;
+    var bucket=rec?myJourneyNormalizePaket(rec.productPackage):null;
     if(bucket&&paketMap[bucket]){paketMap[bucket].count++;paketMap[bucket].revenue+=r.subtotal;}
     else paketExcluded++;
   });
@@ -1501,7 +1522,7 @@ function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOut
     (fin.renewalsRaw||[]).forEach(function(r){
       if(!myJourneyRowInPeriod(r,granularity,periodSel,year)||!matchAgentFuzzy(r.creatorName,agents))return;
       var rec=recsByOutletId[r.outletId];
-      var bucket=rec?normalizePaketBucket(rec.packageTier,r.outletId,recsByOutletId):null;
+      var bucket=rec?myJourneyNormalizePaket(rec.productPackage):null;
       if(bucket&&paketMap[bucket]){paketMap[bucket].count++;paketMap[bucket].revenue+=r.subtotal;}
     });
   });
