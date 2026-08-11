@@ -1342,10 +1342,37 @@ function myJourneyRowInPeriod(r,granularity,periodSel,year){
   if(granularity==='month')return d.slice(5,7)===String(MONTH_KEYS.indexOf(periodSel.monthKey)+1).padStart(2,'0');
   return true; // 'year' -- udah discope d.slice(0,4) di atas
 }
+// 11 Agu (revisi operator, abis lihat versi pertama): MRR pertama kali SEMPAT "revenue apa adanya"
+// (keputusan awal operator, biar simpel) -- direvisi operator abis lihat hasilnya "aneh". Definisi
+// final: MRR = Sigma(revenue outlet yang terminnya kenal) / Sigma(bulan yang direpresentasiin --
+// Bulanan=1, Tahunan=12), CONTOH operator: outlet beli Starter 1jt/12bulan -> kontribusi 1jt revenue
+// + 12 "bulan" ke penyebut; kalau total bulan itu revenue 400jt & total qty-bulan 12000 -> MRR=400jt/
+// 12000. Termin (Bulanan/Tahunan) TIDAK ADA di renewalsRaw (raw per-deal dari UpsellTeamStore) --
+// join tambahan ke outletId->termin dari Store utama (main d.records) via myJourneyOutletTerminMap().
+// Row yang outletId-nya nggak ketemu match di Store, ATAU terminnya bukan Bulanan/Tahunan yang
+// dikenal -> DIKELUARIN dari MRR (baik revenue maupun bulan-nya), konsisten kebijakan "0 jujur" yg
+// sama dipake matchAgentFuzzy -- TAPI tetap DIHITUNG di totalRevenue (total revenue apa adanya,
+// nggak exclude apa pun, itu angka yang beda tujuan dari MRR).
+function myJourneyOutletTerminMap(){
+  var map={};
+  (Store.get().records||[]).forEach(function(r){
+    if(r.outletId&&r.termin)map[r.outletId]=r.termin; // last-write-wins kalau 1 outlet kebetulan punya >1 termin beda di record berbeda (jarang)
+  });
+  return map;
+}
+function myJourneyTerminMonths(termin){
+  if(termin==='Tahunan')return 12;
+  if(termin==='Bulanan')return 1;
+  return null;
+}
 // 1 agen, 1 periode. Join creatorName->agen pakai matchAgentFuzzy yang sama kayak fungsi personal
 // lain di atas (exact-match dulu, fuzzy fallback, ambiguous->null bukan nebak -- row unmatched
-// NGGAK masuk hitungan siapa pun, konsisten kebijakan "0 jujur" yang udah ada).
-function computeMyJourneyPersonal(agentName,granularity,periodSel,year){
+// NGGAK masuk hitungan siapa pun, konsisten kebijakan "0 jujur" yang udah ada). `terminMap` opsional
+// (caller di renderMyJourney bangun sekali lalu di-passing ke semua agen biar nggak rebuild dari
+// d.records ~36ribu baris berkali-kali per render leaderboard -- fallback bangun sendiri kalau
+// dipanggil langsung/lewat console).
+function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap){
+  terminMap=terminMap||myJourneyOutletTerminMap();
   var agents=AgentsConfig.getAll();
   var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
   var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
@@ -1364,39 +1391,128 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year){
     if(lowest===null||r.subtotal<lowest)lowest=r.subtotal;
     if(highest===null||r.subtotal>highest)highest=r.subtotal;
   });
-  var mrr=renewalRows.reduce(function(s,r){return s+r.subtotal;},0); // KONFIRMASI operator: subtotal apa adanya, TANPA normalisasi termin Bulanan/Tahunan
+  var totalRevenue=renewalRows.reduce(function(s,r){return s+r.subtotal;},0); // total apa adanya, nggak exclude apa pun
+  var mrrRevSum=0,mrrMonthsSum=0,mrrExcluded=0;
+  renewalRows.forEach(function(r){
+    var months=myJourneyTerminMonths(terminMap[r.outletId]);
+    if(months){mrrRevSum+=r.subtotal;mrrMonthsSum+=months;}else mrrExcluded++;
+  });
+  var mrr=mrrMonthsSum?Math.round(mrrRevSum/mrrMonthsSum):0;
   var outletSet={};var hasOutletId=false;
   renewalRows.forEach(function(r){if(r.outletId){hasOutletId=true;outletSet[r.outletId]=true;}});
   var denom=hasOutletId?Object.keys(outletSet).length:renewalRows.length;
-  var arpu=denom?Math.round(mrr/denom):0; // formula sama persis computeRenewalArpuPersonal di atas
-  var upsellRevenue=upsellRows.reduce(function(s,r){return s+r.subtotal;},0);
+  var arpu=denom?Math.round(totalRevenue/denom):0; // formula sama persis computeRenewalArpuPersonal di atas, TETAP pakai totalRevenue (bukan mrr)
+  var upsellTotalRevenue=upsellRows.reduce(function(s,r){return s+r.subtotal;},0);
+  // Grup upsell per addonType (operator: "gausah semua disebutin, grup per nama produk + revenue")
+  var upsellGroupMap={};
+  upsellRows.forEach(function(r){
+    var key=r.addonType||'(Lainnya)';
+    if(!upsellGroupMap[key])upsellGroupMap[key]={addonType:key,count:0,revenue:0};
+    upsellGroupMap[key].count++;
+    upsellGroupMap[key].revenue+=r.subtotal;
+  });
+  var upsellGroups=Object.keys(upsellGroupMap).map(function(k){return upsellGroupMap[k];}).sort(function(a,b){return b.revenue-a.revenue;});
   return{
     agentName:agentName,
-    renewal:{lowest:lowest||0,highest:highest||0,mrr:mrr,arpu:arpu,dealCount:renewalRows.length},
-    upsell:{revenue:upsellRevenue,count:upsellRows.length,claims:upsellRows.map(function(r){
-      return{addonType:r.addonType,subtotal:r.subtotal,bundleName:r.bundleName,paidDate:r.paidDate};
-    })},
+    renewal:{lowest:lowest||0,highest:highest||0,totalRevenue:totalRevenue,mrr:mrr,mrrExcluded:mrrExcluded,arpu:arpu,dealCount:renewalRows.length},
+    upsell:{totalRevenue:upsellTotalRevenue,count:upsellRows.length,groups:upsellGroups},
     sync:{relevantMonths:relevantMonths,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})}
   };
 }
 // Total tim (buat "kontribusi % ke tim" di agent view -- SATU-SATUNYA bentuk pembanding yang boleh
 // ditampilin ke agen, jangan pernah bocorin angka individu agen lain). Filter row SAMA persis kayak
 // personal, row yang matchAgentFuzzy-nya null dikeluarin dari kedua sisi biar rasio apple-to-apple.
+// Pakai totalRevenue (Sigma, additive) buat basis %, BUKAN MRR -- MRR itu rata-rata per-bulan-sub,
+// nggak masuk akal di-summing/di-persentasein lintas agen.
 function computeMyJourneyTeamTotal(granularity,periodSel,year){
   var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
   var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
   var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
-  var mrr=0,upsellRevenue=0;
+  var totalRevenueRenewal=0,totalRevenueUpsell=0;
   syncedMonths.forEach(function(m){
     var fin=UpsellTeamStore.getMonth(m);
     (fin.renewalsRaw||[]).forEach(function(r){
-      if(myJourneyRowInPeriod(r,granularity,periodSel,year)&&matchAgentFuzzy(r.creatorName,agents))mrr+=r.subtotal;
+      if(myJourneyRowInPeriod(r,granularity,periodSel,year)&&matchAgentFuzzy(r.creatorName,agents))totalRevenueRenewal+=r.subtotal;
     });
     (fin.upsellRaw||[]).forEach(function(r){
-      if(myJourneyRowInPeriod(r,granularity,periodSel,year)&&matchAgentFuzzy(r.creatorName,agents))upsellRevenue+=r.subtotal;
+      if(myJourneyRowInPeriod(r,granularity,periodSel,year)&&matchAgentFuzzy(r.creatorName,agents))totalRevenueUpsell+=r.subtotal;
     });
   });
-  return{mrr:mrr,upsellRevenue:upsellRevenue,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})};
+  return{totalRevenueRenewal:totalRevenueRenewal,totalRevenueUpsell:totalRevenueUpsell,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})};
+}
+// Seri data buat grafik trend (day-bucket buat week/month, month-bucket buat year). 'day' granularity
+// sengaja NGGAK dikasih grafik (1 titik doang nggak ada tren buat ditunjukin).
+function myJourneySeriesForChart(agentName,granularity,periodSel,year){
+  var agents=AgentsConfig.getAll();
+  if(granularity==='year'){
+    var renewal=[],upsell=[];
+    MONTH_KEYS.forEach(function(m){
+      var fin=UpsellTeamStore.getMonth(m);
+      var rSum=0,uSum=0;
+      if(fin){
+        (fin.renewalsRaw||[]).forEach(function(r){if(matchAgentFuzzy(r.creatorName,agents)===agentName&&localDateStr(r.paidDate).slice(0,4)===String(year))rSum+=r.subtotal;});
+        (fin.upsellRaw||[]).forEach(function(r){if(matchAgentFuzzy(r.creatorName,agents)===agentName&&localDateStr(r.paidDate).slice(0,4)===String(year))uSum+=r.subtotal;});
+      }
+      renewal.push(rSum);upsell.push(uSum);
+    });
+    return{labels:MONTH_KEYS.slice(),renewal:renewal,upsell:upsell};
+  }
+  var days=[];
+  if(granularity==='week'){
+    var d0=new Date(periodSel.weekStart+'T00:00:00');
+    for(var i=0;i<7;i++){var x=new Date(d0);x.setDate(d0.getDate()+i);days.push(x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0'));}
+  }else if(granularity==='month'){
+    var mIdx=MONTH_KEYS.indexOf(periodSel.monthKey);
+    var daysInMonth=new Date(parseInt(year,10),mIdx+1,0).getDate();
+    for(var dd=1;dd<=daysInMonth;dd++)days.push(year+'-'+String(mIdx+1).padStart(2,'0')+'-'+String(dd).padStart(2,'0'));
+  }
+  var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
+  var renewalByDay={},upsellByDay={};
+  relevantMonths.forEach(function(m){
+    var fin=UpsellTeamStore.getMonth(m);
+    if(!fin)return;
+    (fin.renewalsRaw||[]).forEach(function(r){
+      if(matchAgentFuzzy(r.creatorName,agents)!==agentName)return;
+      var d=localDateStr(r.paidDate);renewalByDay[d]=(renewalByDay[d]||0)+r.subtotal;
+    });
+    (fin.upsellRaw||[]).forEach(function(r){
+      if(matchAgentFuzzy(r.creatorName,agents)!==agentName)return;
+      var d=localDateStr(r.paidDate);upsellByDay[d]=(upsellByDay[d]||0)+r.subtotal;
+    });
+  });
+  return{
+    labels:days.map(function(d){return d.slice(8,10);}),
+    renewal:days.map(function(d){return renewalByDay[d]||0;}),
+    upsell:days.map(function(d){return upsellByDay[d]||0;})
+  };
+}
+// Chart SVG dependency-free (pola sama renderDailyTrendSVG) -- hover pakai native <title> per titik
+// (zero JS tambahan, browser nampilin tooltip bawaan begitu di-hover, konsisten filosofi app ini
+// "nggak ada Chart.js/D3").
+function renderMyJourneySVGChart(series){
+  var W=680,H=180,padL=46,padR=10,padT=10,padB=22;
+  var plotW=W-padL-padR,plotH=H-padT-padB;
+  var n=series.labels.length;
+  if(!n)return'';
+  var maxVal=0;
+  series.renewal.forEach(function(v){if(v>maxVal)maxVal=v;});
+  series.upsell.forEach(function(v){if(v>maxVal)maxVal=v;});
+  if(maxVal<=0)maxVal=1;
+  function xAt(i){return n>1?(padL+i/(n-1)*plotW):padL+plotW/2;}
+  function yAt(v){return padT+plotH-(v/maxVal)*plotH;}
+  function pathFor(vals){return vals.map(function(v,i){return(i===0?'M':'L')+xAt(i)+','+yAt(v);}).join(' ');}
+  function dotsFor(vals,color,tag){
+    return vals.map(function(v,i){return'<circle cx="'+xAt(i)+'" cy="'+yAt(v)+'" r="3.2" fill="'+color+'"><title>'+series.labels[i]+' — '+tag+': '+fmtRpFull(v)+'</title></circle>';}).join('');
+  }
+  var step=Math.max(1,Math.ceil(n/8));
+  var xLabelsHtml=series.labels.map(function(l,i){return i%step===0?'<text x="'+xAt(i)+'" y="'+(H-6)+'" font-size="9" fill="var(--tx3)" text-anchor="middle">'+l+'</text>':'';}).join('');
+  return'<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:180px">'
+    +'<path d="'+pathFor(series.renewal)+'" fill="none" stroke="var(--grn)" stroke-width="2"/>'
+    +'<path d="'+pathFor(series.upsell)+'" fill="none" stroke="var(--blu)" stroke-width="2" stroke-dasharray="4,3"/>'
+    +dotsFor(series.renewal,'var(--grn)','Renewal')+dotsFor(series.upsell,'var(--blu)','Upsell')
+    +xLabelsHtml+'</svg>'
+    +'<div style="display:flex;gap:14px;font-size:10px;color:var(--tx3);margin-top:2px">'
+    +'<span>▬ Renewal</span><span>┄ Upsell</span></div>';
 }
 // Exclude leaderboard default: nonaktif (CLM-06) ATAU tanggal selesai udah lewat. resignDate SENGAJA
 // independen dari `status` (nggak otomatis flip satu sama lain) -- data historis tetap kebaca kalau
@@ -4991,48 +5107,62 @@ function myJourneyMetricCard(label,valueHtml){
     +'<div style="font-size:20px;font-weight:800;color:var(--tx)">'+valueHtml+'</div></div>';
 }
 // 1 fungsi, 2 caller (agent's own view & leader drill-in) -- lihat komentar di atas.
-function renderMyJourneyPersonalView(agentName,granularity,periodSel,year){
-  var personal=computeMyJourneyPersonal(agentName,granularity,periodSel,year);
+function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,terminMap){
+  var personal=computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap);
   var team=computeMyJourneyTeamTotal(granularity,periodSel,year);
-  var mrrShare=team.mrr?Math.round(personal.renewal.mrr/team.mrr*100):0;
-  var upsellShare=team.upsellRevenue?Math.round(personal.upsell.revenue/team.upsellRevenue*100):0;
-  var shareHtml='<div class="pay-info" style="margin-bottom:8px">Kontribusi ke total tim: MRR '+mrrShare+'%, Upsell '+upsellShare+'%</div>';
+  var renewalShare=team.totalRevenueRenewal?Math.round(personal.renewal.totalRevenue/team.totalRevenueRenewal*100):0;
+  var upsellShare=team.totalRevenueUpsell?Math.round(personal.upsell.totalRevenue/team.totalRevenueUpsell*100):0;
+  var shareHtml='<div class="pay-info" style="margin-bottom:8px">Kontribusi ke total tim: Revenue Renewal '+renewalShare+'%, Revenue Upsell '+upsellShare+'%</div>';
   var syncNote=personal.sync.missingMonths.length
     ?'<div class="pay-info" style="margin-bottom:8px;color:var(--org)">⚠ Data '+personal.sync.syncedMonths.length+'/'+personal.sync.relevantMonths.length+' bulan tersync ('+personal.sync.missingMonths.join(', ')+' belum) — angka di bawah cuma dari bulan yang udah disync.</div>'
     :'';
-  var cards='<div class="grid4">'
-    +myJourneyMetricCard('Harga Terendah',fmtRpShort(personal.renewal.lowest))
-    +myJourneyMetricCard('Harga Tertinggi',fmtRpShort(personal.renewal.highest))
+  var mrrExclNote=personal.renewal.mrrExcluded
+    ?'<div style="font-size:10px;color:var(--tx3);margin-top:-4px;margin-bottom:8px">('+personal.renewal.mrrExcluded+' deal di-exclude dari MRR — termin/outlet nggak ketemu di data Master)</div>'
+    :'';
+  var cardsRow1='<div class="grid3">'
+    +myJourneyMetricCard('Total Revenue Renewal',fmtRpShort(personal.renewal.totalRevenue))
     +myJourneyMetricCard('MRR',fmtRpShort(personal.renewal.mrr))
     +myJourneyMetricCard('ARPU',fmtRpShort(personal.renewal.arpu))
     +'</div>';
-  var upsellRowsHtml=personal.upsell.claims.length
-    ?personal.upsell.claims.map(function(c){
-      return'<tr><td>'+fmtDate(c.paidDate)+'</td><td>'+(c.addonType||'—')+'</td><td>'+(c.bundleName||'—')+'</td><td>'+fmtRpFull(c.subtotal)+'</td></tr>';
+  var cardsRow2='<div class="grid2" style="margin-top:12px">'
+    +myJourneyMetricCard('Harga Terendah',fmtRpShort(personal.renewal.lowest))
+    +myJourneyMetricCard('Harga Tertinggi',fmtRpShort(personal.renewal.highest))
+    +'</div>';
+  var chartHtml=granularity!=='day'
+    ?'<div class="card" style="margin-top:12px">'+renderMyJourneySVGChart(myJourneySeriesForChart(agentName,granularity,periodSel,year))+'</div>'
+    :'<div class="pay-info" style="margin-top:12px">Grafik tren tersedia di granularitas Mingguan/Bulanan/Tahunan</div>';
+  var upsellRowsHtml=personal.upsell.groups.length
+    ?personal.upsell.groups.map(function(g){
+      return'<tr><td>'+g.addonType+'</td><td>'+g.count+'</td><td>'+fmtRpFull(g.revenue)+'</td></tr>';
     }).join('')
-    :'<tr><td colspan="4" class="empty">Belum ada upsell di periode ini</td></tr>';
-  return'<div class="ov-section"><div class="ov-section-title">💰 Renewal — '+agentName+'</div>'+syncNote+shareHtml+cards+'</div>'
-    +'<div class="ov-section"><div class="ov-section-title">🧩 List Upsell ('+personal.upsell.count+' klaim, '+fmtRpFull(personal.upsell.revenue)+')</div>'
+    :'<tr><td colspan="3" class="empty">Belum ada upsell di periode ini</td></tr>';
+  return'<div class="ov-section"><div class="ov-section-title">💰 Renewal — '+agentName+'</div>'+syncNote+shareHtml+cardsRow1+mrrExclNote+cardsRow2+chartHtml+'</div>'
+    +'<div class="ov-section"><div class="ov-section-title">🧩 Upsell — '+agentName+'</div>'
+    +'<div class="grid2" style="margin-bottom:12px">'
+    +myJourneyMetricCard('Total Revenue Upsell',fmtRpShort(personal.upsell.totalRevenue))
+    +myJourneyMetricCard('Jumlah Klaim',String(personal.upsell.count))
+    +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
-    +'<thead><tr><th>Tanggal</th><th>Add-On</th><th>Produk</th><th>Nilai</th></tr></thead>'
+    +'<thead><tr><th>Add-On</th><th>Jumlah</th><th>Total Revenue</th></tr></thead>'
     +'<tbody>'+upsellRowsHtml+'</tbody></table></div></div></div>';
 }
-function myJourneyLeaderboardHtml(granularity,periodSel,year){
+function myJourneyLeaderboardHtml(granularity,periodSel,year,terminMap){
   var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent'&&!isMyJourneyExcluded(a);});
   var rowsHtml=agents.map(function(a){
-    var p=computeMyJourneyPersonal(a.name,granularity,periodSel,year);
+    var p=computeMyJourneyPersonal(a.name,granularity,periodSel,year,terminMap);
     var syncFlag=p.sync.missingMonths.length?' <span style="font-size:9px;color:var(--org)" title="'+p.sync.missingMonths.join(', ')+' belum sync">⚠</span>':'';
     return'<tr><td><strong>'+a.name+'</strong>'+syncFlag+'</td>'
       +'<td>'+fmtRpFull(p.renewal.lowest)+'</td>'
       +'<td>'+fmtRpFull(p.renewal.highest)+'</td>'
+      +'<td>'+fmtRpFull(p.renewal.totalRevenue)+'</td>'
       +'<td>'+fmtRpFull(p.renewal.mrr)+'</td>'
       +'<td>'+fmtRpFull(p.renewal.arpu)+'</td>'
-      +'<td>'+p.upsell.count+' ('+fmtRpFull(p.upsell.revenue)+')</td></tr>';
+      +'<td>'+p.upsell.count+' ('+fmtRpFull(p.upsell.totalRevenue)+')</td></tr>';
   }).join('');
   return'<div class="ov-section"><div class="ov-section-title">👥 Compare Semua Agen</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
-    +'<thead><tr><th>Agen</th><th>Harga Terendah</th><th>Harga Tertinggi</th><th>MRR</th><th>ARPU</th><th>Upsell</th></tr></thead>'
-    +'<tbody>'+(rowsHtml||'<tr><td colspan="6" class="empty">Belum ada agen aktif</td></tr>')+'</tbody></table></div></div></div>';
+    +'<thead><tr><th>Agen</th><th>Harga Terendah</th><th>Harga Tertinggi</th><th>Total Revenue</th><th>MRR</th><th>ARPU</th><th>Upsell</th></tr></thead>'
+    +'<tbody>'+(rowsHtml||'<tr><td colspan="7" class="empty">Belum ada agen aktif</td></tr>')+'</tbody></table></div></div></div>';
 }
 function renderMyJourney(){
   var isSup=Auth.isSuperior();
@@ -5074,13 +5204,15 @@ function renderMyJourney(){
   var controlsHtml='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">'
     +granSelHtml+periodCtrlHtml+yearSelHtml+agentPickerHtml+'</div>';
 
+  var terminMap=myJourneyOutletTerminMap(); // bangun sekali per render, di-passing biar leaderboard (s.d. 11 agen) nggak rebuild dari d.records berkali-kali
+
   var bodyHtml;
   if(!isSup){
-    bodyHtml=renderMyJourneyPersonalView(me,myJourneyGranularity,periodSel,myJourneyYearSel);
+    bodyHtml=renderMyJourneyPersonalView(me,myJourneyGranularity,periodSel,myJourneyYearSel,terminMap);
   }else if(!myJourneySelectedAgent){
-    bodyHtml=myJourneyLeaderboardHtml(myJourneyGranularity,periodSel,myJourneyYearSel);
+    bodyHtml=myJourneyLeaderboardHtml(myJourneyGranularity,periodSel,myJourneyYearSel,terminMap);
   }else{
-    bodyHtml=renderMyJourneyPersonalView(myJourneySelectedAgent,myJourneyGranularity,periodSel,myJourneyYearSel);
+    bodyHtml=renderMyJourneyPersonalView(myJourneySelectedAgent,myJourneyGranularity,periodSel,myJourneyYearSel,terminMap);
   }
 
   document.getElementById('tab-content').innerHTML=controlsHtml+bodyHtml;
