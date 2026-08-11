@@ -1594,6 +1594,7 @@ function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOut
   var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
   var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
   var paketMap={};MRR_PAKET_TIERS.forEach(function(t){paketMap[t]={bucket:t,count:0,revenue:0};});
+  var excluded=0;
   syncedMonths.forEach(function(m){
     var fin=UpsellTeamStore.getMonth(m);
     (fin.renewalsRaw||[]).forEach(function(r){
@@ -1601,6 +1602,7 @@ function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOut
       var rec=recsByOutletId[r.outletId];
       var bucket=rec?myJourneyNormalizePaket(rec.productPackage):null;
       if(bucket&&paketMap[bucket]){paketMap[bucket].count++;paketMap[bucket].revenue+=r.subtotal;}
+      else excluded++;
     });
   });
   if(granularity==='year'){
@@ -1615,10 +1617,11 @@ function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOut
       });
     });
   }
-  return MRR_PAKET_TIERS.map(function(t){
+  var breakdown=MRR_PAKET_TIERS.map(function(t){
     var p=paketMap[t];
     return{bucket:t,count:p.count,revenue:p.revenue,arpu:p.count?Math.round(p.revenue/p.count):0};
   }).sort(function(a,b){return b.count-a.count;});
+  return{breakdown:breakdown,excluded:excluded};
 }
 // Seri data buat grafik trend (day-bucket buat week/month, month-bucket buat year). 'day' granularity
 // sengaja NGGAK dikasih grafik (1 titik doang nggak ada tren buat ditunjukin). `agentName=null` (atau
@@ -5355,12 +5358,15 @@ function myJourneyMetricCard(label,valueHtml){
 }
 // Tabel breakdown per-paket (dipake personal view & leaderboard team-wide) -- baris pertama (count
 // terbesar) di-highlight sebagai "top sold". Reusable biar 2 tempat nggak divergen strukturnya.
-function myJourneyPaketTableHtml(breakdown,titleSuffix){
+function myJourneyPaketTableHtml(breakdown,titleSuffix,excluded){
   var rowsHtml=breakdown.map(function(p,i){
     var isTop=i===0&&p.count>0;
     return'<tr'+(isTop?' style="background:var(--sur2)"':'')+'><td>'+(isTop?'🏆 ':'')+p.bucket+'</td><td>'+p.count+'</td><td>'+fmtRpFull(p.revenue)+'</td><td>'+fmtRpFull(p.arpu)+'</td></tr>';
   }).join('');
-  return'<div class="ov-section"><div class="ov-section-title">🏆 Top Sold Subscription'+(titleSuffix?' — '+titleSuffix:'')+'</div>'
+  var exclNote=excluded
+    ?'<div style="font-size:10px;color:var(--tx3);margin-bottom:6px">('+excluded+' deal di-exclude — outlet/paket belum ketemu/keisi di data Master, biasanya deal yang baru banget)</div>'
+    :'';
+  return'<div class="ov-section"><div class="ov-section-title">🏆 Top Sold Subscription'+(titleSuffix?' — '+titleSuffix:'')+'</div>'+exclNote
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
     +'<thead><tr><th>Paket</th><th>Terjual</th><th>Total Revenue</th><th>ARPU</th></tr></thead>'
     +'<tbody>'+rowsHtml+'</tbody></table></div></div></div>';
@@ -5398,9 +5404,6 @@ function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,termin
       return'<tr><td>'+g.addonType+'</td><td>'+g.count+'</td><td>'+fmtRpFull(g.revenue)+'</td></tr>';
     }).join('')
     :'<tr><td colspan="3" class="empty">Belum ada upsell di periode ini</td></tr>';
-  var paketExclNote=personal.paket.excluded
-    ?'<div style="font-size:10px;color:var(--tx3);margin-top:-4px;margin-bottom:8px">('+personal.paket.excluded+' deal di-exclude dari breakdown paket — outlet/paket nggak ketemu di data Master)</div>'
-    :'';
   return headlineHtml
     +'<div class="ov-section"><div class="ov-section-title">💰 Renewal — '+agentName+'</div>'+syncNote+summaryOnlyNote+shareHtml+cardsRow1+mrrExclNote+chartHtml+'</div>'
     +'<div class="ov-section"><div class="ov-section-title">🧩 Upsell — '+agentName+'</div>'
@@ -5412,7 +5415,7 @@ function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,termin
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
     +'<thead><tr><th>Add-On</th><th>Jumlah</th><th>Total Revenue</th></tr></thead>'
     +'<tbody>'+upsellRowsHtml+'</tbody></table></div></div></div>'
-    +paketExclNote+myJourneyPaketTableHtml(personal.paket.breakdown,agentName);
+    +myJourneyPaketTableHtml(personal.paket.breakdown,agentName,personal.paket.excluded);
 }
 function myJourneyLeaderboardHtml(granularity,periodSel,year,terminMap,recsByOutletId){
   var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent'&&!isMyJourneyExcluded(a);});
@@ -5437,7 +5440,7 @@ function myJourneyLeaderboardHtml(granularity,periodSel,year,terminMap,recsByOut
     ?'<div class="ov-section"><div class="ov-section-title">📈 Tren Tim (Semua Agen)</div><div class="card">'+renderMyJourneySVGChart(myJourneySeriesForChart(null,granularity,periodSel,year))+'</div></div>'
     :'';
   var teamPaket=computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOutletId);
-  var paketSectionHtml=myJourneyPaketTableHtml(teamPaket,'Tim');
+  var paketSectionHtml=myJourneyPaketTableHtml(teamPaket.breakdown,'Tim',teamPaket.excluded);
   var rowsHtml=rows.map(function(p,i){
     var syncFlag=p.sync.missingMonths.length?' <span style="font-size:9px;color:var(--org)" title="'+p.sync.missingMonths.join(', ')+' belum sync">⚠</span>':'';
     return'<tr><td>#'+(i+1)+'</td><td><strong>'+p.agentName+'</strong>'+syncFlag+'</td>'
