@@ -4178,7 +4178,10 @@ function masterRows(d){
   var me=Auth.getActive(),isSup=Auth.isSuperior(); // dihitung sekali, bukan per-row (mahal di 35k+ record)
   var s=mSearch.toLowerCase();
   var filtered=d.records.filter(function(r){
-    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s))return false;
+    // 11 Agu (operator): search kelewat email -- outlet ID/Nama/Merchant doang, agen sering nyari
+    // pakai email (r.email = Email Outlet||Email User, r.emailUser = kolom Email User mentah/CLM-12,
+    // bisa beda -- cek dua-duanya biar nggak kelewat).
+    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s)&&!String(r.email||'').toLowerCase().includes(s)&&!String(r.emailUser||'').toLowerCase().includes(s))return false;
     // CLM-08 (e): semua filter di bawah multi-select (array) -- OR di dalam 1 filter (match SALAH
     // SATU value terpilih), AND lintas filter (semua filter harus match). Kosong=semua (skip check).
     if(mAgent.length&&!mAgent.some(function(v){return v==='__unassigned__'?!r.assignedAgent:r.assignedAgent===v;}))return false;
@@ -4283,7 +4286,7 @@ function renderMaster(){
     +'<button class="btn btn-red" id="reset-records-btn" style="margin-left:auto" title="Hapus semua records (response & blast tetap aman di backup)">🗑 Reset Records</button>'
     +'</div>'
     +'<div class="frow">'
-    +'<input class="fsearch" type="search" id="m-search" placeholder="🔍 Cari nama / ID / merchant..." value="'+mSearch+'">'
+    +'<input class="fsearch" type="search" id="m-search" placeholder="🔍 Cari nama / ID / merchant / email..." value="'+mSearch+'">'
     +renderMultiSelect('mAgent','Agen',agentOptsArr,mAgent)
     +renderMultiSelect('mBulan','Periode',bulanOptsArr,mBulan)
     +renderMultiSelect('mLifecycle','Lifecycle',lcOptsArr,mLifecycle)
@@ -4318,7 +4321,8 @@ function wsFilteredRecs(d,me,isSup){
   var s=wsSearch.toLowerCase();
   // CLM-05 UX fix (operator 13 Jul): guard toLowerCase -- ADA record dgn id/outletName null di pool
   // leader → `r.id.toLowerCase()` throw → seluruh search My Worksheet mati diam2 ("search gak jalan").
-  return pool.filter(function(r){return String(r.id||'').toLowerCase().includes(s)||String(r.outletName||'').toLowerCase().includes(s)||String(r.namaMerchant||'').toLowerCase().includes(s);});
+  // 11 Agu (operator): tambah email (r.email + r.emailUser, sama pola kayak masterRows).
+  return pool.filter(function(r){return String(r.id||'').toLowerCase().includes(s)||String(r.outletName||'').toLowerCase().includes(s)||String(r.namaMerchant||'').toLowerCase().includes(s)||String(r.email||'').toLowerCase().includes(s)||String(r.emailUser||'').toLowerCase().includes(s);});
 }
 
 function wsRows(d,me,isSup){
@@ -4376,7 +4380,7 @@ function renderWorksheet(){
 
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
-    +'<input class="fsearch" type="search" id="ws-search" placeholder="🔍 Cari nama / ID outlet..." value="'+wsSearch+'">'
+    +'<input class="fsearch" type="search" id="ws-search" placeholder="🔍 Cari nama / ID outlet / email..." value="'+wsSearch+'">'
     +(agentFilter||'')
     +payFilter
     // 18 Jul (Ubay approve): tombol Sync Upsell buat agen. Klaim upsell dulu cuma auto-sync ON-LOAD
@@ -4742,7 +4746,8 @@ function renderResponseResults(){
   var pool=d.records;
   var s=respSearch.toLowerCase();
   var filtered=pool.filter(function(r){
-    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s))return false;
+    // 11 Agu (operator): search kelewat email -- sama fix kayak masterRows/wsFilteredRecs.
+    if(s&&!String(r.id||'').toLowerCase().includes(s)&&!String(r.outletName||'').toLowerCase().includes(s)&&!String(r.namaMerchant||'').toLowerCase().includes(s)&&!String(r.email||'').toLowerCase().includes(s)&&!String(r.emailUser||'').toLowerCase().includes(s))return false;
     if(respCatFilter.length&&!respCatFilter.some(function(v){return v==='__none__'?!(r.response&&r.response.category):(r.response&&r.response.category===v);}))return false;
     if(respAgentFilter.length&&respAgentFilter.indexOf(r.assignedAgent)<0)return false;
     // CLM-08 (4a): work-order queue -- filter "Klaim Upsell: Menunggu Validasi" biar leader nggak
@@ -4819,7 +4824,7 @@ function renderResponse(){
   var upsellOptsArr=[{value:'pending',label:'Menunggu Validasi'},{value:'approved',label:'Approved'},{value:'rejected',label:'Rejected'}];
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
-    +'<input class="fsearch" type="search" id="resp-search" placeholder="🔍 Cari nama / ID outlet..." value="'+respSearch+'">'
+    +'<input class="fsearch" type="search" id="resp-search" placeholder="🔍 Cari nama / ID outlet / email..." value="'+respSearch+'">'
     +renderMultiSelect('respCatFilter','Status',catOptsArr,respCatFilter)
     +renderMultiSelect('respAgentFilter','Agen',agentOptsArr,respAgentFilter)
     +renderMultiSelect('respUpsellFilter','Klaim Upsell',upsellOptsArr,respUpsellFilter)
