@@ -1452,7 +1452,6 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
   var upsellOutletSet={};var hasUpsellOutletId=false;
   upsellRows.forEach(function(r){if(r.outletId){hasUpsellOutletId=true;upsellOutletSet[r.outletId]=true;}});
   var upsellUserCount=hasUpsellOutletId?Object.keys(upsellOutletSet).length:upsellRows.length;
-  var upsellRate=renewalUserCount?Math.round(upsellUserCount/renewalUserCount*1000)/10:0; // 1 desimal
   // Grup upsell per addonType (operator: "gausah semua disebutin, grup per nama produk + revenue")
   var upsellGroupMap={};
   upsellRows.forEach(function(r){
@@ -1461,7 +1460,6 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
     upsellGroupMap[key].count++;
     upsellGroupMap[key].revenue+=r.subtotal;
   });
-  var upsellGroups=Object.keys(upsellGroupMap).map(function(k){return upsellGroupMap[k];}).sort(function(a,b){return b.revenue-a.revenue;});
   // Breakdown per-paket (Starter Basic/Starter/Advance/Enterprise (Prime)/Prime Plus) -- lihat
   // komentar myJourneyRecsByOutletId di atas soal atribusi+disambiguasi. paketExcluded = row yang
   // nggak ketemu match Master ATAU packageTier-nya kosong/anomali (normalizePaketBucket -> null).
@@ -1473,6 +1471,40 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
     if(bucket&&paketMap[bucket]){paketMap[bucket].count++;paketMap[bucket].revenue+=r.subtotal;}
     else paketExcluded++;
   });
+  var dealCount=renewalRows.length;
+  // Fallback ke MyJourneySummaryStore, CUMA buat granularity 'year' (lihat komentar store-nya) --
+  // bulan yang raw-nya ke-evict quota/belum di-sync ulang abis fitur ini ada, TAPI ringkasannya masih
+  // ada, ditambahin ke akumulator yang SAMA (bukan jalur terpisah) biar totalRevenue/mrr/arpu/dst
+  // otomatis ikut bener begitu digabung. renewalUserCount/upsellUserCount di sini APPROXIMATE (dijumlah
+  // per-bulan, bukan distinct-set lintas-tahun -- outlet yang kebetulan renew di >2 bulan cache bisa
+  // ke-dobel-hitung; raw-row TETAP presisi/distinct kalau bulan itu ada raw-nya). "0 jujur" tetap
+  // dipegang: bulan yang beneran nggak ada di raw MAUPUN cache -> masuk missingMonths, bukan 0 senyap.
+  var summaryOnlyMonths=[];
+  if(granularity==='year'){
+    relevantMonths.forEach(function(m){
+      if(syncedMonths.indexOf(m)>=0)return;
+      var cached=MyJourneySummaryStore.getMonth(year+'-'+m);
+      var c=cached&&cached.perAgent[agentName];
+      if(!c)return;
+      summaryOnlyMonths.push(m);
+      totalRevenue+=c.totalRevenue;
+      mrrRevSum+=c.mrrRevSum;mrrMonthsSum+=c.mrrMonthsSum;
+      dealCount+=c.dealCount;
+      renewalUserCount+=c.renewalUserCount;
+      upsellTotalRevenue+=c.upsellTotalRevenue;
+      upsellUserCount+=c.upsellUserCount;
+      (c.paket||[]).forEach(function(pk){if(paketMap[pk.bucket]){paketMap[pk.bucket].count+=pk.count;paketMap[pk.bucket].revenue+=pk.revenue;}});
+      (c.upsellGroups||[]).forEach(function(g){
+        if(!upsellGroupMap[g.addonType])upsellGroupMap[g.addonType]={addonType:g.addonType,count:0,revenue:0};
+        upsellGroupMap[g.addonType].count+=g.count;
+        upsellGroupMap[g.addonType].revenue+=g.revenue;
+      });
+    });
+    mrr=mrrMonthsSum?Math.round(mrrRevSum/mrrMonthsSum):0;
+    arpu=renewalUserCount?Math.round(totalRevenue/renewalUserCount):0;
+  }
+  var upsellRate=renewalUserCount?Math.round(upsellUserCount/renewalUserCount*1000)/10:0; // 1 desimal -- dihitung SETELAH merge cache biar konsisten
+  var upsellGroups=Object.keys(upsellGroupMap).map(function(k){return upsellGroupMap[k];}).sort(function(a,b){return b.revenue-a.revenue;});
   var paketBreakdown=MRR_PAKET_TIERS.map(function(t){
     var p=paketMap[t];
     return{bucket:t,count:p.count,revenue:p.revenue,arpu:p.count?Math.round(p.revenue/p.count):0};
@@ -1480,12 +1512,40 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
   var topPaket=paketBreakdown.length&&paketBreakdown[0].count?paketBreakdown[0]:null;
   return{
     agentName:agentName,
-    renewal:{totalRevenue:totalRevenue,mrr:mrr,mrrExcluded:mrrExcluded,arpu:arpu,dealCount:renewalRows.length,userCount:renewalUserCount},
+    renewal:{totalRevenue:totalRevenue,mrr:mrr,mrrRevSum:mrrRevSum,mrrMonthsSum:mrrMonthsSum,mrrExcluded:mrrExcluded,arpu:arpu,dealCount:dealCount,userCount:renewalUserCount},
     upsell:{totalRevenue:upsellTotalRevenue,userCount:upsellUserCount,rate:upsellRate,groups:upsellGroups},
     totalRevenueCombined:totalRevenue+upsellTotalRevenue,
     paket:{breakdown:paketBreakdown,excluded:paketExcluded,top:topPaket},
-    sync:{relevantMonths:relevantMonths,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})}
+    sync:{relevantMonths:relevantMonths,syncedMonths:syncedMonths,summaryOnlyMonths:summaryOnlyMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0&&summaryOnlyMonths.indexOf(m)<0;})}
   };
+}
+// Hitung ringkasan 1 bulan buat SEMUA agen sekaligus, simpen ke MyJourneySummaryStore -- dipanggil
+// abis syncUpsellTeamOnly sukses (raw bulan itu PASTI ada di UpsellTeamStore saat ini dipanggil, jadi
+// computeMyJourneyPersonal granularity='month' selalu punya raw buat dihitung, nggak circular sama
+// fallback-nya). Field yg disimpen SENGAJA angka mentah yg masih bisa dijumlah (mrrRevSum/mrrMonthsSum
+// terpisah, BUKAN mrr yg udah dibagi) -- biar pas digabung lintas-bulan di computeMyJourneyPersonal
+// (granularity 'year'), hasilnya tetep matematis benar (rasio-dari-total, bukan rata-rata-dari-rasio).
+function myJourneyComputeAndCacheSummary(month,year){
+  var terminMap=myJourneyOutletTerminMap();
+  var recsByOutletId=myJourneyRecsByOutletId();
+  var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
+  var perAgent={};
+  agents.forEach(function(a){
+    var p=computeMyJourneyPersonal(a.name,'month',{monthKey:month},year,terminMap,recsByOutletId);
+    if(!p.sync.syncedMonths.length)return; // raw bulan ini nggak ada -> nggak ada apa2 buat di-cache
+    perAgent[a.name]={
+      totalRevenue:p.renewal.totalRevenue,
+      mrrRevSum:p.renewal.mrrRevSum,
+      mrrMonthsSum:p.renewal.mrrMonthsSum,
+      dealCount:p.renewal.dealCount,
+      renewalUserCount:p.renewal.userCount,
+      upsellTotalRevenue:p.upsell.totalRevenue,
+      upsellUserCount:p.upsell.userCount,
+      upsellGroups:p.upsell.groups.map(function(g){return{addonType:g.addonType,count:g.count,revenue:g.revenue};}),
+      paket:p.paket.breakdown.map(function(b){return{bucket:b.bucket,count:b.count,revenue:b.revenue};})
+    };
+  });
+  MyJourneySummaryStore.setMonth(year+'-'+month,{perAgent:perAgent});
 }
 // Total tim (buat "kontribusi % ke tim" di agent view -- SATU-SATUNYA bentuk pembanding yang boleh
 // ditampilin ke agen, jangan pernah bocorin angka individu agen lain). Filter row SAMA persis kayak
@@ -1506,7 +1566,24 @@ function computeMyJourneyTeamTotal(granularity,periodSel,year){
       if(myJourneyRowInPeriod(r,granularity,periodSel,year)&&matchAgentFuzzy(r.creatorName,agents))totalRevenueUpsell+=r.subtotal;
     });
   });
-  return{totalRevenueRenewal:totalRevenueRenewal,totalRevenueUpsell:totalRevenueUpsell,syncedMonths:syncedMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0;})};
+  // Fallback cache (granularity 'year' doang) -- sama pola kayak computeMyJourneyPersonal, jumlahin
+  // ringkasan SEMUA agen buat bulan yang raw-nya nggak ada.
+  var summaryOnlyMonths=[];
+  if(granularity==='year'){
+    relevantMonths.forEach(function(m){
+      if(syncedMonths.indexOf(m)>=0)return;
+      var cached=MyJourneySummaryStore.getMonth(year+'-'+m);
+      if(!cached)return;
+      summaryOnlyMonths.push(m);
+      agents.forEach(function(a){
+        var c=cached.perAgent[a.name];
+        if(!c)return;
+        totalRevenueRenewal+=c.totalRevenue;
+        totalRevenueUpsell+=c.upsellTotalRevenue;
+      });
+    });
+  }
+  return{totalRevenueRenewal:totalRevenueRenewal,totalRevenueUpsell:totalRevenueUpsell,syncedMonths:syncedMonths,summaryOnlyMonths:summaryOnlyMonths,missingMonths:relevantMonths.filter(function(m){return syncedMonths.indexOf(m)<0&&summaryOnlyMonths.indexOf(m)<0;})};
 }
 // Breakdown per-paket AGREGAT SELURUH TIM (leaderboard "Top Sold Subscription") -- filter row SAMA
 // persis kayak computeMyJourneyTeamTotal (cuma row yg matchAgentFuzzy-nya kenal agen, biar konsisten
@@ -1526,6 +1603,18 @@ function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOut
       if(bucket&&paketMap[bucket]){paketMap[bucket].count++;paketMap[bucket].revenue+=r.subtotal;}
     });
   });
+  if(granularity==='year'){
+    relevantMonths.forEach(function(m){
+      if(syncedMonths.indexOf(m)>=0)return;
+      var cached=MyJourneySummaryStore.getMonth(year+'-'+m);
+      if(!cached)return;
+      agents.forEach(function(a){
+        var c=cached.perAgent[a.name];
+        if(!c)return;
+        (c.paket||[]).forEach(function(pk){if(paketMap[pk.bucket]){paketMap[pk.bucket].count+=pk.count;paketMap[pk.bucket].revenue+=pk.revenue;}});
+      });
+    });
+  }
   return MRR_PAKET_TIERS.map(function(t){
     var p=paketMap[t];
     return{bucket:t,count:p.count,revenue:p.revenue,arpu:p.count?Math.round(p.revenue/p.count):0};
@@ -1548,6 +1637,17 @@ function myJourneySeriesForChart(agentName,granularity,periodSel,year){
       if(fin){
         (fin.renewalsRaw||[]).forEach(function(r){if(isMatch(r.creatorName)&&localDateStr(r.paidDate).slice(0,4)===String(year))rSum+=r.subtotal;});
         (fin.upsellRaw||[]).forEach(function(r){if(isMatch(r.creatorName)&&localDateStr(r.paidDate).slice(0,4)===String(year))uSum+=r.subtotal;});
+      }else{
+        // Raw bulan ini nggak ada (evicted/belum sync) -- fallback ringkasan cache, sama sumber
+        // dipake computeMyJourneyPersonal/TeamTotal. agentName=null (chart tim) -> jumlah semua agen.
+        var cached=MyJourneySummaryStore.getMonth(year+'-'+m);
+        if(cached){
+          var names=agentName?[agentName]:Object.keys(cached.perAgent);
+          names.forEach(function(nm){
+            var c=cached.perAgent[nm];
+            if(c){rSum+=c.totalRevenue;uSum+=c.upsellTotalRevenue;}
+          });
+        }
       }
       renewal.push(rSum);upsell.push(uSum);
     });
@@ -2518,6 +2618,25 @@ var UpsellTeamStore={
     if(!storageSetMonthWithEviction(this.KEY,all,month))toast('⚠ Data Upsell Tim '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
   },
   getMonth:function(month){return this.getAll()[month]||null;}
+};
+
+// 11 Agu (operator, opsi 3 dari 3 pilihan atas insiden localStorage penuh -- lihat komentar
+// storageSetMonthWithEviction): raw UpsellTeamStore ~300KB/bulan, 12 bulan aja udah nggak muat bareng
+// data lain (apalagi rencana nambah histori 2024/2025) -- eviction cuma nyelametin dari crash, BUKAN
+// nyelesein "My Journey Tahunan butuh 12 bulan sekaligus". Fix beneran: PISAH raw (detail per-baris,
+// buat drill-down harian bulan yang lagi aktif -- TETAP di UpsellTeamStore kayak biasa, boleh kena
+// evict) dari RINGKASAN per-agen per-bulan (belasan angka doang per agen, bukan ratusan/ribuan baris)
+// yang disimpen di sini -- ukurannya kecil banget (~ratusan KB TOTAL buat 3 tahun sekalipun), jadi
+// AMAN nggak kena masalah kapasitas lagi. Diisi otomatis abis tiap sync Upsell Tim sukses (lihat
+// myJourneyComputeAndCacheSummary + hook di syncUpsellTeamOnly) -- begitu raw bulan ke-evict, ringkasan
+// bulan itu TETAP ada, dipake fallback di computeMyJourneyPersonal/TeamTotal (granularity 'year' doang
+// -- day/week/month tetep butuh raw krn perlu presisi harian). Key = 'YYYY-Mon' (eksplisit tahun dari
+// awal, bukan cuma 'Mon', biar siap nampung histori 2024/2025 kapan pun ditambah tanpa migrasi key).
+var MyJourneySummaryStore={
+  KEY:'klopos_myjourney_summary_v1',
+  getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
+  setMonth:function(key,payload){var all=this.getAll();all[key]=payload;localStorage.setItem(this.KEY,JSON.stringify(all));}, // kecil, nggak butuh eviction
+  getMonth:function(key){return this.getAll()[key]||null;}
 };
 
 // CLM-10 §1: Invoice Tracker (Data Invoice CX, GAS ?action=invoicetracker) -- SATU blob (bukan
@@ -5256,6 +5375,9 @@ function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,termin
   var syncNote=personal.sync.missingMonths.length
     ?'<div class="pay-info" style="margin-bottom:8px;color:var(--org)">⚠ Data '+personal.sync.syncedMonths.length+'/'+personal.sync.relevantMonths.length+' bulan tersync ('+personal.sync.missingMonths.join(', ')+' belum) — angka di bawah cuma dari bulan yang udah disync.</div>'
     :'';
+  var summaryOnlyNote=(personal.sync.summaryOnlyMonths&&personal.sync.summaryOnlyMonths.length)
+    ?'<div style="font-size:10px;color:var(--tx3);margin-bottom:8px">ℹ '+personal.sync.summaryOnlyMonths.join(', ')+' dari ringkasan tersimpan (bukan data mentah terbaru — sync ulang bulan itu kalau mau data ter-update)</div>'
+    :'';
   var mrrExclNote=personal.renewal.mrrExcluded
     ?'<div style="font-size:10px;color:var(--tx3);margin-top:-4px;margin-bottom:8px">('+personal.renewal.mrrExcluded+' deal di-exclude dari MRR — termin/outlet nggak ketemu di data Master)</div>'
     :'';
@@ -5280,7 +5402,7 @@ function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,termin
     ?'<div style="font-size:10px;color:var(--tx3);margin-top:-4px;margin-bottom:8px">('+personal.paket.excluded+' deal di-exclude dari breakdown paket — outlet/paket nggak ketemu di data Master)</div>'
     :'';
   return headlineHtml
-    +'<div class="ov-section"><div class="ov-section-title">💰 Renewal — '+agentName+'</div>'+syncNote+shareHtml+cardsRow1+mrrExclNote+chartHtml+'</div>'
+    +'<div class="ov-section"><div class="ov-section-title">💰 Renewal — '+agentName+'</div>'+syncNote+summaryOnlyNote+shareHtml+cardsRow1+mrrExclNote+chartHtml+'</div>'
     +'<div class="ov-section"><div class="ov-section-title">🧩 Upsell — '+agentName+'</div>'
     +'<div class="grid3" style="margin-bottom:12px">'
     +myJourneyMetricCard('Revenue Upsell',fmtRpShort(personal.upsell.totalRevenue))
@@ -7480,6 +7602,11 @@ function syncUpsellTeamOnly(monthParam,silent){
       // ini sama sekali, sekarang udah ada (lihat gas_full_clm07_auth.md), tapi handler ini masih
       // literally cherry-pick 3 field lama doang, bakal DIAM-DIAM BUANG field baru kalau nggak ditambah.
       UpsellTeamStore.setMonth(mon,{roster:json.roster||[],renewals:json.renewals||[],upsell:json.upsell||[],renewalsRaw:json.renewalsRaw||[],upsellRaw:json.upsellRaw||[]});
+      // 11 Agu (operator, opsi 3): cache ringkasan bulan ini SEKARANG selagi raw-nya masih ada --
+      // begitu raw ke-evict quota nanti, ringkasan ini yg jadi fallback (lihat MyJourneySummaryStore).
+      // Sheet RENEWAL & UPSELL 2026 single-year by design, jadi '2026' bukan hardcode baru (konsisten
+      // sama myJourneyYearSel default) -- perlu di-generalize kalau nanti histori 2024/2025 ditambah.
+      myJourneyComputeAndCacheSummary(mon,'2026');
       renderTab(currentTab);
       if(!silent)toast('Upsell Tim '+mon+' tersimpan: '+(json.upsell?json.upsell.length:0)+' baris agregat',5000);
     }).catch(function(err){
