@@ -2277,15 +2277,23 @@ function closeModal(id){document.getElementById(id).classList.remove('open');}
 // server yg jadi sumber kebenaran krn allowlist+role-nya di GAS, bukan localStorage klien).
 var Auth={
   SESSION:'klopos_session_v1', // {token,name,role,email}
-  getSession:function(){try{return JSON.parse(sessionStorage.getItem(this.SESSION)||'null');}catch(e){return null;}},
-  setSession:function(s){sessionStorage.setItem(this.SESSION,JSON.stringify(s));},
+  // 11 Agu (operator: "kaya keberatan" logout, expect 24 jam sesuai TOKEN_TTL_MS Code.gs) -- FIX:
+  // sessionStorage->localStorage. Token server emang udah 24 jam (Code.gs TOKEN_TTL_MS), tapi
+  // sessionStorage itu SCOPE-TAB (kehapus otomatis begitu tab ditutup -- sengaja/nggak sengaja/
+  // browser crash/restart), jadi client "lupa" sesi jauh sebelum token beneran expired di server.
+  // localStorage persist lintas tab-close/browser-restart, pola SAMA yang udah dipakai semua store
+  // lain di app ini (UpsellTeamStore/FinancialsStore/AgentsConfig/dst) -- nol pola baru, nol resiko
+  // ke guard/invariant CLM-07 di sisi server (Code.gs sama sekali nggak disentuh perubahan ini,
+  // token/expiry/validateToken tetap persis sama, cuma tempat client NYIMPEN token yang berubah).
+  getSession:function(){try{return JSON.parse(localStorage.getItem(this.SESSION)||'null');}catch(e){return null;}},
+  setSession:function(s){localStorage.setItem(this.SESSION,JSON.stringify(s));},
   logout:function(){
     var s=this.getSession();
     if(s&&s.token){
       // best-effort, jangan blocking logout kalau network gagal
       fetch(GAS_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'logout',token:s.token})}).catch(function(){});
     }
-    sessionStorage.removeItem(this.SESSION);
+    localStorage.removeItem(this.SESSION);
   },
   getActive:function(){var s=this.getSession();return s?s.name:null;},
   getToken:function(){var s=this.getSession();return s?s.token:null;},
