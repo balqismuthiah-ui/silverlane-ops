@@ -1511,17 +1511,22 @@ function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOut
   }).sort(function(a,b){return b.count-a.count;});
 }
 // Seri data buat grafik trend (day-bucket buat week/month, month-bucket buat year). 'day' granularity
-// sengaja NGGAK dikasih grafik (1 titik doang nggak ada tren buat ditunjukin).
+// sengaja NGGAK dikasih grafik (1 titik doang nggak ada tren buat ditunjukin). `agentName=null` (atau
+// undefined) = agregat SEMUA agen dikenal (dipake leaderboard, operator: "grafik all pas all agent").
 function myJourneySeriesForChart(agentName,granularity,periodSel,year){
   var agents=AgentsConfig.getAll();
+  function isMatch(creatorName){
+    var m=matchAgentFuzzy(creatorName,agents);
+    return agentName?m===agentName:!!m;
+  }
   if(granularity==='year'){
     var renewal=[],upsell=[];
     MONTH_KEYS.forEach(function(m){
       var fin=UpsellTeamStore.getMonth(m);
       var rSum=0,uSum=0;
       if(fin){
-        (fin.renewalsRaw||[]).forEach(function(r){if(matchAgentFuzzy(r.creatorName,agents)===agentName&&localDateStr(r.paidDate).slice(0,4)===String(year))rSum+=r.subtotal;});
-        (fin.upsellRaw||[]).forEach(function(r){if(matchAgentFuzzy(r.creatorName,agents)===agentName&&localDateStr(r.paidDate).slice(0,4)===String(year))uSum+=r.subtotal;});
+        (fin.renewalsRaw||[]).forEach(function(r){if(isMatch(r.creatorName)&&localDateStr(r.paidDate).slice(0,4)===String(year))rSum+=r.subtotal;});
+        (fin.upsellRaw||[]).forEach(function(r){if(isMatch(r.creatorName)&&localDateStr(r.paidDate).slice(0,4)===String(year))uSum+=r.subtotal;});
       }
       renewal.push(rSum);upsell.push(uSum);
     });
@@ -1542,11 +1547,11 @@ function myJourneySeriesForChart(agentName,granularity,periodSel,year){
     var fin=UpsellTeamStore.getMonth(m);
     if(!fin)return;
     (fin.renewalsRaw||[]).forEach(function(r){
-      if(matchAgentFuzzy(r.creatorName,agents)!==agentName)return;
+      if(!isMatch(r.creatorName))return;
       var d=localDateStr(r.paidDate);renewalByDay[d]=(renewalByDay[d]||0)+r.subtotal;
     });
     (fin.upsellRaw||[]).forEach(function(r){
-      if(matchAgentFuzzy(r.creatorName,agents)!==agentName)return;
+      if(!isMatch(r.creatorName))return;
       var d=localDateStr(r.paidDate);upsellByDay[d]=(upsellByDay[d]||0)+r.subtotal;
     });
   });
@@ -5283,6 +5288,11 @@ function myJourneyLeaderboardHtml(granularity,periodSel,year,terminMap,recsByOut
     +myJourneyMetricCard('Total Revenue Renewal',fmtRpShort(sumRenewal))
     +myJourneyMetricCard('Total Revenue Upsell',fmtRpShort(sumUpsell))
     +'</div>';
+  // Grafik tren gabungan SEMUA agen (operator: "grafik all tahunan pas all agent juga") -- reuse
+  // myJourneySeriesForChart dengan agentName=null (agregat, bukan 1 agen).
+  var chartHtml=granularity!=='day'
+    ?'<div class="ov-section"><div class="ov-section-title">📈 Tren Tim (Semua Agen)</div><div class="card">'+renderMyJourneySVGChart(myJourneySeriesForChart(null,granularity,periodSel,year))+'</div></div>'
+    :'';
   var teamPaket=computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOutletId);
   var paketSectionHtml=myJourneyPaketTableHtml(teamPaket,'Tim');
   var rowsHtml=rows.map(function(p,i){
@@ -5295,7 +5305,7 @@ function myJourneyLeaderboardHtml(granularity,periodSel,year,terminMap,recsByOut
       +'<td>'+fmtRpFull(p.renewal.arpu)+'</td>'
       +'<td>'+p.upsell.userCount+' ('+p.upsell.rate+'%)</td></tr>';
   }).join('');
-  return summaryHtml+paketSectionHtml
+  return summaryHtml+chartHtml+paketSectionHtml
     +'<div class="ov-section"><div class="ov-section-title">👥 Compare Semua Agen (Rank by Total Revenue Gabungan)</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
     +'<thead><tr><th>#</th><th>Agen</th><th>Revenue Renewal</th><th>Revenue Upsell</th><th>Total Gabungan</th><th>MRR</th><th>ARPU</th><th>Upsell (User/Rate)</th></tr></thead>'
