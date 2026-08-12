@@ -8584,23 +8584,46 @@ function initAuth(){
     });
   });
 
+  // 12 Agu (susul lagi -- Ryanza kena persis bug yg sama kayak requestOtp, di titik verifyOtp yg
+  // belum sempet dibenerin): fetch mentah tanpa timeout, network log kebukti nyangkut ~19dtk buat
+  // redirect + ~31dtk lagi nunggu echo, akhirnya 404 -- ~50dtk total buat 1 percobaan doang, nol retry.
+  // Pola sama persis (AbortController + retry) kayak sendOtpRequest. BEDA penting dari requestOtp:
+  // verifyOtp BUKAN idempotent (kode sekali-pakai, ke-delete abis sukses) -- retry cuma dipicu kalau
+  // fetch/JSON-nya sendiri gagal (.catch), BUKAN kalau server balikin j.ok===false yg valid (kode
+  // salah/expired tetep langsung ditampilin, nggak di-retry -- itu jawaban asli, bukan gangguan
+  // transport). Residual risk kecil yg TETEP ada: kalau request PERTAMA sebenarnya sukses di server
+  // tapi responsnya sendiri yg hilang (bukan requestnya yg nggak nyampe -- pola dominan hari ini),
+  // retry ke-2 bakal dapet otp_invalid krn kode udah kepake. Pesan error di-sesuain buat nutup itu.
   document.getElementById('auth-verify-otp-btn').addEventListener('click',function(){
     var otp=document.getElementById('auth-otp').value.trim();
     if(!otp){showAuthError('Masukkan kode OTP');return;}
     var btn=document.getElementById('auth-verify-otp-btn');
     btn.disabled=true;btn.textContent='Memverifikasi...';
-    fetch(GAS_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'verifyOtp',email:pendingEmail,otp:otp})})
-      .then(function(r){return r.json();})
-      .then(function(j){
-        if(!j.ok){
-          var msg={otp_invalid:'Kode salah',otp_expired:'Kode kedaluwarsa — kirim ulang',otp_locked:'Terlalu banyak percobaan salah — kirim ulang kode baru',unauthorized:'Akses ditolak (nonaktif)'}[j.error]||'Verifikasi gagal';
-          showAuthError(msg);
-          return;
-        }
-        Auth.setSession({token:j.token,name:j.name,role:j.role,email:pendingEmail});
-        _storeReady.then(startApp);
-      }).catch(function(){showAuthError('Gagal verifikasi, coba lagi');})
-      .then(function(){btn.disabled=false;btn.textContent='Masuk';});
+    function attempt(n){
+      var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+      var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
+      var opts={method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'verifyOtp',email:pendingEmail,otp:otp})};
+      if(ctrl)opts.signal=ctrl.signal;
+      fetch(GAS_URL,opts)
+        .then(function(r){if(timer)clearTimeout(timer);return r.json();})
+        .then(function(j){
+          btn.disabled=false;btn.textContent='Masuk';
+          if(!j.ok){
+            var msg={otp_invalid:'Kode salah (atau udah pernah dipakai -- coba kirim ulang kalau baru aja nyoba)',otp_expired:'Kode kedaluwarsa — kirim ulang',otp_locked:'Terlalu banyak percobaan salah — kirim ulang kode baru',unauthorized:'Akses ditolak (nonaktif)'}[j.error]||'Verifikasi gagal';
+            showAuthError(msg);
+            return;
+          }
+          Auth.setSession({token:j.token,name:j.name,role:j.role,email:pendingEmail});
+          _storeReady.then(startApp);
+        })
+        .catch(function(){
+          if(timer)clearTimeout(timer);
+          if(n<3){setTimeout(function(){attempt(n+1);},1000*(n+1));return;}
+          btn.disabled=false;btn.textContent='Masuk';
+          showAuthError('Gagal verifikasi, coba lagi');
+        });
+    }
+    attempt(0);
   });
 
   document.getElementById('auth-otp').addEventListener('keydown',function(e){
