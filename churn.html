@@ -2308,6 +2308,35 @@ function forceReLogin(){
   document.getElementById('app').style.display='none';
   showLoginScreen('Sesi habis atau akses dicabut — silakan login lagi.');
 }
+// 12 Agu (insiden: beberapa leader ke-logout paksa berulang -- console nunjukin 404 di
+// script.googleusercontent.com/macros/echo, pola SAMA persis "Gangguan GAS/Drive-serving intermiten
+// CODE AI" yg udah lama nggak ke-resolve, eskalasi admin mentok/nggak ada PIC -- lihat memory
+// gas_migration_aideploy_to_codeai.md). Dugaan: validateToken server ikut kena flaky yg sama
+// (PropertiesService read gagal transient), balikin {error:'unauthorized'} PALSU walau akses beneran
+// masih valid -- client langsung percaya & maksa logout. NGGAK BISA dibenerin dari sini (infra GAS di
+// luar jangkauan), tapi bisa dibikin client-nya nggak langsung percaya sinyal PERTAMA: cek ulang SEKALI
+// lagi (endpoint ringan `freshness`, lewat validateToken yg SAMA) abis jeda singkat sebelum BENERAN
+// nge-logout paksa. Kalau transient, retry ini biasanya udah pulih & lolos -- user nggak kerasa apa2.
+// Kalau BENERAN dicabut/expired, retry ini JUGA bakal gagal & tetap logout -- revoke CLM-07 "seketika"
+// tetap efektif, cuma ketunda ~2 detik, BUKAN bypass permanen. Semua 10 titik forceReLogin() lama
+// (dipicu langsung dari respons action manapun yg balikin unauthorized) ganti panggil ini.
+var _reauthCheckInFlight=false; // cegah numpuk banyak recheck kalau beberapa request gagal barengan
+function confirmUnauthorizedThenLogout(){
+  if(_reauthCheckInFlight)return; // udah ada recheck jalan, biar itu doang yg mutusin
+  _reauthCheckInFlight=true;
+  setTimeout(function(){
+    var token=Auth.getToken();
+    if(!token){_reauthCheckInFlight=false;forceReLogin();return;}
+    fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(token))
+      .then(function(r){return r.json();})
+      .then(function(j){
+        _reauthCheckInFlight=false;
+        if(j&&j.error==='unauthorized')forceReLogin(); // gagal 2x beruntun -- beneran logout
+        // sukses: diem aja, sesi masih valid, request asli yg gagal tadi biar user retry manual/nunggu auto-retry
+      })
+      .catch(function(){_reauthCheckInFlight=false;forceReLogin();}); // network beneran mati -- aman logout juga
+  },2000);
+}
 function showLoginScreen(errMsg){
   document.getElementById('auth-screen').style.display='flex';
   document.getElementById('auth-step-otp').style.display='none';
@@ -3003,7 +3032,7 @@ function _gasPostOnce(payload){
     .then(function(r){return r.text().then(function(t){
       if(!r.ok){var e=new Error('HTTP '+r.status);e.retriable=(r.status>=500||r.status===429);throw e;}
       var j;try{j=JSON.parse(t);}catch(e2){var e3=new Error('Respons GAS bukan JSON (kemungkinan timeout eksekusi)');e3.retriable=true;throw e3;}
-      if(j&&j.error==='unauthorized'){forceReLogin();var eu=new Error('unauthorized');eu.retriable=false;throw eu;}
+      if(j&&j.error==='unauthorized'){confirmUnauthorizedThenLogout();var eu=new Error('unauthorized');eu.retriable=false;throw eu;}
       if(j&&j.ok===false){var eb=new Error(j.error||'write gagal');eb.retriable=(j.retry===true);throw eb;}
       return j;
     });});
@@ -7005,7 +7034,7 @@ function syncMonthList(months,opts){
     fetch(GAS_URL+'?action=data&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||''),ctrl?{signal:ctrl.signal}:{})
       .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
       .then(function(json){
-        if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+        if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
         var rows=json.data||[];
         var d=Store.get();
         // 4 Agu (operator): auto-mark RESPON POSITIF/PAID CRM/SELF ONBOARD begitu paymentStatus jadi
@@ -7127,7 +7156,7 @@ function checkFreshnessAndAutoSync(){
   fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(Auth.getToken()||''))
     .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
-      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       var serverFresh=json.lastRefresh||0;
       var known=getKnownDbFreshness();
       if(serverFresh<=known)return; // DB belum berubah sejak sync terakhir -- skip diam2
@@ -7225,7 +7254,7 @@ function syncFromGAS(opts){
       return res.json();
     })
     .then(function(json){
-      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       var rows=json.data||[];
       if(!rows.length){toast('Tidak ada data dari sheet (total: '+( json.total||0)+')');return;}
       var d=Store.get();
@@ -7348,7 +7377,7 @@ function _gasGet(action,timeoutMs){
     if(!r.ok)throw new Error('HTTP '+r.status);
     return r.json();
   }).then(function(j){
-    if(j&&j.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+    if(j&&j.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
     return j;
   }).catch(function(err){if(timer)clearTimeout(timer);throw err;});
 }
@@ -7386,7 +7415,7 @@ function syncAssignOnly(monthParam){
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
-      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       var rows=json.data||[];
       var d=Store.get();
       var idx={};var outletIdx={};
@@ -7577,7 +7606,7 @@ function syncFinancialsOnly(monthParam,silent){
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
-      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       FinancialsStore.setMonth(mon,{mrr:json.mrr||0,data:json.data||[]});
       renderTab(currentTab);
       if(!silent)toast('Financials '+mon+' tersimpan: '+(json.total||0)+' outlet renewal',5000);
@@ -7608,7 +7637,7 @@ function syncUpsellTeamOnly(monthParam,silent){
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
-      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       // CLM-11 Fase C (Daily view): tambah renewalsRaw/upsellRaw -- SEBELUMNYA GAS nggak ngasih field
       // ini sama sekali, sekarang udah ada (lihat gas_full_clm07_auth.md), tapi handler ini masih
       // literally cherry-pick 3 field lama doang, bakal DIAM-DIAM BUANG field baru kalau nggak ditambah.
@@ -7676,7 +7705,7 @@ function syncInvoiceTrackerOnly(){
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
-      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       InvoiceTrackerStore.set(json.data||[],json.reassignments||[]);
       renderTab(currentTab);
       toast('Invoice Tracker tersimpan: '+(json.total||0)+' invoice',5000);
@@ -7800,7 +7829,7 @@ function pollResponsesDelta(){
   fetch(GAS_URL+'?action=responsesDelta&since='+since+'&token='+encodeURIComponent(Auth.getToken()||''))
     .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
-      if(json&&json.error==='unauthorized'){forceReLogin();throw new Error('unauthorized');}
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       var rows=json.data||[];
       if(rows.length){
         var d=Store.get();
