@@ -428,8 +428,22 @@ tr:hover td{background:var(--sur2)}
   <div class="modal">
     <div class="modal-hd"><h3 id="target-modal-title">Tambah Target</h3><button class="modal-close" data-close="target-modal">✕</button></div>
     <div class="modal-bd">
-      <label>Metrik</label>
-      <select id="target-metric-sel"></select>
+      <label>Tipe Target</label>
+      <select id="target-type-sel">
+        <option value="metric">Metrik Biasa</option>
+        <option value="combo">Kombinasi (Combo Target — gabungan beberapa SKU/upgrade jadi 1 syarat AND)</option>
+      </select>
+      <div id="target-metric-wrap">
+        <label>Metrik</label>
+        <select id="target-metric-sel"></select>
+      </div>
+      <div id="target-combo-wrap" style="display:none">
+        <label>Nama Combo</label>
+        <input type="text" id="target-combo-name-inp" placeholder="Contoh: Akunting + Majoo Teams">
+        <label style="margin-top:6px">Komponen (SEMUA komponen harus tercapai ambangnya — AND, bukan OR)</label>
+        <div id="target-combo-components"></div>
+        <button type="button" class="btn btn-sec" id="target-combo-add-component-btn" style="margin-top:2px">+ Tambah Komponen</button>
+      </div>
       <label>Periode (Bulan)</label>
       <select id="target-period-sel"></select>
       <div id="target-bulk-months-wrap" style="display:none">
@@ -694,6 +708,9 @@ function targetMetricMeta(metricKey){
   // 'bundle:<key>' (beda dari 'sku:' krn achievement-nya BOOLEAN OR-fallback billing/evidence,
   // bukan qty count murni dari 1 sumber -- lihat computeBundleAchievement).
   if(metricKey.indexOf('bundle:')===0)return{family:'outcome',label:(BUNDLE_LABELS[metricKey.slice(7)]||metricKey.slice(7))+' (Bundle)'};
+  // CLM-14: 'combo:<label bebas>' -- beda dari sku:/bundle:, slug BUKAN nama produk melainkan nama
+  // combo yg leader ketik sendiri di form builder (nol daftar tetap, lihat computeComboTargetAchievement).
+  if(metricKey.indexOf('combo:')===0)return{family:'outcome',label:metricKey.slice(6)+' (Combo)'};
   return{family:'?',label:metricKey};
 }
 // CLM-04 Fase 2: 5 metrik duit — join Outlet_ID (case, scope-filtered) -> FinancialsStore (per bulan).
@@ -1820,6 +1837,62 @@ function computeBundleAchievement(bundleKey,period,recs,agentName){
   }
   return{actual:0,synced:false};
 }
+// CLM-14 (12 Agu, spec_combo_target_upsell.md): Combo Target Komponen "klopos_upgrade" (Jalur B) --
+// upgrade paket yang NEMPEL di renewal itu sendiri (bukan transaksi upsell terpisah -- itu Jalur A,
+// SKU 'Upsell - Upgrade', fase 2 nanti, belum dibangun). Ini SATU-SATUNYA cara nangkep kasus ini --
+// nggak ninggalin jejak apa pun di UpsellTeamStore/RENEWAL sheet, cuma keliatan sebagai productPackage
+// KLOPOS Master (kolom AI) dengan suffix " upgrade" persis (verified 12 Agu: "Advance upgrade",
+// "Enterprise upgrade", exact string, 1 spasi, huruf kecil). KLOPOS Master nggak punya creatorName utk
+// kasus ini -- JOIN by outletId ke UpsellTeamStore.renewalsRaw (tab Renewal sheet), REUSE
+// matchAgentFuzzy (pola join SAMA PERSIS My Journey myJourneyRecsByOutletId, bukan mekanisme baru).
+function computeKloposUpgradeCount(targetTier,period,agentName){
+  var d=Store.get();
+  var periodRecs=period?d.records.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(period)>=0;}):d.records;
+  var matchStr=targetTier+' upgrade';
+  var candidates=periodRecs.filter(function(r){
+    return r.productPackage===matchStr&&r.paymentStatus==='paid'&&r.outletId;
+  });
+  if(!candidates.length)return 0;
+  var fin=period?UpsellTeamStore.getMonth(period):null;
+  if(!fin||!fin.renewalsRaw||!fin.renewalsRaw.length)return 0;
+  var creatorByOutlet={};
+  fin.renewalsRaw.forEach(function(r){if(r.outletId&&!creatorByOutlet[r.outletId])creatorByOutlet[r.outletId]=r.creatorName;});
+  var agents=AgentsConfig.getAll();
+  var cnt=0;
+  candidates.forEach(function(r){
+    var creatorName=creatorByOutlet[r.outletId];
+    if(creatorName&&matchAgentFuzzy(creatorName,agents)===agentName)cnt++;
+  });
+  return cnt;
+}
+// CLM-14: 1 sumber di dalam 1 komponen Combo Target -- type 'sku' (reuse computeSkuTargetCount, opsional
+// minValueForCount buat komponen kayak "WA Add On" yg deal murah tetap masuk revenue tapi nggak nambah
+// count) atau type 'klopos_upgrade' (Jalur B di atas).
+function computeComboSourceCount(source,period,agentName){
+  if(source.type==='sku'){
+    var res=computeSkuTargetCount(source.key,period,agentName,null,source.minValueForCount!=null?source.minValueForCount:null);
+    return res.synced?res.actual:0;
+  }
+  if(source.type==='klopos_upgrade')return computeKloposUpgradeCount(source.targetTier,period,agentName);
+  return 0;
+}
+// CLM-14: Combo Target -- gabungan beberapa komponen (leader nge-build sendiri lewat form, NOL hardcode
+// ke SKU/kombinasi tertentu -- lihat spec_combo_target_upsell.md). Tiap komponen = SUM dari beberapa
+// sources, achieved kalau actual>=threshold komponen itu. Target combo OVERALL achieved = AND semua
+// komponen (bukan OR). SELALU personal-scope (mirip sku:/bundle: -- achievement ini per-agen by design).
+// actual/effectiveTarget di-map ke "berapa komponen udah tercapai / total komponen" (bukan binary 0/1)
+// biar progress bar di UI kartu tetep informatif walau belum full-achieved (mis. 3/5 komponen).
+function computeComboTargetAchievement(target,period,agentName){
+  var components=target.components||[];
+  var componentResults=components.map(function(c){
+    var actual=(c.sources||[]).reduce(function(s,src){return s+computeComboSourceCount(src,period,agentName);},0);
+    var threshold=c.threshold||0;
+    return{label:c.label,actual:actual,threshold:threshold,achieved:actual>=threshold};
+  });
+  var achievedCount=componentResults.filter(function(c){return c.achieved;}).length;
+  var allAchieved=componentResults.length>0&&achievedCount===componentResults.length;
+  return{actual:achievedCount,unit:'',effectiveTarget:componentResults.length,components:componentResults,achieved:allAchieved,synced:true};
+}
 // CLM-11 Fase F: MRR per-paket Renewal -- breakdown 5 tier dari kolom "Paket" (RENEWAL, verified
 // read-only 12 Jul: nilai bersih Basic/Starter/Advance/Prime, TANPA suffix continue/upgrade/downgrade
 // kayak productPackage). Kolom itu CUMA 4 nilai -- "Prime" nggak otomatis kebedain Enterprise vs Prime
@@ -2021,6 +2094,12 @@ function computeTargetActual(target,allRecs,agentName){
       var overridesBundle=target.personalOverrides||{};
       resBundle.effectiveTarget=(overridesBundle[agentName]!=null)?overridesBundle[agentName]:(target.targetValue||1);
       return resBundle;
+    }
+    // CLM-14: Combo Target -- metricKey konvensi 'combo:<slug>' (dinamis, mirip sku:/bundle:). Bypass
+    // sendiri krn effectiveTarget-nya BUKAN dari targetValue/personalOverrides biasa (itu buat single-
+    // number target) -- combo effectiveTarget = jumlah komponen (lihat computeComboTargetAchievement).
+    if(agentName&&target.metricKey.indexOf('combo:')===0){
+      return computeComboTargetAchievement(target,period,agentName);
     }
     // CLM-11 Fase F2: 4-tier warna Upsell Revenue -- butuh `allRecs` FULL (bukan periodRecs/scopeRecs
     // yg di-filter assignedAgent), krn computeHardwareEvidenceApprovedCount join lewat agentCredit
@@ -3824,6 +3903,14 @@ function renderOverview(){
       +(extraNote||'')
       +'</div>';
   }
+  // CLM-14: badge per-komponen Combo Target -- reuse di kartu leader (per-agen) DAN kartu agen
+  // sendiri, biar konsisten sama pola targetCard/render2TierBars (1 tempat render, dipakai 2 jalur).
+  function comboBadgesHtml(componentResults){
+    return componentResults.map(function(c){
+      var ok=c.achieved;
+      return'<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:600;background:'+(ok?'var(--grn)':'var(--red)')+'22;color:'+(ok?'var(--grn)':'var(--red)')+'">'+(ok?'✓':'✕')+' '+c.label+' ('+c.actual+'/'+c.threshold+')</span>';
+    }).join('');
+  }
   if(visibleTargets.length){
     visibleTargets=visibleTargets.slice().sort(targetSortCmp); // CLM-11 Fase G1: honor urutan leader
     var progCards=visibleTargets.map(function(t){
@@ -3881,6 +3968,29 @@ function renderOverview(){
         }).join('');
         var mrrHeadHtml='<div style="display:grid;grid-template-columns:1fr auto auto auto;gap:8px;font-size:9px;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;padding-bottom:2px"><span>Paket</span><span style="text-align:right">Target</span><span style="text-align:right">Actual</span><span style="text-align:right;min-width:82px">Status</span></div>';
         return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+meta.label+scopeTag+'</div>'+mrrHeadHtml+mrrRowsHtml+(rMrr.synced?'':'<div style="font-size:11px;color:var(--tx3);margin-top:4px">Belum ada data financials bulan ini</div>')+'</div>';
+      }
+      // CLM-14: Combo Target -- render KHUSUS (badge per-komponen), selalu scope personal. Sama alasan
+      // upsell_revenue_tier/mrr_per_paket di atas: bentuk hasil-nya bukan 1 angka actual/target polos,
+      // jadi generic personal-branch di bawah nggak cukup buat nunjukin breakdown per-komponen.
+      if(t.metricKey.indexOf('combo:')===0&&isSup){
+        var comboRowsHtml=AGENTS.map(function(ag){
+          var rCombo=computeTargetActual(t,recs,ag);
+          var pctCombo=rCombo.effectiveTarget?Math.round(rCombo.actual/rCombo.effectiveTarget*100):0;
+          return'<div style="padding:4px 0;border-bottom:1px solid var(--bdr)">'
+            +'<div style="display:flex;justify-content:space-between;font-size:11px;font-weight:600"><span>'+ag+'</span><span style="color:'+(rCombo.achieved?'var(--grn)':'var(--tx3)')+'">'+rCombo.actual+'/'+rCombo.effectiveTarget+' komponen ('+pctCombo+'%)</span></div>'
+            +'<div style="margin-top:2px">'+comboBadgesHtml(rCombo.components)+'</div>'
+            +'</div>';
+        }).join('');
+        return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+meta.label+scopeTag+'</div>'+comboRowsHtml+'</div>';
+      }
+      if(t.metricKey.indexOf('combo:')===0){
+        var rComboMe=computeTargetActual(t,recs,me);
+        var pctComboMe=rComboMe.effectiveTarget?Math.round(rComboMe.actual/rComboMe.effectiveTarget*100):0;
+        return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+meta.label+' <span style="font-size:9px;color:var(--tx3)">(Personal)</span></div>'
+          +'<div style="font-size:22px;font-weight:800;color:'+(rComboMe.achieved?'var(--grn)':'var(--tx)')+'">'+rComboMe.actual+'/'+rComboMe.effectiveTarget+'</div>'
+          +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">komponen tercapai ('+pctComboMe+'%)</div>'
+          +'<div style="margin-top:6px">'+comboBadgesHtml(rComboMe.components)+'</div>'
+          +'</div>';
       }
       if(t.scope==='personal'&&isSup){
         // Sekar lihat breakdown per-agen (bukan 1 angka gabungan — personal emang per-orang).
@@ -4423,6 +4533,14 @@ function renderTargetsManage(){
       var resMrrRow=computeTargetActual(t,recs);
       targetDisp=MRR_PAKET_TIERS.map(function(tn){return tn.split(' ')[0]+':'+fmtMetricVal(resMrrRow.targets[tn]||0,'Rp');}).join(' · ');
       actualDisp='lihat kartu di Overview';
+    }else if(t.metricKey.indexOf('combo:')===0){
+      // CLM-14: sama alasan tier/mrr di atas -- combo bukan 1 angka, target-nya sendiri 1 threshold
+      // per-komponen (AND). Ringkasan doang di sini, breakdown per-komponen per-agen ada di kartu
+      // "Progres vs Target" Overview (comboBadgesHtml).
+      var comboComponents=t.components||[];
+      targetDisp=comboComponents.length+' komponen: '+comboComponents.map(function(c){return c.label+'≥'+c.threshold;}).join(', ');
+      var totalAchievedAgents=AGENTS.filter(function(ag){return computeTargetActual(t,recs,ag).achieved;}).length;
+      actualDisp=totalAchievedAgents+'/'+AGENTS.length+' agen full-combo (lihat kartu di Overview)';
     }else if(t.scope==='personal'){
       var unitP=computeTargetActual(t,recs,AGENTS[0]).unit;
       targetDisp='default '+fmtMetricVal(t.targetValue,unitP);
@@ -5852,6 +5970,12 @@ function openTargetModal(id){
   document.getElementById('target-mrr-advance-inp').value=(t&&t.mrrTargetAdvance!=null)?t.mrrTargetAdvance:'';
   document.getElementById('target-mrr-enterprise-inp').value=(t&&t.mrrTargetEnterprise!=null)?t.mrrTargetEnterprise:'';
   document.getElementById('target-mrr-primeplus-inp').value=(t&&t.mrrTargetPrimePlus!=null)?t.mrrTargetPrimePlus:'';
+  // CLM-14: Combo Target -- 'combo:<nama>' bukan pilihan di dropdown Metrik (nama bebas leader ketik,
+  // bukan katalog), jadi Tipe Target dipisah sendiri. Nama combo = sisa string setelah prefix.
+  var isEditCombo=t&&t.metricKey.indexOf('combo:')===0;
+  document.getElementById('target-type-sel').value=isEditCombo?'combo':'metric';
+  document.getElementById('target-combo-name-inp').value=isEditCombo?t.metricKey.slice(6):'';
+  document.getElementById('target-combo-components').innerHTML=isEditCombo?(t.components||[]).map(comboComponentRowHtml).join(''):'';
   toggleTargetScopeWrap();
   openModal('target-modal');
 }
@@ -5864,6 +5988,79 @@ function getDistinctSkuTypes(){
     (all[m].upsell||[]).forEach(function(u){if(u.addonType)set[u.addonType]=true;});
   });
   return Object.keys(set).sort();
+}
+// CLM-14: tier KLOPOS yg dikonfirmasi punya raw productPackage suffix " upgrade" (lihat
+// spec_combo_target_upsell.md) -- FIXED (bukan katalog leader-configurable kayak SKU), krn ini
+// nempel ke convention string mentah di data, bukan pilihan bisnis yg berubah tiap bulan.
+var COMBO_UPGRADE_TIERS=['Starter','Advance','Enterprise','Prime Plus'];
+function comboSourceRowHtml(src){
+  src=src||{};
+  var isSku=!src.type||src.type==='sku';
+  var skuTypesAvail=getDistinctSkuTypes();
+  // Kalau lagi edit combo lama & SKU-nya udah nggak ada di distinct-list bulan yg lagi tersync
+  // (mis. bulan sumbernya belum di-sync ulang di sesi ini) -- TETEP munculin, jangan diem2 ilang
+  // pas disave ulang (silent data-loss, "0 jujur" -- lihat matchAgentFuzzy).
+  if(src.key&&skuTypesAvail.indexOf(src.key)<0)skuTypesAvail=[src.key].concat(skuTypesAvail);
+  var skuOptions=skuTypesAvail.map(function(st){
+    return'<option value="'+st+'"'+(src.key===st?' selected':'')+'>'+st+'</option>';
+  }).join('');
+  var tierOptions=COMBO_UPGRADE_TIERS.map(function(tr){
+    return'<option value="'+tr+'"'+(src.targetTier===tr?' selected':'')+'>'+tr+'</option>';
+  }).join('');
+  return'<div class="combo-source-row" style="display:flex;gap:6px;align-items:center;font-size:12px">'
+    +'<select class="combo-src-type" style="flex:1;margin-bottom:0">'
+    +'<option value="sku"'+(isSku?' selected':'')+'>SKU</option>'
+    +'<option value="klopos_upgrade"'+(!isSku?' selected':'')+'>Upgrade Tier (KLOPOS)</option>'
+    +'</select>'
+    +'<div class="combo-src-sku-wrap" style="flex:3;display:'+(isSku?'flex':'none')+';gap:4px">'
+    +'<select class="combo-src-sku-key" style="flex:2;margin-bottom:0"><option value="">Pilih SKU...</option>'+skuOptions+'</select>'
+    +'<input type="number" min="0" class="combo-src-minvalue" placeholder="Min Rp/deal (opsional)" style="flex:1;margin-bottom:0" value="'+(src.minValueForCount!=null?src.minValueForCount:'')+'">'
+    +'</div>'
+    +'<div class="combo-src-tier-wrap" style="flex:3;display:'+(isSku?'none':'')+'">'
+    +'<select class="combo-src-tier" style="margin-bottom:0">'+tierOptions+'</select>'
+    +'</div>'
+    +'<button type="button" class="btn btn-sec combo-src-remove-btn" style="padding:2px 6px">✕</button>'
+    +'</div>';
+}
+function comboComponentRowHtml(comp){
+  comp=comp||{};
+  var sourcesHtml=(comp.sources||[]).map(comboSourceRowHtml).join('')||comboSourceRowHtml();
+  return'<div class="combo-component-row" style="border:1px solid var(--bd);border-radius:var(--rs);padding:8px;margin-bottom:8px">'
+    +'<div style="display:flex;gap:6px;align-items:center">'
+    +'<input type="text" class="combo-comp-label" placeholder="Nama komponen (mis. License)" style="flex:2;margin-bottom:0" value="'+(comp.label||'').replace(/"/g,'&quot;')+'">'
+    +'<input type="number" min="0" class="combo-comp-threshold" placeholder="Ambang" style="flex:1;margin-bottom:0" value="'+(comp.threshold!=null?comp.threshold:'')+'">'
+    +'<button type="button" class="btn btn-sec combo-comp-remove-btn" style="padding:4px 8px">✕</button>'
+    +'</div>'
+    +'<div class="combo-comp-sources" style="margin-top:6px;display:flex;flex-direction:column;gap:4px">'+sourcesHtml+'</div>'
+    +'<button type="button" class="btn btn-sec combo-comp-add-source-btn" style="margin-top:4px;font-size:11px;padding:3px 8px">+ Tambah Sumber</button>'
+    +'</div>';
+}
+// Baca struktur Combo langsung dari DOM pas Simpan -- pola SAMA kayak target-override-inp/
+// target-bulk-month-chk (baca on-demand, BUKAN sinkron ke state JS tiap keystroke -- gampang out-
+// of-sync + ribet preserve fokus input pas row lain ditambah/dihapus).
+function readTargetComboComponentsFromDOM(){
+  var rows=document.querySelectorAll('#target-combo-components .combo-component-row');
+  var out=[];
+  rows.forEach(function(row){
+    var label=row.querySelector('.combo-comp-label').value.trim();
+    var threshold=parseFloat(row.querySelector('.combo-comp-threshold').value)||0;
+    var sources=[];
+    row.querySelectorAll('.combo-source-row').forEach(function(srow){
+      var type=srow.querySelector('.combo-src-type').value;
+      if(type==='sku'){
+        var key=srow.querySelector('.combo-src-sku-key').value;
+        if(!key)return;
+        var src={type:'sku',key:key};
+        var mv=srow.querySelector('.combo-src-minvalue').value;
+        if(mv!=='')src.minValueForCount=parseFloat(mv)||0;
+        sources.push(src);
+      }else if(type==='klopos_upgrade'){
+        sources.push({type:'klopos_upgrade',targetTier:srow.querySelector('.combo-src-tier').value});
+      }
+    });
+    out.push({label:label,threshold:threshold,sources:sources});
+  });
+  return out;
 }
 function renderTargetOverrideRows(overrides){
   var wrap=document.getElementById('target-override-rows');
@@ -5886,11 +6083,16 @@ function toggleTargetScopeWrap(){
   // CLM-11 Fase F: MRR per-paket -- kebalikan isSku/isTier, selalu scope TEAM (paket bukan konsep
   // per-agen, tapi tetep butuh field custom sendiri, bukan flat target-value-inp biasa).
   var isMrr=metricKey==='mrr_per_paket';
+  // CLM-14: Combo Target -- Tipe Target terpisah dari dropdown Metrik (nama combo bebas, bukan
+  // katalog), jadi dicek dari #target-type-sel, bukan metricKey seperti tipe lain di atas.
+  var isCombo=document.getElementById('target-type-sel').value==='combo';
+  document.getElementById('target-metric-wrap').style.display=isCombo?'none':'';
+  document.getElementById('target-combo-wrap').style.display=isCombo?'':'none';
   var scopeSel=document.getElementById('target-scope-sel');
   // CLM-11 Fase D2: target per-SKU selalu scope personal (reuse render "Progres vs Target" existing
   // yang udah nampilin breakdown per-agen -- itu udah jadi "matrix agen x SKU" yg diminta, nol UI baru).
-  scopeSel.disabled=isSku||isBundle||isTier||isMrr;
-  if(isSku||isBundle||isTier)scopeSel.value='personal';
+  scopeSel.disabled=isSku||isBundle||isTier||isMrr||isCombo;
+  if(isSku||isBundle||isTier||isCombo)scopeSel.value='personal';
   if(isMrr)scopeSel.value='team';
   var isPersonal=scopeSel.value==='personal';
   document.getElementById('target-team-wrap').style.display=isPersonal?'none':'';
@@ -5898,17 +6100,45 @@ function toggleTargetScopeWrap(){
   document.getElementById('target-sku-gate-wrap').style.display=isSku?'':'none';
   // CLM-11 Fase F2: tier pakai 3 threshold + 2 gate, BUKAN model "default+override" biasa -- sembunyiin
   // field flat itu pas tier-mode aktif (nggak relevan, threshold-nya beda konsep dari 1 angka target).
+  // CLM-14: Combo sama alasannya -- "nilai target"-nya ada di threshold per-komponen (target-combo-wrap
+  // sendiri), bukan 1 angka default+override flat.
   document.getElementById('target-tier-gate-wrap').style.display=isTier?'':'none';
-  document.getElementById('target-personal-flat-wrap').style.display=isTier?'none':'';
+  document.getElementById('target-personal-flat-wrap').style.display=(isTier||isCombo)?'none':'';
   // CLM-11 Fase F: 5 field MRR per-paket gantiin target-value-inp/improved flat pas metric ini aktif.
   document.getElementById('target-mrr-paket-wrap').style.display=isMrr?'':'none';
   document.getElementById('target-team-flat-wrap').style.display=isMrr?'none':'';
 }
 function saveTarget(){
-  var metricKey=document.getElementById('target-metric-sel').value;
   var period=document.getElementById('target-period-sel').value;
-  var scope=document.getElementById('target-scope-sel').value;
   var visibleToAgent=document.getElementById('target-visible-chk').checked;
+  // CLM-14: Combo Target -- early-return terpisah, bentuk payload-nya beda total dari target
+  // metricKey biasa (components/threshold, bukan targetValue/personalOverrides tunggal), jadi
+  // nggak dipaksa lewat branch scope==='personal' di bawah yang formatnya nggak cocok.
+  if(document.getElementById('target-type-sel').value==='combo'){
+    var comboName=document.getElementById('target-combo-name-inp').value.trim();
+    if(!comboName){toast('Isi nama Combo terlebih dahulu');return;}
+    var components=readTargetComboComponentsFromDOM();
+    if(!components.length){toast('Tambahkan minimal 1 komponen Combo');return;}
+    var badComp=components.find(function(c){return!c.sources.length;});
+    if(badComp){toast('Komponen "'+(badComp.label||'(tanpa nama)')+'" belum punya sumber angka -- pilih SKU/Upgrade Tier dulu');return;}
+    var comboPayload={metricKey:'combo:'+comboName,period:period,scope:'personal',visibleToAgent:visibleToAgent,components:components,personalOverrides:{}};
+    if(targetEditId){
+      var existingCombo=Targets.getAll().find(function(x){return x.id===targetEditId;});
+      if(existingCombo&&existingCombo.sortOrder!=null)comboPayload.sortOrder=existingCombo.sortOrder;
+      Targets.update(targetEditId,comboPayload);
+      toast('Target disimpan');
+    }else{
+      var bulkMonthsC=[period];
+      document.querySelectorAll('.target-bulk-month-chk:checked').forEach(function(c){if(bulkMonthsC.indexOf(c.value)<0)bulkMonthsC.push(c.value);});
+      bulkMonthsC.forEach(function(m){var p=JSON.parse(JSON.stringify(comboPayload));p.period=m;Targets.add(p);});
+      toast(bulkMonthsC.length>1?('Target disimpan ke '+bulkMonthsC.length+' bulan ('+bulkMonthsC.join(', ')+')'):'Target disimpan');
+    }
+    closeModal('target-modal');
+    renderTab(currentTab);
+    return;
+  }
+  var metricKey=document.getElementById('target-metric-sel').value;
+  var scope=document.getElementById('target-scope-sel').value;
   if(!metricKey){toast('Pilih metrik terlebih dahulu');return;}
   var payload={metricKey:metricKey,period:period,scope:scope,visibleToAgent:visibleToAgent};
   if(scope==='personal'){
@@ -8380,6 +8610,29 @@ document.getElementById('agent-save-btn').addEventListener('click',saveAgent);
 document.getElementById('target-save-btn').addEventListener('click',saveTarget);
 document.getElementById('target-scope-sel').addEventListener('change',toggleTargetScopeWrap);
 document.getElementById('target-metric-sel').addEventListener('change',toggleTargetScopeWrap);
+document.getElementById('target-type-sel').addEventListener('change',toggleTargetScopeWrap);
+// CLM-14: Combo Target -- "+ Tambah Komponen" append 1 blok baru, TIDAK sentuh row lain (nol
+// risiko wipe input yg udah diisi user di komponen lain).
+document.getElementById('target-combo-add-component-btn').addEventListener('click',function(){
+  document.getElementById('target-combo-components').insertAdjacentHTML('beforeend',comboComponentRowHtml());
+});
+// Delegated -- container-nya static (nggak pernah di-replace elemennya sendiri, cuma innerHTML
+// isinya yg berubah lewat insertAdjacentHTML/remove), jadi 1 listener di sini survive lintas re-render.
+document.getElementById('target-combo-components').addEventListener('click',function(e){
+  var rmComp=e.target.closest('.combo-comp-remove-btn');
+  if(rmComp){rmComp.closest('.combo-component-row').remove();return;}
+  var addSrc=e.target.closest('.combo-comp-add-source-btn');
+  if(addSrc){addSrc.closest('.combo-component-row').querySelector('.combo-comp-sources').insertAdjacentHTML('beforeend',comboSourceRowHtml());return;}
+  var rmSrc=e.target.closest('.combo-src-remove-btn');
+  if(rmSrc){rmSrc.closest('.combo-source-row').remove();return;}
+});
+document.getElementById('target-combo-components').addEventListener('change',function(e){
+  if(!e.target.classList.contains('combo-src-type'))return;
+  var row=e.target.closest('.combo-source-row');
+  var isSku=e.target.value==='sku';
+  row.querySelector('.combo-src-sku-wrap').style.display=isSku?'flex':'none';
+  row.querySelector('.combo-src-tier-wrap').style.display=isSku?'none':'';
+});
 // 13 Jul: bulk-apply bulan -- "Pilih semua" nyentang/nyabut semua checkbox bulan sekaligus.
 document.getElementById('target-bulk-all-chk').addEventListener('change',function(){
   var on=this.checked;
