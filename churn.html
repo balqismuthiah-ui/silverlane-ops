@@ -4668,6 +4668,13 @@ function renderWorksheet(){
     // validasi leader (approved/rejected). Tombol ini = tarik terbaru tanpa reload penuh. Reuse id
     // 'sync-upsell-btn' (handler+loading-state existing; cuma 1 tab render sekaligus jadi nggak dobel).
     +'<button class="btn btn-blu" id="sync-upsell-btn" style="padding:5px 12px;font-size:12px" title="Tarik status validasi klaim upsell terbaru (approved/rejected) dari leader — tanpa reload">📥 Sync Upsell</button>'
+    // 12 Agu (operator lapor: worksheet agen kosong ~30 menit, assignment nggak ke-isi): syncAssignOnly()
+    // udah nggak dikunci role di level fungsi (cuma tombolnya dulu cuma ada di tab Master&Assign yang
+    // di-hide dari agent) -- akar masalahnya proses full-sync auto ke-interrupt (reload) SEBELUM sampai
+    // ke tahap chain syncAssignOnly di ujung, dan agent nggak punya cara retry sendiri selain lewat
+    // console. Tombol ini expose fungsi yang SAMA (unscoped, tarik semua bulan) langsung ke agent --
+    // reuse pola persis 'Sync Upsell' di atas.
+    +'<button class="btn btn-blu" id="sync-assign-self-btn" style="padding:5px 12px;font-size:12px" title="Tarik ulang data assignment (Nama Agen) dari sheet Assign -- pakai ini kalau worksheet kosong padahal harusnya ada data">🔄 Sync Assignment Saya</button>'
     +'<span id="ws-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+wsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
@@ -8028,6 +8035,7 @@ tabContent.addEventListener('click',function(e){
   if(tgt.id==='assign-all-btn')handleAssignAll();
   else if(tgt.id==='sync-gas-btn')syncFromGAS();
   else if(tgt.id==='sync-assign-btn')syncAssignOnly();
+  else if(tgt.id==='sync-assign-self-btn')syncAssignOnly(''); // unscoped (semua bulan) -- tombol self-service agen di My Worksheet
   else if(tgt.id==='sync-resp-btn')syncResponsesOnly();
   else if(tgt.id==='sync-upsell-btn')syncUpsellOnly();
   else if(tgt.id==='sync-blastlog-btn')syncBroadcastLogOnly();
