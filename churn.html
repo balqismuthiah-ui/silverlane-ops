@@ -8512,16 +8512,19 @@ function initAuth(){
   // Novi kena "Gagal kirim OTP" walau deployment baru udah ke-swap): sebelumnya nol retry, 1x fetch
   // gagal langsung nampilin error ke user. Diukur langsung: ~50% fail-rate single-attempt di
   // deployment baru sekalipun (pola Google-side, bukan project-specific -- lihat relay ke Ubay).
-  // REVISI (12 Agu, susul -- Muthia kena versi lebih parah: bukan fast-404, tapi HANG ~1 menit
+  // REVISI 1 (12 Agu, susul -- Muthia kena versi lebih parah: bukan fast-404, tapi HANG ~1 menit
   // sebelum akhirnya gagal): fetch tanpa timeout di sini artinya retry TANPA batas waktu per-attempt
-  // cuma numpuk hang di atas hang (3x hang 1 menit = 3 menit, lebih parah dari sebelum ada retry).
-  // Tambah AbortController 10dtk per attempt (pola sama _gasGet) -- attempt yang hang dipotong cepat,
-  // pindah ke retry berikutnya, bukan nunggu GAS sendiri nyerah. Worst-case total sekarang ~33dtk
-  // (3x10dtk timeout + 1dtk+2dtk backoff), bukan unbounded.
+  // cuma numpuk hang di atas hang. Tambah AbortController per attempt (pola sama _gasGet).
+  // REVISI 2 (12 Agu, susul lagi -- diukur langsung barusan: attempt yang BERHASIL pun makan 8.8dtk,
+  // deket banget ke timeout 10dtk yang tadinya dipasang -- kemungkinan attempt yang harusnya sukses
+  // malah keputus timeout duluan). Naikin timeout ke 20dtk (kasih headroom di atas latency 6-9dtk
+  // yang keukur) + nambah 1 attempt (4 total, bukan 3) krn fail-rate ~50%/attempt masih sama.
+  // Worst-case total sekarang ~86dtk (4x20dtk + 1+2+3dtk backoff), bukan unbounded -- lama tapi ADA
+  // batasnya, dan kemungkinan sukses kumulatif naik dari ~87.5% (3 attempt) ke ~94% (4 attempt).
   function sendOtpRequest(email,onDone){
     function attempt(n){
       var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
-      var timer=ctrl?setTimeout(function(){ctrl.abort();},10000):null;
+      var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
       var opts={method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'requestOtp',email:email})};
       if(ctrl)opts.signal=ctrl.signal;
       fetch(GAS_URL,opts)
@@ -8529,7 +8532,7 @@ function initAuth(){
         .then(function(){onDone(true);})
         .catch(function(){
           if(timer)clearTimeout(timer);
-          if(n<2){setTimeout(function(){attempt(n+1);},1000*(n+1));return;}
+          if(n<3){setTimeout(function(){attempt(n+1);},1000*(n+1));return;}
           onDone(false);
         });
     }
