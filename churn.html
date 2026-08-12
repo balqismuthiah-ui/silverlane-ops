@@ -7464,50 +7464,65 @@ function _mapBlast(raw){
   return'blasted';
 }
 
+// 12 Agu (susul lagi -- Sunarti kena persis: tombol "Sync Assignment Saya" nyangkut penuh 90dtk
+// lalu timeout, nol retry). Dipakai 2 tombol (leader 'sync-assign-btn' + agent-self
+// 'sync-assign-self-btn'), jadi fix di sini nutup celah yang sama di keduanya. Pola sama kayak
+// fix2 lain hari ini: timeout per-attempt diperpendek (20dtk, dari 90dtk) + retry sampai 3x
+// tambahan (backoff 1/2/3dtk) sebelum nyerah -- worst-case total ~86dtk (mirip requestOtp),
+// jauh lebih baik dari 90dtk SEKALI gagal tanpa ada usaha ulang.
 function syncAssignOnly(monthParam){
   // monthParam: explicit month to pass; if undefined, falls back to global syncMonthFilter
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
-  var btn=document.getElementById('sync-assign-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+  var btns=[document.getElementById('sync-assign-btn'),document.getElementById('sync-assign-self-btn')].filter(Boolean);
+  var origTexts=btns.map(function(b){return b.textContent;});
+  btns.forEach(function(b){b.disabled=true;b.textContent='⏳ Memuat...';});
   var monLbl=mon?'('+mon+') ':'';
   toast('Mengambil data assignment agen '+monLbl+'… harap tunggu',4000);
 
-  var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
-  var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
-  var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
   var url=GAS_URL+'?action=assignments'+(mon?'&month='+encodeURIComponent(mon):'')+'&token='+encodeURIComponent(Auth.getToken()||'');
 
-  fetch(url,opts)
-    .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-    .then(function(json){
-      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
-      var rows=json.data||[];
-      var d=Store.get();
-      var idx={};var outletIdx={};
-      d.records.forEach(function(r){
-        idx[r.id]=r;
-        if(r.outletId)outletIdx[String(r.outletId)]=r;
+  function restoreButtons(){
+    btns.forEach(function(b,i){b.disabled=false;b.textContent=origTexts[i]||'📥 Sync Agen';});
+  }
+
+  function attempt(n){
+    var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+    var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
+    var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
+    fetch(url,opts)
+      .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(json){
+        if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
+        var rows=json.data||[];
+        var d=Store.get();
+        var idx={};var outletIdx={};
+        d.records.forEach(function(r){
+          idx[r.id]=r;
+          if(r.outletId)outletIdx[String(r.outletId)]=r;
+        });
+        var n2=0,nf=0;
+        rows.forEach(function(row){
+          var jc=String(row['Join code']||'').trim();if(!jc)return;
+          // Match by: 1) compound key, 2) plain outletId, 3) extract outletId from Join code (jc = outletId + 5-digit serial)
+          var outletPart=jc.length>5?jc.slice(0,-5):'';
+          var rec=idx[jc]||outletIdx[jc]||(outletPart?outletIdx[outletPart]:null);
+          if(!rec){nf++;return;}
+          // Kolom sheet sempat di-rename "Assign Manual"->"Assigned to" mulai tab bulan berjalan (Jul26+)
+          // -- tab bulan lama masih pakai nama lama. Terima dua-duanya biar nggak putus lagi kalau diganti lagi.
+          var ag=_matchAgent(row['Assign Manual']!==undefined?row['Assign Manual']:row['Assigned to']);
+          if(ag){rec.assignedAgent=ag;n2++;}
+        });
+        Store.set(d);renderTab(currentTab);
+        toast(n2+' agen diupdate dari '+rows.length+' baris'+(mon?' ['+mon+']':'')+' ('+nf+' tdk match)',6000);
+        restoreButtons();
+      }).catch(function(err){
+        if(timer)clearTimeout(timer);
+        if(n<3){setTimeout(function(){attempt(n+1);},1000*(n+1));return;}
+        toast('Gagal sync agen setelah beberapa percobaan: '+(err&&err.message||'')+' — coba lagi sebentar',5000);
+        restoreButtons();
       });
-      var n=0,nf=0;
-      rows.forEach(function(row){
-        var jc=String(row['Join code']||'').trim();if(!jc)return;
-        // Match by: 1) compound key, 2) plain outletId, 3) extract outletId from Join code (jc = outletId + 5-digit serial)
-        var outletPart=jc.length>5?jc.slice(0,-5):'';
-        var rec=idx[jc]||outletIdx[jc]||(outletPart?outletIdx[outletPart]:null);
-        if(!rec){nf++;return;}
-        // Kolom sheet sempat di-rename "Assign Manual"->"Assigned to" mulai tab bulan berjalan (Jul26+)
-        // -- tab bulan lama masih pakai nama lama. Terima dua-duanya biar nggak putus lagi kalau diganti lagi.
-        var ag=_matchAgent(row['Assign Manual']!==undefined?row['Assign Manual']:row['Assigned to']);
-        if(ag){rec.assignedAgent=ag;n++;}
-      });
-      Store.set(d);renderTab(currentTab);
-      toast(n+' agen diupdate dari '+rows.length+' baris'+(mon?' ['+mon+']':'')+' ('+nf+' tdk match)',6000);
-    }).catch(function(err){
-      toast(err.name==='AbortError'?'Timeout 90s — buka URL GAS di tab baru lalu coba lagi':'Gagal sync agen: '+err.message,5000);
-    }).then(function(){
-      var b=document.getElementById('sync-assign-btn');
-      if(b){b.disabled=false;b.textContent='📥 Sync Agen';}
-    });
+  }
+  attempt(0);
 }
 
 // CLM-03: sync-down klaim upsell dari GAS (?action=upsell) — biar Sekar lihat klaim semua agen lintas-device.
