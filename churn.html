@@ -3050,17 +3050,32 @@ function wbQueueSet(q){try{localStorage.setItem(WB_QUEUE_KEY,JSON.stringify(q));
 // sukses palsu tanpa flush/commit) itu sebab write lenyap tanpa jejak. err.retriable nandain error
 // TRANSIENT (lock-fail server `retry:true` / HTTP 5xx-429 / respons non-JSON = kemungkinan timeout eksekusi)
 // yg layak di-retry, VS permanen (unauthorized / business-reject `ok:false` tanpa retry) yg jangan.
+// 12 Agu (insiden GAS "CODE AI" -- akar yang sama ketemu 3x hari ini di 3 call site beda: checkBlasted,
+// requestOtp, sekarang emergencyOtp/break-glass): fetch mentah di sini nggak punya timeout sama sekali,
+// jadi bisa hang unbounded (kebukti ~1 menit+). Karena INI fungsi shared buat hampir SEMUA write-action
+// (response, upsell, blast batch, break-glass, dll -- lewat _gasPost/_gasPostWithRetry), fix di sini
+// otomatis nutup celah yang sama di semua call site sekaligus, bukan nambal satu-satu tiap ketauan.
+// AbortController 20dtk (retriable, biar _gasPostWithRetry tetep retry normal 0.8/1.6/3.2dtk di atasnya).
 function _gasPostOnce(payload){
   var withToken=Object.assign({},payload,{token:Auth.getToken()});
+  var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+  var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
+  var opts={method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(withToken)};
+  if(ctrl)opts.signal=ctrl.signal;
   // text/plain hindari CORS preflight (GAS tak handle OPTIONS)
-  return fetch(GAS_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(withToken)})
-    .then(function(r){return r.text().then(function(t){
+  return fetch(GAS_URL,opts)
+    .then(function(r){if(timer)clearTimeout(timer);return r.text().then(function(t){
       if(!r.ok){var e=new Error('HTTP '+r.status);e.retriable=(r.status>=500||r.status===429);throw e;}
       var j;try{j=JSON.parse(t);}catch(e2){var e3=new Error('Respons GAS bukan JSON (kemungkinan timeout eksekusi)');e3.retriable=true;throw e3;}
       if(j&&j.error==='unauthorized'){confirmUnauthorizedThenLogout();var eu=new Error('unauthorized');eu.retriable=false;throw eu;}
       if(j&&j.ok===false){var eb=new Error(j.error||'write gagal');eb.retriable=(j.retry===true);throw eb;}
       return j;
-    });});
+    });})
+    .catch(function(err){
+      if(timer)clearTimeout(timer);
+      if(err&&err.name==='AbortError'){var ea=new Error('Timeout 20dtk -- GAS terlalu lambat');ea.retriable=true;throw ea;}
+      throw err;
+    });
 }
 // (Ubay 17 Jul, interim stanch-bleeding sebelum GAS lock+flush deploy): retry-backoff buat error TRANSIENT.
 // Lock/commit contention itu sesaat (sesi lain kelar ~1-2dtk) -> retry sering langsung landed. Backoff
