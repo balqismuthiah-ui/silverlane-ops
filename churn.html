@@ -6841,13 +6841,31 @@ function openCsvModal(){
   // (badge/filter "Sudah pernah diblast" existing tetep jalan apa adanya). Fail-open: checkBlasted
   // gagal (network/timeout) JANGAN block download -- ini backup, bukan gate keras.
   var _downloadBtn=document.getElementById('csv-download-btn');
+  var _downloadBtnDefaultText=_downloadBtn.textContent;
   var candidatePhones=Array.from(new Set(filteredRows.map(function(row){return normPhone(row.phone);}).filter(Boolean)));
   _downloadBtn.onclick=function(){
     function runCheckThenDownload(){
       if(!candidatePhones.length){doDownload();return;}
       _downloadBtn.disabled=true;
-      _gasPost({action:'checkBlasted',numbers:candidatePhones}).then(function(res){
-        _downloadBtn.disabled=false;
+      _downloadBtn.textContent='⏳ Mengecek...';
+      // 12 Agu (operator lapor: download CSV -- individual, header-select-all, maupun "Pilih Semua" --
+      // sama-sama "nggak ada yg jalan"): akar bukan seleksi (semua jalur sama-sama masuk sini), tapi
+      // checkBlasted (_gasPost, fetch mentah TANPA timeout) nge-hang ngikut pola CODE AI yg udah kebukti
+      // GATE-3 canary (123-369dtk). Komentar lama udah niat "fail-open kalau gagal", tapi nggak ada
+      // timeout jadi .catch() nggak pernah kepicu -- tombol cuma diem disabled tanpa feedback. Fix:
+      // race checkBlasted vs timeout client-side singkat (8dtk, ini cuma soft pre-check bukan gate keras),
+      // kalau timeout menang -> lanjut download apa adanya (sama kayak fail-open asli), toast infoin kenapa.
+      var timedOut={};
+      var checkPromise=_gasPost({action:'checkBlasted',numbers:candidatePhones});
+      checkPromise.catch(function(){}); // race udah bisa dimenangin timeout duluan -- redam unhandled-rejection kalau checkPromise nolak belakangan
+      var timeoutPromise=new Promise(function(res){setTimeout(function(){res(timedOut);},8000);});
+      Promise.race([checkPromise,timeoutPromise]).then(function(res){
+        _downloadBtn.disabled=false;_downloadBtn.textContent=_downloadBtnDefaultText;
+        if(res===timedOut){
+          toast('⚠ Cek duplikat blast timeout (server lambat) — lanjut download tanpa cek',3500);
+          doDownload();
+          return;
+        }
         var already=(res&&res.alreadyBlasted)||[];
         if(already.length){
           var ok=confirm(already.length+' dari '+candidatePhones.length+' nomor ini kemungkinan udah pernah di-blast dalam 2 minggu terakhir (batch lain/agen lain). Tetap lanjut download?');
@@ -6855,7 +6873,7 @@ function openCsvModal(){
         }
         doDownload();
       }).catch(function(){
-        _downloadBtn.disabled=false;
+        _downloadBtn.disabled=false;_downloadBtn.textContent=_downloadBtnDefaultText;
         doDownload(); // fail-open
       });
     }
