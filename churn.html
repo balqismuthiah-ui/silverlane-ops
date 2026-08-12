@@ -2320,21 +2320,46 @@ function forceReLogin(){
 // Kalau BENERAN dicabut/expired, retry ini JUGA bakal gagal & tetap logout -- revoke CLM-07 "seketika"
 // tetap efektif, cuma ketunda ~2 detik, BUKAN bypass permanen. Semua 10 titik forceReLogin() lama
 // (dipicu langsung dari respons action manapun yg balikin unauthorized) ganti panggil ini.
+//
+// REVISI (12 Agu, brief Ubay `brief_fix_confirmunauthorized_recheck_timeout_ke_rahul.md`, korelasi
+// GATE-3 canary hari ini: doGet bisa HANG 123-369 detik pas CODE AI lagi flaky, bukan cuma gagal
+// cepet): versi pertama PUNYA CELAH -- (1) fetch recheck nggak ada timeout, bisa ikut hang lama
+// persis kayak call pertama, dan (2) .catch()-nya nyamain "recheck eksplisit bilang unauthorized"
+// sama "recheck-nya SENDIRI gagal krn infra (timeout/network/non-JSON)" -- keduanya dianggap
+// "confirmed, logout aja". Padahal selama CODE AI masih flaky, recheck kemungkinan besar GAGAL
+// DENGAN CARA YANG SAMA kayak call pertama -- mitigasi jadi defeated, cuma nambah delay 2 detik
+// sebelum tetep logout. FIX: (a) AbortController/timeout di fetch recheck (pola sama _gasGet), (b)
+// infra-failure di .catch() SEKARANG cuma toast + BIARIN sesi jalan (BUKAN logout) -- logout PAKSA
+// cuma kalau recheck BENERAN dapet respons eksplisit {error:'unauthorized'} (di dalam .then sukses).
 var _reauthCheckInFlight=false; // cegah numpuk banyak recheck kalau beberapa request gagal barengan
 function confirmUnauthorizedThenLogout(){
   if(_reauthCheckInFlight)return; // udah ada recheck jalan, biar itu doang yg mutusin
   _reauthCheckInFlight=true;
   setTimeout(function(){
     var token=Auth.getToken();
-    if(!token){_reauthCheckInFlight=false;forceReLogin();return;}
-    fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(token))
-      .then(function(r){return r.json();})
+    if(!token){_reauthCheckInFlight=false;forceReLogin();return;} // nol token beneran -- nggak ada apa2 buat di-recheck
+    var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+    var timer=ctrl?setTimeout(function(){ctrl.abort();},15000):null; // WAJIB timeout -- jangan ikut hang kayak doGet yg lagi flaky (123-369dtk per GATE-3 canary)
+    var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
+    fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(token),opts)
+      .then(function(r){
+        if(timer)clearTimeout(timer);
+        if(!r.ok)throw new Error('HTTP '+r.status); // infra-failure, BUKAN konfirmasi unauthorized -- tangkep di .catch di bawah
+        return r.json();
+      })
       .then(function(j){
         _reauthCheckInFlight=false;
-        if(j&&j.error==='unauthorized')forceReLogin(); // gagal 2x beruntun -- beneran logout
-        // sukses: diem aja, sesi masih valid, request asli yg gagal tadi biar user retry manual/nunggu auto-retry
+        if(j&&j.error==='unauthorized')forceReLogin(); // recheck EKSPLISIT bilang unauthorized -- beneran logout
+        // sukses (bukan unauthorized): diem aja, sesi masih valid, request asli yg gagal tadi biar user retry manual/nunggu auto-retry
       })
-      .catch(function(){_reauthCheckInFlight=false;forceReLogin();}); // network beneran mati -- aman logout juga
+      .catch(function(){
+        _reauthCheckInFlight=false;
+        if(timer)clearTimeout(timer);
+        // Recheck GAGAL krn infra (timeout/network/HTTP non-2xx/non-JSON) -- BUKAN konfirmasi
+        // unauthorized. JANGAN logout (itu persis celah yg di-flag Ubay) -- biarin sesi jalan,
+        // call GAS berikutnya (natural, bukan dipaksa) yg bakal re-evaluate status sebenarnya.
+        toast('⚠ Koneksi ke server nggak stabil, coba lagi sebentar',4000);
+      });
   },2000);
 }
 function showLoginScreen(errMsg){
