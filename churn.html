@@ -8497,14 +8497,23 @@ function initAuth(){
   // Novi kena "Gagal kirim OTP" walau deployment baru udah ke-swap): sebelumnya nol retry, 1x fetch
   // gagal langsung nampilin error ke user. Diukur langsung: ~50% fail-rate single-attempt di
   // deployment baru sekalipun (pola Google-side, bukan project-specific -- lihat relay ke Ubay).
-  // Retry pendek (2x tambahan, backoff 1dtk/2dtk) sebelum nyerah -- nurunin peluang user KELIATAN
-  // errornya dari ~50% jadi ~12% tanpa perlu nunggu lama/nyadar apa-apa (total delay tambahan maks 3dtk).
+  // REVISI (12 Agu, susul -- Muthia kena versi lebih parah: bukan fast-404, tapi HANG ~1 menit
+  // sebelum akhirnya gagal): fetch tanpa timeout di sini artinya retry TANPA batas waktu per-attempt
+  // cuma numpuk hang di atas hang (3x hang 1 menit = 3 menit, lebih parah dari sebelum ada retry).
+  // Tambah AbortController 10dtk per attempt (pola sama _gasGet) -- attempt yang hang dipotong cepat,
+  // pindah ke retry berikutnya, bukan nunggu GAS sendiri nyerah. Worst-case total sekarang ~33dtk
+  // (3x10dtk timeout + 1dtk+2dtk backoff), bukan unbounded.
   function sendOtpRequest(email,onDone){
     function attempt(n){
-      fetch(GAS_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'requestOtp',email:email})})
-        .then(function(r){return r.json();})
+      var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+      var timer=ctrl?setTimeout(function(){ctrl.abort();},10000):null;
+      var opts={method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'requestOtp',email:email})};
+      if(ctrl)opts.signal=ctrl.signal;
+      fetch(GAS_URL,opts)
+        .then(function(r){if(timer)clearTimeout(timer);return r.json();})
         .then(function(){onDone(true);})
         .catch(function(){
+          if(timer)clearTimeout(timer);
           if(n<2){setTimeout(function(){attempt(n+1);},1000*(n+1));return;}
           onDone(false);
         });
