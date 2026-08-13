@@ -1847,10 +1847,18 @@ function computeBundleAchievement(bundleKey,period,recs,agentName){
 // matchAgentFuzzy (pola join SAMA PERSIS My Journey myJourneyRecsByOutletId, bukan mekanisme baru).
 function computeKloposUpgradeCount(targetTier,period,agentName){
   var d=Store.get();
-  var periodRecs=period?d.records.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(period)>=0;}):d.records;
   var matchStr=targetTier+' upgrade';
-  var candidates=periodRecs.filter(function(r){
-    return r.productPackage===matchStr&&r.paymentStatus==='paid'&&r.outletId;
+  // 13 Agu fix: basis periode diganti dari cohortMonths (siklus expiry-renewal case, BUKAN kapan
+  // transaksi kejadian) ke tanggalBayar (kolom AF "Tanggal Bayar", tanggal pembayaran aktual) --
+  // biar konsisten sama komponen SKU lain di combo yg basisnya emang tanggal transaksi asli
+  // (UpsellTeamStore paidDate), bukan siklus cohort case. Ke-ketemu lewat kasus real (operator):
+  // outlet bayar 6 Agustus tapi cohortMonths-nya "Jul" (Expired Date jatuh Juli) -- salah exclude
+  // dari target Agustus walau duitnya beneran masuk Agustus.
+  var candidates=d.records.filter(function(r){
+    if(r.productPackage!==matchStr||r.paymentStatus!=='paid'||!r.outletId)return false;
+    if(!period)return true;
+    if(!r.tanggalBayar)return false; // "0 jujur" -- nggak ada tanggal bayar = nggak bisa dipastiin masuk periode, exclude
+    return MONTH_KEYS[parseInt(r.tanggalBayar.slice(5,7),10)-1]===period;
   });
   if(!candidates.length)return 0;
   var fin=period?UpsellTeamStore.getMonth(period):null;
