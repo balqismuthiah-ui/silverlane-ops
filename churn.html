@@ -3425,9 +3425,12 @@ function waIcon(status){
   return'<span class="wa-unchecked" title="Belum Dicek">? WA</span>';
 }
 
+// 13 Agu fix: map lama pakai label HWCZ (Hot/Warm/Cold/Zombie/Churn) yang SALAH KONSEP -- lifecycleStatus
+// asli dari kolom "Lifecycle Status" isinya beda total (active/grace_period/hot_period/cold_period/
+// zombie_period, verified operator), jadi map lama nggak pernah match & badge selalu abu-abu polos.
 function lifecycleBadge(s){
   if(!s)return'<span class="badge badge-gray">—</span>';
-  var map={'Hot':'badge-grn','Warm':'badge-yel','Cold':'badge-blu','Zombie':'badge-gray','Churn':'badge-red'};
+  var map={'active':'badge-grn','hot_period':'badge-grn','grace_period':'badge-blu','cold_period':'badge-gray','zombie_period':'badge-red'};
   return'<span class="badge '+(map[s]||'badge-gray')+'">'+s+'</span>';
 }
 
@@ -4666,7 +4669,7 @@ function renderMaster(){
     .concat([{value:'__none__',label:'Belum Dikategorikan'}]);
   var payOptsArr=Object.keys(PAYMENT_STATUS).map(function(p){return{value:p,label:PAYMENT_STATUS[p].label};})
     .concat([{value:'__none__',label:'Belum Ada Status'}]);
-  var lcOptsArr=['Hot','Warm','Cold','Zombie','Churn'].map(function(l){return{value:l,label:l};});
+  var lcOptsArr=masterLifecycleOpts();
   var monthOpts='<option value="">Semua Bulan (Jan–Des 26)</option>';
   ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].forEach(function(m){
     monthOpts+='<option value="'+m+'"'+(syncMonthFilter===m?' selected':'')+'>'+m+' 26</option>';
@@ -7891,6 +7894,13 @@ function phoneIsGcFlagged(r){
   if(r.phone&&gcFlagMap[normPhone(r.phone)])return true;
   if(r.response&&r.response.updatedPhone&&gcFlagMap[normPhone(r.response.updatedPhone)])return true;
   return false;
+}
+// 13 Agu fix: opsi filter "Lifecycle" di Master & Assign, dari nilai distinct lifecycleStatus di records
+// (dulu hardcode label HWCZ yang salah konsep, nggak pernah match -- lihat catatan lifecycleBadge).
+var LIFECYCLE_ORDER=['active','grace_period','hot_period','cold_period','zombie_period'];
+function masterLifecycleOpts(){
+  var set={};Store.get().records.forEach(function(r){var l=String(r.lifecycleStatus||'').trim();if(l)set[l]=1;});
+  return Object.keys(set).sort(function(a,b){var ia=LIFECYCLE_ORDER.indexOf(a),ib=LIFECYCLE_ORDER.indexOf(b);if(ia<0)ia=99;if(ib<0)ib=99;return ia-ib||a.localeCompare(b);}).map(function(l){return{value:l,label:l};});
 }
 // CLM-05 (operator 14 Jul): opsi filter Potensi (HWCZ = Hot/Warm/Cold/Zombie) dari nilai distinct di records.
 var HWCZ_ORDER=['Hot','Warm','Cold','Zombie'];
