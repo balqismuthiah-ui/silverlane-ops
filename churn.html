@@ -2852,7 +2852,18 @@ var Targets={
     var withId=Object.assign({},t,{id:uid()});
     var all=this.getAll();all.push(withId);this.save(all);
     _gasPost({action:'upsertTarget',target:withId}).catch(function(err){
-      toast('Target tersimpan lokal, tapi gagal sync ke server: '+err.message,5000);
+      // 14 Agu (QA Ryry): busy_lock_timeout/timeout jaringan di endpoint Targets bisa FALSE NEGATIVE
+      // -- GAS lanjut nulis sukses di server walau respons udah nggak nyampe ke client (reproduced
+      // 2x independen). Kalau toast bilang "gagal" gitu aja, leader gampang re-submit dari nol ->
+      // Targets.add generate id BARU -> duplikat data beneran (persis kasus upsell_attach 14 Agu).
+      // Fresh-check dulu sebelum declare gagal, biar toast-nya jujur.
+      _targetExistsOnServer(withId.id).then(function(exists){
+        toast(exists
+          ?'Target tersimpan (server sempat lambat balas, datanya udah masuk -- nggak perlu diulang)'
+          :'Target tersimpan lokal, tapi gagal sync ke server: '+err.message,5000);
+      }).catch(function(){
+        toast('Target tersimpan lokal, tapi gagal sync ke server: '+err.message,5000);
+      });
     });
     return withId;
   },
@@ -2870,11 +2881,29 @@ var Targets={
     this.save(all.filter(function(x){return x.id!==id;}));
     if(target){
       _gasPost({action:'deleteTarget',id:id,period:target.period}).catch(function(err){
-        toast('Target terhapus lokal, tapi gagal sync ke server: '+err.message,5000);
+        // 14 Agu: sama alasan Targets.add di atas -- deleteTarget juga kena false-negative
+        // busy_lock_timeout (QA Ryry reproduce langsung). Row yang UDAH KEHAPUS di server tapi
+        // client masih nunjukin "gagal" bikin leader nyoba hapus lagi terus-terusan padahal
+        // udah kelar dari percobaan pertama.
+        _targetExistsOnServer(id).then(function(stillThere){
+          toast(!stillThere
+            ?'Target terhapus (server sempat lambat balas, perubahannya udah masuk)'
+            :'Target terhapus lokal, tapi gagal sync ke server: '+err.message,5000);
+        }).catch(function(){
+          toast('Target terhapus lokal, tapi gagal sync ke server: '+err.message,5000);
+        });
       });
     }
   }
 };
+// 14 Agu: shared fresh-check buat Targets.add/delete di atas -- lihat catatan busy_lock_timeout
+// false-negative. SENGAJA nggak dipake buat Targets.update (upsert-by-id aman di-retry apa adanya,
+// nggak ada resiko duplikat kayak add, jadi nggak butuh disambiguasi tambahan).
+function _targetExistsOnServer(id){
+  return _gasGet('targets',60000).then(function(json){
+    return ((json&&json.data)||[]).some(function(x){return x.id===id;});
+  });
+}
 // CLM-11 Fase E: tarik Targets lintas-akun leader dari GAS (PropertiesService per-bulan). Best-effort
 // background -- gagal (offline/timeout) diam-diam, cache lokal (localStorage) tetap dipakai apa adanya.
 function syncTargetsFromServer(){
@@ -2896,23 +2925,52 @@ function targetSortCmp(a,b){
   var sa=(a.sortOrder==null)?1e9:a.sortOrder,sb=(b.sortOrder==null)?1e9:b.sortOrder;
   return sa-sb;
 }
+// 14 Agu: rewrite total, 2 fix sekaligus (ke-pattern dari insiden urutan acak-acak + duplikat
+// upsell_attach, QA Ryry 14 Agu):
+// 1) FRESH dari server dulu (bukan cache lokal `Targets.getAll()` yg bisa basi) sebelum ngitung
+//    swap -- cache basi (leader lain baru aja reorder duluan, browser ini belum sempat sync ulang)
+//    bikin renumber pakai urutan yg UDAH NGGAK BERLAKU, nimpa balik perubahan orang lain.
+// 2) Swap CUMA 2 target yg ketuker (bukan renumber SEMUA target segrup periode kayak sebelumnya) --
+//    dari N write per-geser jadi 2 write tetap, berapa pun banyaknya target di grup itu. Efek
+//    sampingnya bagus: makin dikit write, makin kecil peluang kena busy_lock_timeout/lock
+//    contention (lihat [[deletetarget_busylocktimeout_falsenegative]]).
 function reorderTarget(id,dir){
   if(!Auth.isSuperior())return;
-  var all=Targets.getAll();
-  var t=all.find(function(x){return x.id===id;});if(!t)return;
-  var group=all.filter(function(x){return x.period===t.period;});
-  group.sort(function(a,b){var sa=(a.sortOrder==null)?1e9:a.sortOrder,sb=(b.sortOrder==null)?1e9:b.sortOrder;return sa-sb;});
-  var before=group.map(function(g){return g.sortOrder;});
-  group.forEach(function(g,i){g.sortOrder=i;}); // normalisasi sekuensial 0..n-1 (objek identik ke `all`)
-  var pos=group.findIndex(function(x){return x.id===id;});
-  var swp=(dir<0)?pos-1:pos+1;
-  if(swp>=0&&swp<group.length){var a=group[pos],b=group[swp];var tmp=a.sortOrder;a.sortOrder=b.sortOrder;b.sortOrder=tmp;}
-  Targets.save(all);
-  // Push cuma yg sortOrder-nya beneran berubah (hemat call GAS) -- objek group[i] identik, before[i] valid.
-  group.forEach(function(g,i){if(before[i]!==g.sortOrder){_gasPost({action:'upsertTarget',target:g}).catch(function(){});}});
-  // 1 Agu: renderTab(currentTab) bukan hardcode 'overview' -- reorder target sekarang bisa dipicu
-  // dari tab "Kelola Target" juga (dulu cuma dari Overview).
-  renderTab(currentTab);
+  var btns=document.querySelectorAll('[data-act="target-up"][data-id="'+id+'"],[data-act="target-down"][data-id="'+id+'"]');
+  btns.forEach(function(b){b.disabled=true;});
+  _gasGet('targets',60000).then(function(json){
+    if(!json||json.ok===false)throw new Error((json&&json.error)||'gagal narik data server');
+    var serverAll=json.data||[];
+    var t=serverAll.find(function(x){return x.id===id;});
+    if(!t){toast('Target nggak ketemu di server (mungkin baru dihapus leader lain) -- refresh dulu',5000);renderTab(currentTab);return null;}
+    var group=serverAll.filter(function(x){return x.period===t.period;});
+    group.sort(function(a,b){var sa=(a.sortOrder==null)?1e9:a.sortOrder,sb=(b.sortOrder==null)?1e9:b.sortOrder;return sa-sb;});
+    var pos=group.findIndex(function(x){return x.id===id;});
+    var swp=(dir<0)?pos-1:pos+1;
+    if(swp<0||swp>=group.length){renderTab(currentTab);return null;} // udah di ujung grup, nggak ada yg ditukar
+    var a=group[pos],b=group[swp];
+    // sortOrder null/dobel (data lama/belum pernah di-reorder) -- normalisasi CUMA 2 baris ini pakai
+    // posisi urutan SAAT INI, bukan angka lama yg mungkin udah bentrok sama baris lain.
+    var saOrig=(a.sortOrder==null)?pos:a.sortOrder,sbOrig=(b.sortOrder==null)?swp:b.sortOrder;
+    var newA=Object.assign({},a,{sortOrder:sbOrig}),newB=Object.assign({},b,{sortOrder:saOrig});
+    return Promise.all([
+      _gasPost({action:'upsertTarget',target:newA}),
+      _gasPost({action:'upsertTarget',target:newB})
+    ]).then(function(){
+      // Merge CUMA 2 row ini ke cache lokal (bukan overwrite semua) -- preserve state lokal lain
+      // yg mungkin lagi pending (mis. edit lain yg belum sempat sync).
+      var localAll=Targets.getAll();
+      [newA,newB].forEach(function(nt){
+        var i=localAll.findIndex(function(x){return x.id===nt.id;});
+        if(i>=0)localAll[i]=nt;else localAll.push(nt);
+      });
+      Targets.save(localAll);
+      renderTab(currentTab);
+    });
+  }).catch(function(err){
+    toast('Gagal geser urutan: '+err.message,5000);
+    renderTab(currentTab); // re-render biar tombol ke-enable lagi
+  });
 }
 
 // ── TEMPLATES STORE ────────────────────────────────────────────────────────
