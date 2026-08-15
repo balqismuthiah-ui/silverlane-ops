@@ -2849,8 +2849,19 @@ var Targets={
   // peringatan (tersimpan lokal doang), BUKAN blocking/rollback -- konsisten sama toleransi
   // "concurrent edit dianggap nggak akan kejadian" yg udah dikonfirmasi Rahul.
   add:function(t){
+    var all=this.getAll();
+    // 15 Agu (QA Ryry re-test): dedup guard -- cegah rapid-add (klik Simpan berkali-kali cepat)
+    // bikin duplikat genuine (metricKey+period+scope sama). Cek LOKAL SINKRON (nol latency network)
+    // -- ini nutup PERSIS skenario yg Ryry buktiin (3x klik cepat, 2 landed jadi duplikat): klik
+    // ke-2/ke-3 bakal ketemu hasil klik pertama di cache lokal instan, sebelum network round-trip
+    // apa pun. TIDAK klaim nutup race cross-device/cross-leader (butuh server-check yg lebih mahal,
+    // jauh lebih jarang kejadian drpd rapid-click 1 browser).
+    var dupe=all.find(function(x){return x.metricKey===t.metricKey&&x.period===t.period&&x.scope===t.scope;});
+    if(dupe&&!confirm('Target dengan metrik "'+t.metricKey+'" di bulan '+t.period+' ('+t.scope+') udah ada. Tetap bikin salinan baru?')){
+      return dupe;
+    }
     var withId=Object.assign({},t,{id:uid()});
-    var all=this.getAll();all.push(withId);this.save(all);
+    all.push(withId);this.save(all);
     _gasPost({action:'upsertTarget',target:withId}).catch(function(err){
       // 14 Agu (QA Ryry): busy_lock_timeout/timeout jaringan di endpoint Targets bisa FALSE NEGATIVE
       // -- GAS lanjut nulis sukses di server walau respons udah nggak nyampe ke client (reproduced
@@ -2862,7 +2873,10 @@ var Targets={
           ?'Target tersimpan (server sempat lambat balas, datanya udah masuk -- nggak perlu diulang)'
           :'Target tersimpan lokal, tapi gagal sync ke server: '+err.message,5000);
       }).catch(function(){
-        toast('Target tersimpan lokal, tapi gagal sync ke server: '+err.message,5000);
+        // 15 Agu (QA Ryry re-test): fresh-check SENDIRI bisa timeout kalau GAS lagi ekstrem lambat
+        // (90-150dtk+) -- pesan ini WAJIB beda dari "beneran gagal" di atas, biar user nggak nyimpulin
+        // salah & retry membabi-buta (siklus yg sama persis yg mau dicegah fresh-check ini).
+        toast('Target tersimpan lokal, TAPI status di server nggak jelas (GAS susah dihubungi buat mastiin) -- cek manual dulu sebelum coba lagi, biar nggak dobel',7000);
       });
     });
     return withId;
@@ -2890,7 +2904,9 @@ var Targets={
             ?'Target terhapus (server sempat lambat balas, perubahannya udah masuk)'
             :'Target terhapus lokal, tapi gagal sync ke server: '+err.message,5000);
         }).catch(function(){
-          toast('Target terhapus lokal, tapi gagal sync ke server: '+err.message,5000);
+          // 15 Agu: sama alasan Targets.add -- fresh-check sendiri bisa timeout, pesan beda dari
+          // "beneran gagal" biar nggak nyuruh retry buta.
+          toast('Target terhapus lokal, TAPI status di server nggak jelas (GAS susah dihubungi buat mastiin) -- cek manual dulu sebelum coba lagi',7000);
         });
       });
     }
@@ -2899,8 +2915,11 @@ var Targets={
 // 14 Agu: shared fresh-check buat Targets.add/delete di atas -- lihat catatan busy_lock_timeout
 // false-negative. SENGAJA nggak dipake buat Targets.update (upsert-by-id aman di-retry apa adanya,
 // nggak ada resiko duplikat kayak add, jadi nggak butuh disambiguasi tambahan).
+// 15 Agu (QA Ryry re-test): timeout dinaikin 60dtk->150dtk -- kondisi GAS ekstrem lambat yang
+// beneran kejadian butuh 90-150dtk+, timeout lama (60dtk) bikin fresh-check ini SENDIRI ikut gagal
+// pas paling dibutuhin (justru pas GAS separah itu).
 function _targetExistsOnServer(id){
-  return _gasGet('targets',60000).then(function(json){
+  return _gasGet('targets',150000).then(function(json){
     return ((json&&json.data)||[]).some(function(x){return x.id===id;});
   });
 }
@@ -2949,22 +2968,37 @@ function reorderTarget(id,dir){
     var swp=(dir<0)?pos-1:pos+1;
     if(swp<0||swp>=group.length){renderTab(currentTab);return null;} // udah di ujung grup, nggak ada yg ditukar
     var a=group[pos],b=group[swp];
-    // sortOrder null/dobel (data lama/belum pernah di-reorder) -- normalisasi CUMA 2 baris ini pakai
-    // posisi urutan SAAT INI, bukan angka lama yg mungkin udah bentrok sama baris lain.
-    var saOrig=(a.sortOrder==null)?pos:a.sortOrder,sbOrig=(b.sortOrder==null)?swp:b.sortOrder;
+    // sortOrder null/dobel (data lama/belum pernah di-reorder) -- normalisasi CUMA 2 baris ini.
+    // 15 Agu (QA Ryry re-test): fallback SEBELUMNYA pakai `pos`/`swp` mentah (0,1,2,...) -- bisa
+    // collision sama sortOrder ASLI baris lain di grup yg kebetulan angkanya sama. Sekarang pakai
+    // `1e9+pos` (sentinel yg SAMA kayak konvensi null="dianggap 1e9" di targetSortCmp), jaminan nggak
+    // pernah collision sama sortOrder real (yg realistisnya kecil, jauh di bawah 1e9).
+    var saOrig=(a.sortOrder==null)?(1e9+pos):a.sortOrder,sbOrig=(b.sortOrder==null)?(1e9+swp):b.sortOrder;
     var newA=Object.assign({},a,{sortOrder:sbOrig}),newB=Object.assign({},b,{sortOrder:saOrig});
-    return Promise.all([
-      _gasPost({action:'upsertTarget',target:newA}),
-      _gasPost({action:'upsertTarget',target:newB})
-    ]).then(function(){
-      // Merge CUMA 2 row ini ke cache lokal (bukan overwrite semua) -- preserve state lokal lain
-      // yg mungkin lagi pending (mis. edit lain yg belum sempat sync).
+    // 15 Agu (QA Ryry re-test): Promise.all lama nggak atomik -- kalau 1 dari 2 write gagal
+    // (busy_lock_timeout dkk), hasilnya nyangkut campuran (dibuktikan langsung: aj3n9gxt/owofs880
+    // jadi duplikat sortOrder). Sekarang tiap write retry SEKALI otomatis kalau gagal, dan
+    // allSettled (bukan all) biar SATU gagal nggak nge-drop info sukses yg SATUNYA.
+    function upsertWithOneRetry(tgt){
+      return _gasPost({action:'upsertTarget',target:tgt}).catch(function(){
+        return _gasPost({action:'upsertTarget',target:tgt});
+      });
+    }
+    return Promise.allSettled([upsertWithOneRetry(newA),upsertWithOneRetry(newB)]).then(function(results){
       var localAll=Targets.getAll();
-      [newA,newB].forEach(function(nt){
-        var i=localAll.findIndex(function(x){return x.id===nt.id;});
-        if(i>=0)localAll[i]=nt;else localAll.push(nt);
+      var failedLabels=[];
+      [newA,newB].forEach(function(nt,i){
+        if(results[i].status==='fulfilled'){
+          var idx=localAll.findIndex(function(x){return x.id===nt.id;});
+          if(idx>=0)localAll[idx]=nt;else localAll.push(nt);
+        }else{
+          failedLabels.push(nt.metricKey||nt.id);
+        }
       });
       Targets.save(localAll);
+      if(failedLabels.length){
+        toast('Sebagian urutan ke-update -- target "'+failedLabels.join('", "')+'" statusnya nggak jelas di server (udah dicoba 2x) -- cek manual dulu, jangan geser lagi sebelum dicek',7000);
+      }
       renderTab(currentTab);
     });
   }).catch(function(err){
