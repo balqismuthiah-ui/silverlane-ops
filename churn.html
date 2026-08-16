@@ -2862,7 +2862,7 @@ var Targets={
     }
     var withId=Object.assign({},t,{id:uid()});
     all.push(withId);this.save(all);
-    _gasPost({action:'upsertTarget',target:withId}).catch(function(err){
+    _gasPostUnchained({action:'upsertTarget',target:withId}).catch(function(err){
       // 14 Agu (QA Ryry): busy_lock_timeout/timeout jaringan di endpoint Targets bisa FALSE NEGATIVE
       // -- GAS lanjut nulis sukses di server walau respons udah nggak nyampe ke client (reproduced
       // 2x independen). Kalau toast bilang "gagal" gitu aja, leader gampang re-submit dari nol ->
@@ -2885,7 +2885,7 @@ var Targets={
     var all=this.getAll();var i=all.findIndex(function(x){return x.id===id;});
     var withId=Object.assign({},t,{id:id});
     if(i>=0){all[i]=withId;this.save(all);}
-    _gasPost({action:'upsertTarget',target:withId}).catch(function(err){
+    _gasPostUnchained({action:'upsertTarget',target:withId}).catch(function(err){
       toast('Target tersimpan lokal, tapi gagal sync ke server: '+err.message,5000);
     });
   },
@@ -2894,7 +2894,7 @@ var Targets={
     var target=all.find(function(x){return x.id===id;});
     this.save(all.filter(function(x){return x.id!==id;}));
     if(target){
-      _gasPost({action:'deleteTarget',id:id,period:target.period}).catch(function(err){
+      _gasPostUnchained({action:'deleteTarget',id:id,period:target.period}).catch(function(err){
         // 14 Agu: sama alasan Targets.add di atas -- deleteTarget juga kena false-negative
         // busy_lock_timeout (QA Ryry reproduce langsung). Row yang UDAH KEHAPUS di server tapi
         // client masih nunjukin "gagal" bikin leader nyoba hapus lagi terus-terusan padahal
@@ -2980,8 +2980,8 @@ function reorderTarget(id,dir){
     // jadi duplikat sortOrder). Sekarang tiap write retry SEKALI otomatis kalau gagal, dan
     // allSettled (bukan all) biar SATU gagal nggak nge-drop info sukses yg SATUNYA.
     function upsertWithOneRetry(tgt){
-      return _gasPost({action:'upsertTarget',target:tgt}).catch(function(){
-        return _gasPost({action:'upsertTarget',target:tgt});
+      return _gasPostUnchained({action:'upsertTarget',target:tgt}).catch(function(){
+        return _gasPostUnchained({action:'upsertTarget',target:tgt});
       });
     }
     return Promise.allSettled([upsertWithOneRetry(newA),upsertWithOneRetry(newB)]).then(function(results){
@@ -3278,6 +3278,17 @@ function _gasPost(payload){
   var p=_wbChain.then(function(){return _gasPostWithRetry(payload);},function(){return _gasPostWithRetry(payload);});
   _wbChain=new Promise(function(resolve){var done=false,fin=function(){if(!done){done=true;resolve();}};p.then(fin,fin);setTimeout(fin,60000);});
   return p;
+}
+// 15 Agu (QA Ryry re-test #2): TEMUAN BESAR -- Target write (add/delete/reorder) ngantre di
+// `_wbChain` yang SAMA kayak background bulk write-back (auto-paid response, sync agen ribuan
+// baris). Kebukti write user-initiated bisa nyangkut diam-diam 8+ menit di belakang antrean itu,
+// NOL sinyal ke user. `_wbChain` awalnya dibikin nutup append-race (`targetRow=lastUsed+1` tanpa
+// lock, lihat komentar di atas) -- Targets endpoint (`upsertTarget`/`deleteTarget`) UDAH punya
+// proteksi concurrency-nya SENDIRI di server (`withWriteLock_`/LockService, verified di Code.gs),
+// jadi nggak butuh choke-point client-side ini lagi. Bypass _wbChain KHUSUS buat Targets --
+// endpoint lain (upsell/respons/GC) TETAP lewat _gasPost biasa, belum diverifikasi aman di-skip.
+function _gasPostUnchained(payload){
+  return _gasPostWithRetry(payload);
 }
 // Dirty-check write-back respons (17 Jul, approved Ubay) — fix P0 clobber: leader yang cuma validasi
 // klaim upsell dulu ikut nulis ulang r.response versi LOKALnya ke sheet; kalau lokalnya basi (window
