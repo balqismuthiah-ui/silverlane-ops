@@ -2995,10 +2995,16 @@ function reorderTarget(id,dir){
       var localAll=Targets.getAll();
       var failedLabels=[];
       [newA,newB].forEach(function(nt,i){
-        if(results[i].status==='fulfilled'){
-          var idx=localAll.findIndex(function(x){return x.id===nt.id;});
-          if(idx>=0)localAll[idx]=nt;else localAll.push(nt);
-        }else{
+        // 17 Agu (QA Ryry): SEBELUMNYA cuma apply ke localAll kalau 'fulfilled' -- pas
+        // 'rejected'-nya sendiri false-negative (write beneran sukses di server, cuma client-nya
+        // timeout/nggak sempet konfirmasi -- pola busy_lock_timeout yg udah berulang kali kejadian
+        // di project ini), local cache nampilin urutan LAMA sampai next auto-sync nyusul (~20dtk,
+        // self-healing tapi user-facing salah tanpa warning selama itu). Fix: apply optimistic ke
+        // localAll REGARDLESS status settled -- kalau genuine gagal, background sync/fresh-check
+        // yg bakal koreksi balik, bukan client nge-declare "gagal" duluan padahal belum tentu.
+        var idx=localAll.findIndex(function(x){return x.id===nt.id;});
+        if(idx>=0)localAll[idx]=nt;else localAll.push(nt);
+        if(results[i].status!=='fulfilled'){
           failedLabels.push(nt.metricKey||nt.id);
         }
       });
@@ -3054,21 +3060,43 @@ function dupBulkTargets(fromPeriod,toPeriod){
   Targets.save(localAll);
   renderTab(currentTab);
   toast('Menduplikasi '+withIds.length+' target ke '+toPeriod+'... (sinkron ke server berjalan di background)',4000);
-  var failedLabels=[];
+  var failedItems=[];
   function postOne(i){
     if(i>=withIds.length){
-      if(failedLabels.length){
-        toast('Duplikat ke '+toPeriod+' selesai, tapi status server nggak jelas buat: "'+failedLabels.join('", "')+'" (udah dicoba 2x) -- cek manual dulu sebelum ubah-ubah lagi',7000);
-      }else{
+      if(!failedItems.length){
         toast(withIds.length+' target berhasil diduplikat & tersinkron ke '+toPeriod,4000);
+        return;
       }
+      // 17 Agu v2 (QA Ryry): sebelum fix ini, item yg gagal 2x langsung di-declare "nggak jelas" ke
+      // toast -- kondisi GAS ekstrem lambat (yg lagi sering kejadian) bikin retry 2x SAMA-SAMA
+      // ke-timeout meski writenya beneran sukses di server (busy_lock_timeout false-negative, lihat
+      // [[deletetarget_busylocktimeout_falsenegative]]). QA reproduce langsung: 18/19 item yg
+      // di-flag "nggak jelas" ternyata SUKSES, cuma 1 genuine gagal -- toast generik nggak
+      // actionable buat batch besar. Fix: fresh-check SEKALI ke server (sama pola
+      // _targetExistsOnServer) sebelum lapor final, biar toast bedain genuine-fail dari
+      // false-negative, bukan numpuk semua jadi "nggak jelas".
+      toast('Ngecek ulang status '+failedItems.length+' item ke server sebelum lapor final...',3000);
+      _gasGet('targets',150000).then(function(json){
+        var serverIds={};
+        ((json&&json.data)||[]).forEach(function(x){serverIds[x.id]=true;});
+        var trueFail=failedItems.filter(function(w){return!serverIds[w.id];});
+        var falsePosCount=failedItems.length-trueFail.length;
+        if(!trueFail.length){
+          toast(withIds.length+' target berhasil diduplikat & tersinkron ke '+toPeriod+(falsePosCount?(' ('+falsePosCount+' sempat lambat balas, tapi udah dikonfirmasi masuk)'):''),5000);
+        }else{
+          toast('Duplikat ke '+toPeriod+' selesai -- '+trueFail.length+' GENUINE gagal: "'+trueFail.map(function(w){return w.metricKey||w.id;}).join('", "')+'" (cek manual/coba lagi)'
+            +(falsePosCount?(', sisanya ('+falsePosCount+') sebenarnya udah sukses cuma lambat konfirmasi'):''),8000);
+        }
+      }).catch(function(){
+        toast('Duplikat ke '+toPeriod+' selesai, tapi '+failedItems.length+' item statusnya nggak jelas (fresh-check juga gagal, GAS susah dihubungi) -- cek manual: "'+failedItems.map(function(w){return w.metricKey||w.id;}).join('", "')+'"',7000);
+      });
       return;
     }
     var w=withIds[i];
     _gasPostUnchained({action:'upsertTarget',target:w}).catch(function(){
       return _gasPostUnchained({action:'upsertTarget',target:w});
     }).catch(function(){
-      failedLabels.push(w.metricKey||w.id);
+      failedItems.push(w);
     }).then(function(){postOne(i+1);});
   }
   postOne(0);
