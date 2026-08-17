@@ -2979,8 +2979,22 @@ function reorderTarget(id,dir){
     var maxSO=group.reduce(function(mx,g){return(g.sortOrder!=null&&g.sortOrder>mx)?g.sortOrder:mx;},-1);
     var nextSO=maxSO+1;
     var saOrig=a.sortOrder,sbOrig=b.sortOrder;
-    if(saOrig==null){saOrig=nextSO;nextSO++;}
-    if(sbOrig==null){sbOrig=nextSO;nextSO++;}
+    // 17 Agu v3 (QA Ryry): SEBELUMNYA assign sentinel berdasarkan urutan PROSES (a duluan, b nyusul)
+    // -- pas a DAN b sama-sama null, a SELALU jatuh dapet sentinel lebih kecil regardless `dir`,
+    // yg abis di-swap bikin a SELALU berakhir sortOrder lebih BESAR dari b. Itu kebetulan bener buat
+    // klik "▼" (dir=1, a emang harus di bawah b) tapi SALAH ARAH buat klik "▲" (dir=-1, a harusnya
+    // di ATAS b) -- klik naik jadi keliatan nggak ngefek buat pasangan null/null (kasus yg jadi
+    // lebih sering kejadian sejak dupBulkTargets nge-null-in sortOrder semua hasil duplikat). Fix:
+    // assign sentinel berdasarkan POSISI (pos vs swp), bukan urutan proses -- siapa yg posisinya
+    // lebih awal di grup (index lebih kecil) dapet sentinel lebih kecil duluan, apapun dia `a` atau
+    // `b`, biar swap di bawah selalu ngehasilin arah yg konsisten sama `dir`.
+    if(pos<swp){
+      if(saOrig==null){saOrig=nextSO;nextSO++;}
+      if(sbOrig==null){sbOrig=nextSO;nextSO++;}
+    }else{
+      if(sbOrig==null){sbOrig=nextSO;nextSO++;}
+      if(saOrig==null){saOrig=nextSO;nextSO++;}
+    }
     var newA=Object.assign({},a,{sortOrder:sbOrig}),newB=Object.assign({},b,{sortOrder:saOrig});
     // 15 Agu (QA Ryry re-test): Promise.all lama nggak atomik -- kalau 1 dari 2 write gagal
     // (busy_lock_timeout dkk), hasilnya nyangkut campuran (dibuktikan langsung: aj3n9gxt/owofs880
@@ -3084,6 +3098,16 @@ function dupBulkTargets(fromPeriod,toPeriod){
         if(!trueFail.length){
           toast(withIds.length+' target berhasil diduplikat & tersinkron ke '+toPeriod+(falsePosCount?(' ('+falsePosCount+' sempat lambat balas, tapi udah dikonfirmasi masuk)'):''),5000);
         }else{
+          // 17 Agu v3 (QA Ryry): SEBELUMNYA fresh-check ini cuma nentuin ISI TOAST doang -- local
+          // cache (`localAll`) yg udah kadung di-push optimistic di awal fungsi nggak pernah
+          // dikoreksi balik pas ketemu genuine-fail, jadi tabel masih nampilin target "hantu" yg
+          // nggak pernah kesimpen di server sampai reload manual. Fix: hapus item trueFail dari
+          // local cache + save ulang + re-render, biar tabel akurat tanpa perlu reload.
+          var trueFailIds={};
+          trueFail.forEach(function(w){trueFailIds[w.id]=true;});
+          var correctedLocal=Targets.getAll().filter(function(x){return!trueFailIds[x.id];});
+          Targets.save(correctedLocal);
+          renderTab(currentTab);
           toast('Duplikat ke '+toPeriod+' selesai -- '+trueFail.length+' GENUINE gagal: "'+trueFail.map(function(w){return w.metricKey||w.id;}).join('", "')+'" (cek manual/coba lagi)'
             +(falsePosCount?(', sisanya ('+falsePosCount+') sebenarnya udah sukses cuma lambat konfirmasi'):''),8000);
         }
