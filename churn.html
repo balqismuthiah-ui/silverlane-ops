@@ -3014,6 +3014,66 @@ function reorderTarget(id,dir){
   });
 }
 
+// 17 Agu (request operator): duplikat SEMUA target 1 periode ke periode lain sekaligus -- alternatif
+// dari duplikat satu-satu (tombol ⎘ per-baris) buat kasus "reuse set target bulan lalu ke bulan baru".
+// Clone SELURUH object per target (bukan rebuild field-by-field) -- otomatis ikut kebawa apa pun
+// bentuk payload-nya (biasa/personal/combo/mrr_per_paket/sku-gate/tier), sama pola kayak dup-target
+// single existing.
+// SENGAJA SEKUENSIAL ke server (bukan loop paralel kayak Targets.add) -- beda dari fitur existing
+// "1 target -> N bulan" di saveTarget (aman paralel krn tiap bulan bucket server SENDIRI-SENDIRI),
+// di sini SEMUA clone nembak ke SATU bucket bulan tujuan yg SAMA bareng-bareng -> concurrent
+// read-modify-write ke bucket yg sama rawan lost-write (kelas bug yg sama persis kayak insiden
+// sortOrder/busy_lock_timeout sebelumnya). Retry sekali per item, gagal 2x = masuk daftar "cek
+// manual" (pola toast jujur yg sama kayak reorderTarget/Targets.add/delete di atas).
+function dupBulkTargets(fromPeriod,toPeriod){
+  if(!Auth.isSuperior())return;
+  if(fromPeriod===toPeriod){toast('Bulan sumber dan tujuan harus beda',3000);return;}
+  var all=Targets.getAll();
+  var src=all.filter(function(x){return x.period===fromPeriod;});
+  if(!src.length){toast('Nggak ada target di bulan '+fromPeriod,3000);return;}
+  var destExisting=all.filter(function(x){return x.period===toPeriod;});
+  var skipped=[],toCreate=[];
+  src.forEach(function(t){
+    var dupe=destExisting.some(function(x){return x.metricKey===t.metricKey&&x.scope===t.scope;});
+    if(dupe){skipped.push(t.metricKey);return;}
+    var clone=JSON.parse(JSON.stringify(t));
+    delete clone.id;
+    clone.period=toPeriod;
+    clone.sortOrder=null; // jatuh di akhir grup bulan tujuan, tinggal disusun ▲/▼ kalau perlu
+    clone.lastEditBy=Auth.getActive();
+    clone.lastEditAt=new Date().toISOString();
+    toCreate.push(clone);
+  });
+  if(!toCreate.length){toast('Semua target di '+fromPeriod+' udah ada juga (metrik+scope sama) di '+toPeriod+' -- nggak ada yg diduplikat',5000);return;}
+  var confirmMsg='Duplikat '+toCreate.length+' target dari '+fromPeriod+' ke '+toPeriod
+    +(skipped.length?(' ('+skipped.length+' dilewati krn kombinasi metrik+scope-nya udah ada di '+toPeriod+')'):'')+'?';
+  if(!confirm(confirmMsg))return;
+  var withIds=toCreate.map(function(clone){return Object.assign({},clone,{id:uid()});});
+  var localAll=Targets.getAll();
+  withIds.forEach(function(w){localAll.push(w);});
+  Targets.save(localAll);
+  renderTab(currentTab);
+  toast('Menduplikasi '+withIds.length+' target ke '+toPeriod+'... (sinkron ke server berjalan di background)',4000);
+  var failedLabels=[];
+  function postOne(i){
+    if(i>=withIds.length){
+      if(failedLabels.length){
+        toast('Duplikat ke '+toPeriod+' selesai, tapi status server nggak jelas buat: "'+failedLabels.join('", "')+'" (udah dicoba 2x) -- cek manual dulu sebelum ubah-ubah lagi',7000);
+      }else{
+        toast(withIds.length+' target berhasil diduplikat & tersinkron ke '+toPeriod,4000);
+      }
+      return;
+    }
+    var w=withIds[i];
+    _gasPostUnchained({action:'upsertTarget',target:w}).catch(function(){
+      return _gasPostUnchained({action:'upsertTarget',target:w});
+    }).catch(function(){
+      failedLabels.push(w.metricKey||w.id);
+    }).then(function(){postOne(i+1);});
+  }
+  postOne(0);
+}
+
 // ── TEMPLATES STORE ────────────────────────────────────────────────────────
 var Templates={
   KEY:'klopos_templates_v1',
@@ -4626,6 +4686,10 @@ function renderOverview(){
 // PERSIS sama (verbatim), cuma dipindah jadi render function sendiri + tab sendiri, biar nggak numpuk
 // ngedorong Daily View/MTD ke bawah pas daftar target makin panjang. Card "Progres vs Target"
 // (read-only) TETAP di Overview, nggak ikut pindah.
+// 17 Agu: state collapse per-periode (spreadsheet-style group/hide row) -- murni in-memory (nggak
+// dipersist ke localStorage/server), reset ke expanded semua tiap reload. Cukup buat kebutuhan
+// "daftar kepanjangan abis duplikat massal", nggak perlu persist lintas sesi.
+var targetGroupCollapsed={};
 function renderTargetsManage(){
   if(!Auth.isSuperior()){
     document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="card empty">Cuma leader yang bisa akses Kelola Target.</div></div>';
@@ -4636,9 +4700,22 @@ function renderTargetsManage(){
   // CLM-11 Fase G1: urut per (periode, sortOrder) biar row 1-bulan kontigu -> ▲/▼ swap tetangga
   // yg keliatan sebelahan. First/last per grup periode buat disable tombol di ujung.
   var sortedMgmt=allTargetsNow.slice().sort(targetSortCmp);
-  var mgmtRows=sortedMgmt.map(function(t,mi){
+  // 17 Agu (request operator): grup per-periode collapsible (spreadsheet-style hide row) -- baris
+  // header per bulan (klik = toggle), baris datanya cuma dirender kalau grup itu lagi expanded.
+  // Count per periode dihitung dari SEMUA target grup (bukan cuma yg kerender), biar label count di
+  // header tetap benar pas lagi collapsed.
+  var periodCounts={};
+  sortedMgmt.forEach(function(t){periodCounts[t.period]=(periodCounts[t.period]||0)+1;});
+  var mgmtRowsArr=[];
+  sortedMgmt.forEach(function(t,mi){
     var isFirstInPeriod=(mi===0)||(sortedMgmt[mi-1].period!==t.period);
     var isLastInPeriod=(mi===sortedMgmt.length-1)||(sortedMgmt[mi+1].period!==t.period);
+    if(isFirstInPeriod){
+      var collapsed=!!targetGroupCollapsed[t.period];
+      mgmtRowsArr.push('<tr class="tgt-grp-hdr" data-act="toggle-target-group" data-period="'+t.period+'" style="cursor:pointer;background:var(--sur2)">'
+        +'<td colspan="8" style="font-weight:600">'+(collapsed?'▶':'▼')+' '+t.period+' 26 <span style="font-weight:400;color:var(--tx3)">('+periodCounts[t.period]+' target)</span></td></tr>');
+    }
+    if(targetGroupCollapsed[t.period])return; // grup lagi di-collapse -- skip baris datanya, header doang yg tampil
     var meta=targetMetricMeta(t.metricKey);
     var scopeLabel=t.scope==='personal'?'Personal':'Team';
     var targetDisp,actualDisp;
@@ -4676,7 +4753,7 @@ function renderTargetsManage(){
       if(resT.effectiveTargetImproved!=null)targetDisp+=' <span style="color:var(--tx3)">/ Improved '+fmtMetricVal(resT.effectiveTargetImproved,resT.unit)+'</span>';
       actualDisp=fmtMetricVal(resT.actual,resT.unit);
     }
-    return'<tr><td>'+meta.label+'</td><td>'+(meta.family==='activity'?'Activity':'Outcome')+'</td><td>'+scopeLabel+'</td><td>'+t.period+' 26</td>'
+    mgmtRowsArr.push('<tr><td>'+meta.label+'</td><td>'+(meta.family==='activity'?'Activity':'Outcome')+'</td><td>'+scopeLabel+'</td><td>'+t.period+' 26</td>'
       +'<td>'+targetDisp+'</td>'
       +'<td>'+actualDisp+'</td>'
       +'<td>'+(t.visibleToAgent?'✓':'—')+'</td>'
@@ -4686,14 +4763,24 @@ function renderTargetsManage(){
       +'<button class="action-btn ab-edit" data-act="edit-target" data-id="'+t.id+'">✏</button>'
       +'<button class="action-btn ab-view" data-act="dup-target" data-id="'+t.id+'" title="Duplikat -- salinan baru, tinggal edit bulan/isinya">⎘</button>'
       +'<button class="action-btn ab-wl" data-act="del-target" data-id="'+t.id+'">✕</button>'
-      +'</div></td></tr>';
-  }).join('');
+      +'</div></td></tr>');
+  });
+  var mgmtRows=mgmtRowsArr.join('');
+  var curMi=new Date().getMonth(),nextMi=(curMi+1)%12;
+  var monthOptHtml=function(selVal){return MONTH_KEYS.map(function(m){return'<option value="'+m+'"'+(m===selVal?' selected':'')+'>'+m+' 26</option>';}).join('');};
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">⚙️ Kelola Target Configurable</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
     +'<thead><tr><th>Metrik</th><th>Keluarga</th><th>Scope</th><th>Periode</th><th>Target</th><th>Aktual</th><th>Tampil Agen</th><th></th></tr></thead>'
     +'<tbody>'+(mgmtRows||'<tr><td colspan="8" class="empty">Belum ada target</td></tr>')+'</tbody></table></div>'
-    +'<button class="btn btn-pri" id="add-target-btn" style="margin-top:8px;font-size:12px;padding:5px 10px">+ Tambah Target</button>'
+    +'<div style="margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+    +'<button class="btn btn-pri" id="add-target-btn" style="font-size:12px;padding:5px 10px">+ Tambah Target</button>'
+    +'<span style="color:var(--tx3);font-size:12px;margin-left:8px">Duplikat semua target:</span>'
+    +'<select id="dup-bulk-from-sel" style="font-size:12px;padding:4px 6px">'+monthOptHtml(MONTH_KEYS[curMi])+'</select>'
+    +'<span style="font-size:12px;color:var(--tx3)">→</span>'
+    +'<select id="dup-bulk-to-sel" style="font-size:12px;padding:4px 6px">'+monthOptHtml(MONTH_KEYS[nextMi])+'</select>'
+    +'<button class="btn btn-sec" id="dup-bulk-btn" style="font-size:12px;padding:5px 10px" title="Salin semua target bulan sumber ke bulan tujuan sekaligus">⎘ Duplikat Semua</button>'
+    +'</div>'
     +'</div></div>';
 }
 
@@ -8401,6 +8488,11 @@ tabContent.addEventListener('click',function(e){
     }
     else if(act==='target-up'){if(!btn.disabled)reorderTarget(id,-1);}
     else if(act==='target-down'){if(!btn.disabled)reorderTarget(id,1);}
+    else if(act==='toggle-target-group'){
+      var grpP=btn.dataset.period;
+      targetGroupCollapsed[grpP]=!targetGroupCollapsed[grpP];
+      renderTab(currentTab);
+    }
     else if(act==='daily-view-metric'){dailyViewMetricSel=btn.dataset.metric;renderTab('overview');}
     else if(act==='reassign-invoice')openInvReassignModal(id);
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab(currentTab);}}
@@ -8444,6 +8536,11 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='add-agent-btn')openAgentModal();
   else if(tgt.id==='emergency-otp-btn')triggerEmergencyOtp();
   else if(tgt.id==='add-target-btn')openTargetModal(null);
+  else if(tgt.id==='dup-bulk-btn'){
+    var dupFromP=document.getElementById('dup-bulk-from-sel').value;
+    var dupToP=document.getElementById('dup-bulk-to-sel').value;
+    dupBulkTargets(dupFromP,dupToP);
+  }
   else if(tgt.id==='buat-csv-btn')openCsvModal();
   else if(tgt.id==='preview-test-btn')openTestPreview();
   else if(tgt.id==='test-only-csv-btn'){
