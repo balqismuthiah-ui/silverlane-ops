@@ -2969,11 +2969,18 @@ function reorderTarget(id,dir){
     if(swp<0||swp>=group.length){renderTab(currentTab);return null;} // udah di ujung grup, nggak ada yg ditukar
     var a=group[pos],b=group[swp];
     // sortOrder null/dobel (data lama/belum pernah di-reorder) -- normalisasi CUMA 2 baris ini.
-    // 15 Agu (QA Ryry re-test): fallback SEBELUMNYA pakai `pos`/`swp` mentah (0,1,2,...) -- bisa
-    // collision sama sortOrder ASLI baris lain di grup yg kebetulan angkanya sama. Sekarang pakai
-    // `1e9+pos` (sentinel yg SAMA kayak konvensi null="dianggap 1e9" di targetSortCmp), jaminan nggak
-    // pernah collision sama sortOrder real (yg realistisnya kecil, jauh di bawah 1e9).
-    var saOrig=(a.sortOrder==null)?(1e9+pos):a.sortOrder,sbOrig=(b.sortOrder==null)?(1e9+swp):b.sortOrder;
+    // 15 Agu v2 (QA Ryry re-test #3): fallback SEBELUMNYA pakai `1e9+pos` -- `pos` cuma posisi ARRAY
+    // SESAAT (bukan angka persisten), jadi 2 operasi reorder beda WAKTU bisa kebetulan pakai `pos`
+    // yg sama buat item yg BEDA -> sentinel-nya collision antar-operasi (dibuktikan langsung: target
+    // test collision sama `x22wqs80` produksi). Fix: basis-nya sekarang MAX sortOrder yg BENERAN ada
+    // di grup ini SAAT INI (fresh dari server, bukan posisi lokal) + 1 -- jaminan sentinel baru SELALU
+    // lebih gede dari SEMUA sortOrder (real maupun sentinel lama) yg udah ada di grup, kapan pun
+    // operasinya jalan. Kalau a DAN b sama-sama null, masing2 dapet nilai beda (maxSO+1, maxSO+2).
+    var maxSO=group.reduce(function(mx,g){return(g.sortOrder!=null&&g.sortOrder>mx)?g.sortOrder:mx;},-1);
+    var nextSO=maxSO+1;
+    var saOrig=a.sortOrder,sbOrig=b.sortOrder;
+    if(saOrig==null){saOrig=nextSO;nextSO++;}
+    if(sbOrig==null){sbOrig=nextSO;nextSO++;}
     var newA=Object.assign({},a,{sortOrder:sbOrig}),newB=Object.assign({},b,{sortOrder:saOrig});
     // 15 Agu (QA Ryry re-test): Promise.all lama nggak atomik -- kalau 1 dari 2 write gagal
     // (busy_lock_timeout dkk), hasilnya nyangkut campuran (dibuktikan langsung: aj3n9gxt/owofs880
