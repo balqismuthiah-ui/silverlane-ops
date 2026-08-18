@@ -8040,11 +8040,17 @@ function syncAssignOnly(monthParam){
   // TOTAL, nol data masuk sama sekali walau yang beneran dibutuhin cuma 1 bulan. Pola SAMA persis
   // kayak yang udah diketahui & di-fix di action=data auto-sync (lihat catatan syncFromGAS: "unscoped
   // 'data' narik 36rb+ baris... sering kena 503"), belum pernah diterapkan ke assignment. Fix:
-  // sekuensial PER-BULAN (Jan..bulan berjalan) -- tiap bulan 1 request RINGAN (1 tab doang) + retry
-  // sendiri-sendiri, Store.set tiap bulan kelar (bukan nunggu semua) biar 1 bulan gagal nggak nge-drop
-  // progress bulan lain. Lebih lambat total (N request vs 1) tapi JAUH lebih resilient -- lebih baik
-  // dapet 11/12 bulan drpd nol sama sekali.
-  var monthsToSync=MONTH_KEYS.slice(0,MONTH_KEYS.indexOf(currentMonthAbbr())+1);
+  // sekuensial PER-BULAN (bukan Jan..bulan berjalan lagi -- 17 Agu v2, insiden CORS-block yg
+  // ke-konfirmasi kejadian bahkan di request 1-bulan-doang, jadi gagal makin banyak bulan dicoba
+  // makin lama+berisik toast-nya buat nol manfaat tambahan; digeser ke jendela 3-bulan gulir
+  // [bulan berjalan-1, berjalan, +1] -- cakup kebutuhan operasional riil [cari assignment
+  // terbaru/aktif] tanpa buang waktu nyoba bulan lama yg jarang relevan). Bulan lebih lama TETEP
+  // bisa ditarik manual lewat dropdown scoped (`mon` eksplisit, cabang di atas). Tiap bulan 1
+  // request RINGAN (1 tab doang) + retry sendiri-sendiri, Store.set tiap bulan kelar (bukan nunggu
+  // semua) biar 1 bulan gagal nggak nge-drop progress bulan lain.
+  var curMonthIdx=MONTH_KEYS.indexOf(currentMonthAbbr());
+  var winStart=Math.max(0,curMonthIdx-1),winEnd=Math.min(MONTH_KEYS.length-1,curMonthIdx+1);
+  var monthsToSync=MONTH_KEYS.slice(winStart,winEnd+1);
   var totalN2=0,totalNf=0,totalRows=0,failedMonths=[];
   function syncMonth(i){
     if(i>=monthsToSync.length){
