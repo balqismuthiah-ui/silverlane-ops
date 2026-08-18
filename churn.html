@@ -3226,6 +3226,7 @@ var wsSearch='';
 var wsAgentFilter=[]; // CLM-08 (e): multi-select, array kosong = semua agen
 var wsPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
 var wsMonthFilter=[],wsTerminFilter=[],wsHwczFilter=[]; // 18 Agu: filter Periode/Termin/Potensi(HWCZ), pola sama Master&Assign/Blast
+var wsSortDir='asc'; // 19 Agu: sort by Exp (Historical) -- 'asc'=paling deket jatuh tempo dulu (workorder), 'desc'=kebalikannya
 var wsCountText=''; // CLM-08: teks counter #ws-count, di-set wsRows() -- lihat catatan masterCountText
 var mSearch='',mAgent=[],mBlast=[],mResp=[]; // CLM-08 (e): semua multi-select (array kosong = semua)
 var mPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
@@ -4984,6 +4985,14 @@ function wsBasePool(d,me,isSup){
   if(!wsAgentFilter.length)return d.records;
   return d.records.filter(function(r){return wsAgentFilter.indexOf(r.assignedAgent)>=0;});
 }
+// 19 Agu: bulan (MONTH_KEYS abbr) dari Expired Date Historical -- 'YYYY-MM-DD' -> 'Jan'..'Dec'.
+// Ini yg jadi acuan "Periode" workorder agen, BUKAN cohortMonths (tag internal sync).
+function wsHistMonth(r){
+  var h=r.expiredDateHistorical;
+  if(!h||h.length<7)return null;
+  var mi=parseInt(h.slice(5,7),10)-1;
+  return MONTH_KEYS[mi]||null;
+}
 function wsFilteredRecs(d,me,isSup){
   var pool=wsBasePool(d,me,isSup);
   if(wsPayment.length){
@@ -4991,13 +5000,16 @@ function wsFilteredRecs(d,me,isSup){
       return wsPayment.some(function(v){return v==='__none__'?!r.paymentStatus:r.paymentStatus===v;});
     });
   }
-  // 18 Agu (request operator): filter Periode/Termin/Potensi(HWCZ) di My Worksheet -- pola PERSIS
-  // sama kayak Master&Assign (mBulan) / Blast (blastTerminFilter/blastHwczFilter), reuse konvensi
-  // yg sama biar konsisten (multi-select, array kosong = semua).
+  // 18-19 Agu (request operator): filter Periode/Termin/Potensi(HWCZ) di My Worksheet. Periode
+  // SEMULA pakai cohortMonths (tag batch-sync internal, numpuk dari sync2 lama, keliatan "aneh"
+  // beda-beda tiap agen) -- diganti ke bulan dari Expired Date HISTORICAL, karena itu yg jadi acuan
+  // workorder agen ("Juli aku di-assign Hot 10, Warm 20 dst"), BUKAN kapan case-nya kebetulan
+  // ke-sync. Latest tetap dipisah (kolom "Exp (Historical)" baru di tabel) buat tau udah di-extend
+  // apa belum -- bukan buat filter.
   if(wsMonthFilter.length){
     pool=pool.filter(function(r){
-      var cm=(r.cohortMonths||r.bulan||'').split(',');
-      return wsMonthFilter.some(function(v){return cm.indexOf(v)>=0;});
+      var histM=wsHistMonth(r);
+      return histM&&wsMonthFilter.indexOf(histM)>=0;
     });
   }
   if(wsTerminFilter.length)pool=pool.filter(function(r){return wsTerminFilter.indexOf(r.termin)>=0;});
@@ -5017,7 +5029,16 @@ function wsRows(d,me,isSup){
   wsCountText='Menampilkan '+recs.length+' dari '+wsBasePool(d,me,isSup).length+' data';
   var cnt=document.getElementById('ws-count');
   if(cnt)cnt.textContent=wsCountText;
-  if(!recs.length)return'<tr><td colspan="11" class="empty">Tidak ada data</td></tr>';
+  if(!recs.length)return'<tr><td colspan="12" class="empty">Tidak ada data</td></tr>';
+  // 19 Agu (request operator): sort by Exp (Historical) -- itu yg jadi acuan workorder agen, bukan
+  // urutan sync/insert. Kosong (nggak ada info) selalu ke belakang, apa pun arah sort-nya.
+  recs=recs.slice().sort(function(a,b){
+    var ha=a.expiredDateHistorical||'',hb=b.expiredDateHistorical||'';
+    if(!ha&&!hb)return 0;
+    if(!ha)return 1;
+    if(!hb)return-1;
+    return wsSortDir==='asc'?ha.localeCompare(hb):hb.localeCompare(ha);
+  });
   var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
   wsPage=Math.min(wsPage,totalPages-1);
   var paged=recs.slice(wsPage*PAGE_SIZE,(wsPage+1)*PAGE_SIZE);
@@ -5030,10 +5051,14 @@ function wsRows(d,me,isSup){
     var updPhone=r.response&&r.response.updatedPhone;
     var updPhoneDisp='—';
     if(updPhone){updPhoneDisp=canSeePhone?'<span class="phone-full">'+updPhone+'</span>':'<span class="phone-mask">'+maskPhone(updPhone)+'</span>';}
+    // 19 Agu: "udah di-extend?" -- bandingin Latest vs Historical, cuma kalau dua2nya ada & beda.
+    var extendedNote=(r.expiryDate&&r.expiredDateHistorical&&r.expiryDate!==r.expiredDateHistorical)
+      ?'<br><span style="font-size:10px;color:var(--grn)">↻ Extended ke '+fmtDate(r.expiryDate)+'</span>':'';
     return'<tr>'
       +'<td><input type="checkbox" class="ws-chk" data-id="'+r.id+'" '+chk+'></td>'
       +'<td>'+r.id+'</td>'
       +'<td>'+r.outletName+(isGC?'<br>'+gcWatchlistBadge(r.phone):'')+'</td>'
+      +'<td>'+fmtDate(r.expiredDateHistorical)+extendedNote+'</td>'
       +'<td>'+fmtDate(r.expiryDate)+'</td>'
       +'<td>'+phoneDisp+(isDummy?'<br><span class="dummy-flag">🚫 Dummy</span>':'')+'</td>'
       +'<td>'+updPhoneDisp+'</td>'
@@ -5047,7 +5072,7 @@ function wsRows(d,me,isSup){
       +'<button class="action-btn ab-edit" data-act="resp" data-id="'+r.id+'">Respon</button>'
       +(isGC?'':'<button class="action-btn ab-wl" data-act="gc" data-id="'+r.id+'">GC</button>')
       +'</div></td></tr>';
-  }).join('')+pagerRow(11,wsPage,totalPages,recs.length,'ws-prev-btn','ws-next-btn');
+  }).join('')+pagerRow(12,wsPage,totalPages,recs.length,'ws-prev-btn','ws-next-btn');
 }
 
 function renderWorksheet(){
@@ -5059,15 +5084,20 @@ function renderWorksheet(){
   var payOptsArr=Object.keys(PAYMENT_STATUS).map(function(p){return{value:p,label:PAYMENT_STATUS[p].label};})
     .concat([{value:'__none__',label:'Belum Ada Status'}]);
   var payFilter=renderMultiSelect('wsPayment','Status Pembayaran',payOptsArr,wsPayment);
-  // 18 Agu (request operator): filter Periode/Termin/Potensi(HWCZ) -- opsi Periode dibangun dari
-  // basePool sendiri (bukan seluruh Store) biar cuma nunjukin bulan yg relevan buat scope agen ini.
+  // 18-19 Agu (request operator): filter Periode/Termin/Potensi(HWCZ) -- opsi Periode dibangun dari
+  // basePool sendiri (bukan seluruh Store) biar cuma nunjukin bulan yg relevan buat scope agen ini,
+  // dari Expired Date Historical (wsHistMonth), BUKAN cohortMonths -- lihat catatan wsFilteredRecs.
   var _wsBasePool=wsBasePool(d,me,isSup);
   var _wsBulanSet=new Set();
-  _wsBasePool.forEach(function(r){(r.cohortMonths||r.bulan||'').split(',').forEach(function(b){if(b)_wsBulanSet.add(b);});});
+  _wsBasePool.forEach(function(r){var m=wsHistMonth(r);if(m)_wsBulanSet.add(m);});
   var wsBulanOptsArr=[..._wsBulanSet].sort(function(a,b){return MONTH_KEYS.indexOf(a)-MONTH_KEYS.indexOf(b);}).map(function(b){return{value:b,label:b+' 26'};});
   var monthFilterHtml=renderMultiSelect('wsMonthFilter','Periode',wsBulanOptsArr,wsMonthFilter);
   var terminFilterHtml=renderMultiSelect('wsTerminFilter','Termin',[{value:'Bulanan',label:'Bulanan'},{value:'Tahunan',label:'Tahunan'}],wsTerminFilter);
   var hwczFilterHtml=renderMultiSelect('wsHwczFilter','Potensi (HWCZ)',blastHwczOpts(),wsHwczFilter);
+  // 19 Agu: tombol sort by Exp (Historical) -- toggle asc/desc, default asc (jatuh tempo paling
+  // deket duluan, cocok buat kerja workorder harian).
+  var sortBtnHtml='<button class="btn btn-sec" id="ws-sort-btn" style="padding:5px 12px;font-size:12px" title="Urutkan berdasarkan Exp (Historical)">'
+    +(wsSortDir==='asc'?'⬆️ Exp (Historical)':'⬇️ Exp (Historical)')+'</button>';
   // Hitung rows + counter DULU (sama pola kayak renderMaster) -- biar #ws-count keisi benar
   // di render PERTAMA, bukan cuma pas filter berikutnya.
   var wsRowsHtml=wsRows(d,me,isSup);
@@ -5080,6 +5110,7 @@ function renderWorksheet(){
     +monthFilterHtml
     +terminFilterHtml
     +hwczFilterHtml
+    +sortBtnHtml
     // 18 Jul (Ubay approve): tombol Sync Upsell buat agen. Klaim upsell dulu cuma auto-sync ON-LOAD
     // (nggak ada poll interval -- keputusan kuota/GATE 3), jadi agen mesti reload buat lihat hasil
     // validasi leader (approved/rejected). Tombol ini = tarik terbaru tanpa reload penuh. Reuse id
@@ -5098,7 +5129,7 @@ function renderWorksheet(){
     +'<span id="ws-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+wsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr><th><input type="checkbox" id="ws-chk-all"></th><th>ID</th><th>Nama Outlet</th><th>Expired</th><th>HP Utama</th><th>HP Update</th><th>Agen</th><th>Blast</th><th>Respon</th><th>WA</th><th>Aksi</th></tr></thead>'
+    +'<thead><tr><th><input type="checkbox" id="ws-chk-all"></th><th>ID</th><th>Nama Outlet</th><th>Exp (Historical)</th><th>Expired (Latest)</th><th>HP Utama</th><th>HP Update</th><th>Agen</th><th>Blast</th><th>Respon</th><th>WA</th><th>Aksi</th></tr></thead>'
     +'<tbody id="ws-tbody">'+wsRowsHtml+'</tbody>'
     +'</table></div></div>';
 
@@ -8693,6 +8724,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='sync-gas-btn')syncFromGAS();
   else if(tgt.id==='sync-assign-btn')syncAssignOnly();
   else if(tgt.id==='sync-data-self-btn')syncDataSelfMultiMonth(); // 18 Agu: gantiin tombol 'sync-assign-self-btn' lama (dihapus, redundan)
+  else if(tgt.id==='ws-sort-btn'){wsSortDir=wsSortDir==='asc'?'desc':'asc';refreshWsBody();var sb=document.getElementById('ws-sort-btn');if(sb)sb.textContent=(wsSortDir==='asc'?'⬆️ Exp (Historical)':'⬇️ Exp (Historical)');}
   else if(tgt.id==='sync-resp-btn')syncResponsesOnly();
   else if(tgt.id==='sync-upsell-btn')syncUpsellOnly();
   else if(tgt.id==='sync-blastlog-btn')syncBroadcastLogOnly();
