@@ -3225,6 +3225,7 @@ var wsSelectedIds=new Set();
 var wsSearch='';
 var wsAgentFilter=[]; // CLM-08 (e): multi-select, array kosong = semua agen
 var wsPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
+var wsMonthFilter=[],wsTerminFilter=[],wsHwczFilter=[]; // 18 Agu: filter Periode/Termin/Potensi(HWCZ), pola sama Master&Assign/Blast
 var wsCountText=''; // CLM-08: teks counter #ws-count, di-set wsRows() -- lihat catatan masterCountText
 var mSearch='',mAgent=[],mBlast=[],mResp=[]; // CLM-08 (e): semua multi-select (array kosong = semua)
 var mPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
@@ -4990,6 +4991,17 @@ function wsFilteredRecs(d,me,isSup){
       return wsPayment.some(function(v){return v==='__none__'?!r.paymentStatus:r.paymentStatus===v;});
     });
   }
+  // 18 Agu (request operator): filter Periode/Termin/Potensi(HWCZ) di My Worksheet -- pola PERSIS
+  // sama kayak Master&Assign (mBulan) / Blast (blastTerminFilter/blastHwczFilter), reuse konvensi
+  // yg sama biar konsisten (multi-select, array kosong = semua).
+  if(wsMonthFilter.length){
+    pool=pool.filter(function(r){
+      var cm=(r.cohortMonths||r.bulan||'').split(',');
+      return wsMonthFilter.some(function(v){return cm.indexOf(v)>=0;});
+    });
+  }
+  if(wsTerminFilter.length)pool=pool.filter(function(r){return wsTerminFilter.indexOf(r.termin)>=0;});
+  if(wsHwczFilter.length)pool=pool.filter(function(r){return wsHwczFilter.indexOf(String(r.hwcz||'').trim())>=0;});
   if(!wsSearch)return pool;
   var s=wsSearch.toLowerCase();
   // CLM-05 UX fix (operator 13 Jul): guard toLowerCase -- ADA record dgn id/outletName null di pool
@@ -5047,6 +5059,15 @@ function renderWorksheet(){
   var payOptsArr=Object.keys(PAYMENT_STATUS).map(function(p){return{value:p,label:PAYMENT_STATUS[p].label};})
     .concat([{value:'__none__',label:'Belum Ada Status'}]);
   var payFilter=renderMultiSelect('wsPayment','Status Pembayaran',payOptsArr,wsPayment);
+  // 18 Agu (request operator): filter Periode/Termin/Potensi(HWCZ) -- opsi Periode dibangun dari
+  // basePool sendiri (bukan seluruh Store) biar cuma nunjukin bulan yg relevan buat scope agen ini.
+  var _wsBasePool=wsBasePool(d,me,isSup);
+  var _wsBulanSet=new Set();
+  _wsBasePool.forEach(function(r){(r.cohortMonths||r.bulan||'').split(',').forEach(function(b){if(b)_wsBulanSet.add(b);});});
+  var wsBulanOptsArr=[..._wsBulanSet].sort(function(a,b){return MONTH_KEYS.indexOf(a)-MONTH_KEYS.indexOf(b);}).map(function(b){return{value:b,label:b+' 26'};});
+  var monthFilterHtml=renderMultiSelect('wsMonthFilter','Periode',wsBulanOptsArr,wsMonthFilter);
+  var terminFilterHtml=renderMultiSelect('wsTerminFilter','Termin',[{value:'Bulanan',label:'Bulanan'},{value:'Tahunan',label:'Tahunan'}],wsTerminFilter);
+  var hwczFilterHtml=renderMultiSelect('wsHwczFilter','Potensi (HWCZ)',blastHwczOpts(),wsHwczFilter);
   // Hitung rows + counter DULU (sama pola kayak renderMaster) -- biar #ws-count keisi benar
   // di render PERTAMA, bukan cuma pas filter berikutnya.
   var wsRowsHtml=wsRows(d,me,isSup);
@@ -5056,22 +5077,24 @@ function renderWorksheet(){
     +'<input class="fsearch" type="search" id="ws-search" placeholder="🔍 Cari nama / ID outlet / email / HP..." value="'+wsSearch+'">'
     +(agentFilter||'')
     +payFilter
+    +monthFilterHtml
+    +terminFilterHtml
+    +hwczFilterHtml
     // 18 Jul (Ubay approve): tombol Sync Upsell buat agen. Klaim upsell dulu cuma auto-sync ON-LOAD
     // (nggak ada poll interval -- keputusan kuota/GATE 3), jadi agen mesti reload buat lihat hasil
     // validasi leader (approved/rejected). Tombol ini = tarik terbaru tanpa reload penuh. Reuse id
     // 'sync-upsell-btn' (handler+loading-state existing; cuma 1 tab render sekaligus jadi nggak dobel).
     +'<button class="btn btn-blu" id="sync-upsell-btn" style="padding:5px 12px;font-size:12px" title="Tarik status validasi klaim upsell terbaru (approved/rejected) dari leader — tanpa reload">📥 Sync Upsell</button>'
-    // 12 Agu (operator lapor: worksheet agen kosong ~30 menit, assignment nggak ke-isi): syncAssignOnly()
-    // udah nggak dikunci role di level fungsi (cuma tombolnya dulu cuma ada di tab Master&Assign yang
-    // di-hide dari agent) -- akar masalahnya proses full-sync auto ke-interrupt (reload) SEBELUM sampai
-    // ke tahap chain syncAssignOnly di ujung, dan agent nggak punya cara retry sendiri selain lewat
-    // console. Tombol ini expose fungsi yang SAMA (unscoped, tarik semua bulan) langsung ke agent --
-    // reuse pola persis 'Sync Upsell' di atas.
-    +'<button class="btn btn-blu" id="sync-assign-self-btn" style="padding:5px 12px;font-size:12px" title="Tarik ulang data assignment (Nama Agen) dari sheet Assign -- pakai ini kalau worksheet kosong padahal harusnya ada data">🔄 Sync Assignment Saya</button>'
+    // 18 Agu: tombol "Sync Assignment Saya" DIHAPUS -- redundan sejak "Sync Data Saya" dibuat (fungsi
+    // syncFromGAS di baliknya udah auto-manggil syncAssignOnly per bulan 500ms setelah data-nya
+    // masuk). syncAssignOnly() sendiri TETAP ada (masih dipake tombol leader "Sync Agen" +
+    // auto-chain ini), cuma tombol self-service duplikatnya yang dicabut biar nggak bingung agen
+    // ada 2 tombol beda nama buat hasil akhir yang sama.
     // 18 Agu: tombol data utama self-service -- agen nggak punya "Sync Sheets" leader, auto-sync
     // mereka cuma ke-scope bulan berjalan doang. Ini narik Jul/Agu/Sep sekuensial (jendela sama
-    // kayak assignment) biar case-nya ada buat ditempelin assignment lintas 3 bulan itu.
-    +'<button class="btn btn-blu" id="sync-data-self-btn" style="padding:5px 12px;font-size:12px" title="Tarik data case 3 bulan terakhir (Jul/Agu/Sep) -- pakai ini kalau assignment udah ke-sync tapi datanya tetap kosong/dikit">📊 Sync Data Saya</button>'
+    // kayak assignment, yang otomatis ikut ke-refresh juga) biar case-nya ada buat ditempelin
+    // assignment lintas 3 bulan itu.
+    +'<button class="btn btn-blu" id="sync-data-self-btn" style="padding:5px 12px;font-size:12px" title="Tarik data case + assignment 3 bulan terakhir (Jul/Agu/Sep) -- pakai ini kalau worksheet kosong/dikit padahal harusnya ada data">📊 Sync Data Saya</button>'
     +'<span id="ws-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+wsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
@@ -8669,8 +8692,7 @@ tabContent.addEventListener('click',function(e){
   if(tgt.id==='assign-all-btn')handleAssignAll();
   else if(tgt.id==='sync-gas-btn')syncFromGAS();
   else if(tgt.id==='sync-assign-btn')syncAssignOnly();
-  else if(tgt.id==='sync-assign-self-btn')syncAssignOnly(''); // unscoped (semua bulan) -- tombol self-service agen di My Worksheet
-  else if(tgt.id==='sync-data-self-btn')syncDataSelfMultiMonth();
+  else if(tgt.id==='sync-data-self-btn')syncDataSelfMultiMonth(); // 18 Agu: gantiin tombol 'sync-assign-self-btn' lama (dihapus, redundan)
   else if(tgt.id==='sync-resp-btn')syncResponsesOnly();
   else if(tgt.id==='sync-upsell-btn')syncUpsellOnly();
   else if(tgt.id==='sync-blastlog-btn')syncBroadcastLogOnly();
@@ -8814,6 +8836,7 @@ var MSEL_REFRESH={
   mAgent:refreshMasterBody,mBulan:refreshMasterBody,mLifecycle:refreshMasterBody,
   mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
+  wsMonthFilter:refreshWsBody,wsTerminFilter:refreshWsBody,wsHwczFilter:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
   invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,invTcFilter:refreshInvoiceBody,
   blastAgentFilter:function(){blastPage=0;refreshBlastBody();},
