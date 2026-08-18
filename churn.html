@@ -5068,6 +5068,10 @@ function renderWorksheet(){
     // console. Tombol ini expose fungsi yang SAMA (unscoped, tarik semua bulan) langsung ke agent --
     // reuse pola persis 'Sync Upsell' di atas.
     +'<button class="btn btn-blu" id="sync-assign-self-btn" style="padding:5px 12px;font-size:12px" title="Tarik ulang data assignment (Nama Agen) dari sheet Assign -- pakai ini kalau worksheet kosong padahal harusnya ada data">🔄 Sync Assignment Saya</button>'
+    // 18 Agu: tombol data utama self-service -- agen nggak punya "Sync Sheets" leader, auto-sync
+    // mereka cuma ke-scope bulan berjalan doang. Ini narik Jul/Agu/Sep sekuensial (jendela sama
+    // kayak assignment) biar case-nya ada buat ditempelin assignment lintas 3 bulan itu.
+    +'<button class="btn btn-blu" id="sync-data-self-btn" style="padding:5px 12px;font-size:12px" title="Tarik data case 3 bulan terakhir (Jul/Agu/Sep) -- pakai ini kalau assignment udah ke-sync tapi datanya tetap kosong/dikit">📊 Sync Data Saya</button>'
     +'<span id="ws-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+wsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
@@ -7788,7 +7792,9 @@ function syncFromGAS(opts){
 
   // Auto-sync (trigger login) di-scope ke bulan berjalan -- unscoped 'data' narik 36rb+ baris
   // sekaligus (~40s), sering kena 503 dari GAS. Manual sync tetap bisa pilih "Semua Bulan" dari dropdown.
-  var monthParam=syncMonthFilter||(opts.auto?currentMonthAbbr():'');
+  // 18 Agu: opts.month (eksplisit) prioritas paling atas -- dipake syncDataSelfMultiMonth buat
+  // sekuensial per-bulan (agen nggak punya dropdown syncMonthFilter, itu cuma ada di panel leader).
+  var monthParam=(opts.month!==undefined)?opts.month:(syncMonthFilter||(opts.auto?currentMonthAbbr():''));
   var url=GAS_URL+'?action=data&token='+encodeURIComponent(Auth.getToken()||'');
   if(monthParam)url+='&month='+encodeURIComponent(monthParam);
   // 4 Agu: cache-bust -- ketauan 2 akun beda dapet hasil PERSIS sama berulang kali walau udah
@@ -7802,7 +7808,9 @@ function syncFromGAS(opts){
   var fetchOpts={method:'GET'};
   if(controller)fetchOpts.signal=controller.signal;
 
-  fetch(url,fetchOpts)
+  // 18 Agu: `return` ditambahin (nol perubahan behavior ke caller lama yang nggak pakai return
+  // value) -- biar syncDataSelfMultiMonth bisa nge-chain beberapa panggilan sekuensial per-bulan.
+  return fetch(url,fetchOpts)
     .then(function(res){
       if(timer)clearTimeout(timer);
       if(!res.ok)throw new Error('HTTP '+res.status+' — Pastikan deployment "Anyone" access');
@@ -7920,6 +7928,38 @@ function syncFromGAS(opts){
       var btn2=document.getElementById('sync-gas-btn');
       if(btn2){btn2.disabled=false;btn2.textContent='🔄 Sync Sheets';}
     });
+}
+
+// 18 Agu (gap operasional: assignment sync udah dilebarin ke jendela Jul-Sep, tapi data case
+// UTAMA buat agen cuma keisi dari auto-sync yang di-scope ke bulan BERJALAN doang -- agen nggak
+// punya tombol "Sync Sheets" leader (renderMaster di-gate isSup). Efeknya: assignment row Jul/Sep
+// nggak pernah ketemu record lokal yang cocok meski assignment-nya sendiri udah bener, dan jumlah
+// data tiap agen jadi liar beda-beda tergantung kapan kebetulan cache-nya basi pas mereka buka app.
+// Fix: tombol self-service serupa "Sync Assignment Saya" tapi buat data-nya -- sekuensial per-bulan
+// (jendela SAMA PERSIS kayak assignment, [bulan berjalan-1, berjalan, +1]) biar konsisten & tetap
+// resilient (1 bulan gagal nggak nge-drop progress bulan lain, sama filosofi kayak fix assignment).
+function syncDataSelfMultiMonth(){
+  if(!manualSyncAllowed())return;
+  var btn=document.getElementById('sync-data-self-btn');
+  var origText=btn?btn.textContent:'🔄 Sync Data Saya';
+  if(btn)btn.disabled=true;
+  var curMonthIdx=MONTH_KEYS.indexOf(currentMonthAbbr());
+  var winStart=Math.max(0,curMonthIdx-1),winEnd=Math.min(MONTH_KEYS.length-1,curMonthIdx+1);
+  var monthsToSync=MONTH_KEYS.slice(winStart,winEnd+1);
+  function syncOne(i){
+    if(i>=monthsToSync.length){
+      if(btn){btn.disabled=false;btn.textContent=origText;}
+      toast('Sync data selesai buat '+monthsToSync.join('/')+' 26 -- cek My Worksheet',5000);
+      return;
+    }
+    var m=monthsToSync[i];
+    if(btn)btn.textContent='⏳ '+m+'... ('+(i+1)+'/'+monthsToSync.length+')';
+    // auto:true dipake buat bypass cooldown per-attempt (cooldown udah dicek sekali di atas buat
+    // keseluruhan batch) -- opts.month eksplisit tetap prioritas, jadi bulan yang di-sync PERSIS
+    // sesuai jendela di atas, bukan ke-override jadi currentMonthAbbr().
+    syncFromGAS({auto:true,month:m}).then(function(){syncOne(i+1);});
+  }
+  syncOne(0);
 }
 
 function _gasGet(action,timeoutMs){
@@ -8630,6 +8670,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='sync-gas-btn')syncFromGAS();
   else if(tgt.id==='sync-assign-btn')syncAssignOnly();
   else if(tgt.id==='sync-assign-self-btn')syncAssignOnly(''); // unscoped (semua bulan) -- tombol self-service agen di My Worksheet
+  else if(tgt.id==='sync-data-self-btn')syncDataSelfMultiMonth();
   else if(tgt.id==='sync-resp-btn')syncResponsesOnly();
   else if(tgt.id==='sync-upsell-btn')syncUpsellOnly();
   else if(tgt.id==='sync-blastlog-btn')syncBroadcastLogOnly();
