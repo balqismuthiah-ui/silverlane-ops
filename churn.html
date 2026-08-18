@@ -2712,14 +2712,97 @@ function batchDelete(id){
     blastBatchesData=blastBatchesData.filter(function(x){return x.id!==id;}); renderBlast(); toast('Batch dihapus');
   }).catch(function(){toast('Gagal hapus — coba lagi',3000);});
 }
-// Sekar selalu lihat semua bulan (nggak kena gate). Agen: case tanpa info bulan sengaja LOLOS
-// (jangan over-hide data lama yg belum ada cohortMonths), case dgn >=1 bulan released ikut lolos.
-function applyBlastMonthGate(recs,isSup){
+// 19 Agu (request operator): gate blast diperluas dari cuma per-bulan jadi 3 dimensi -- Termin
+// (Bulanan/Tahunan) + Potensi(HWCZ) + pengecualian per-bulan KHUSUS Termin=Bulanan. Alasan bisnis:
+// agen cuma boleh BLAST (kirim WABA massal) case Tahunan+Hot; sisanya (Bulanan/non-Hot) tetap
+// KELIHATAN penuh di My Worksheet, cuma di-exclude dari daftar Blast WABA -- mereka follow-up
+// manual pakai HP sendiri. Pola storage SAMA persis kayak BlastMonthGate (GAS-shared, leader push,
+// semua sync-read), 3 object TERPISAH biar nggak resiko ke month-gate yg udah jalan.
+var BlastTerminGate={
+  KEY:'klopos_blast_termin_gate_v1',
+  DEFAULT_CLOSED:['Bulanan'], // Tahunan default terbuka, Bulanan default tertutup (sesuai aturan bisnis)
+  getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
+  isReleased:function(termin){
+    var d=this.getAll();
+    if(Object.prototype.hasOwnProperty.call(d,termin))return!!d[termin];
+    return this.DEFAULT_CLOSED.indexOf(termin)<0;
+  },
+  setReleased:function(termin,val){var d=this.getAll();d[termin]=!!val;localStorage.setItem(this.KEY,JSON.stringify(d));},
+  push:function(){_gasPost({action:'setBlastTerminGate',gate:this.getAll()}).catch(function(){});},
+  syncFromServer:function(){
+    if(!Auth.getToken())return;
+    var self=this;
+    _gasGet('blastTerminGate').then(function(j){
+      if(!j||j.ok===false)return;
+      localStorage.setItem(self.KEY,JSON.stringify(j.gate||{}));
+      if(currentTab==='blast')renderTab('blast');
+    }).catch(function(){});
+  }
+};
+var BlastHwczGate={
+  KEY:'klopos_blast_hwcz_gate_v1',
+  DEFAULT_OPEN:['Hot'], // KEBALIKAN dari BlastMonthGate/BlastTerminGate -- di sini defaultnya opt-IN
+  // (cuma Hot yg default terbuka), soalnya HWCZ value-nya dinamis dari data (bukan enum tetap
+  // kayak bulan/termin), jadi lebih aman "semua tertutup kecuali yg di-whitelist" drpd kebalikannya.
+  getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
+  isReleased:function(hwcz){
+    var d=this.getAll();
+    if(Object.prototype.hasOwnProperty.call(d,hwcz))return!!d[hwcz];
+    return this.DEFAULT_OPEN.indexOf(hwcz)>=0;
+  },
+  setReleased:function(hwcz,val){var d=this.getAll();d[hwcz]=!!val;localStorage.setItem(this.KEY,JSON.stringify(d));},
+  push:function(){_gasPost({action:'setBlastHwczGate',gate:this.getAll()}).catch(function(){});},
+  syncFromServer:function(){
+    if(!Auth.getToken())return;
+    var self=this;
+    _gasGet('blastHwczGate').then(function(j){
+      if(!j||j.ok===false)return;
+      localStorage.setItem(self.KEY,JSON.stringify(j.gate||{}));
+      if(currentTab==='blast')renderTab('blast');
+    }).catch(function(){});
+  }
+};
+// Pengecualian: kapan Termin=Bulanan TETAP boleh (meski BlastTerminGate.isReleased('Bulanan')
+// false) -- misal "Bulanan boleh, tapi bulan lama doang (Jun/Jul)". Default SEMUA tertutup
+// (opt-in per bulan). TETAP harus lolos BlastHwczGate juga (HWCZ gate berlaku universal, dicek
+// duluan di applyBlastFullGate -- confirmed operator: exception ini BUKAN pengganti syarat Hot).
+var BlastBulananMonthGate={
+  KEY:'klopos_blast_bulanan_monthgate_v1',
+  getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
+  isReleased:function(month){return!!this.getAll()[month];},
+  setReleased:function(month,val){var d=this.getAll();d[month]=!!val;localStorage.setItem(this.KEY,JSON.stringify(d));},
+  push:function(){_gasPost({action:'setBlastBulananMonthGate',gate:this.getAll()}).catch(function(){});},
+  syncFromServer:function(){
+    if(!Auth.getToken())return;
+    var self=this;
+    _gasGet('blastBulananMonthGate').then(function(j){
+      if(!j||j.ok===false)return;
+      localStorage.setItem(self.KEY,JSON.stringify(j.gate||{}));
+      if(currentTab==='blast')renderTab('blast');
+    }).catch(function(){});
+  }
+};
+// Sekar selalu lihat semua (nggak kena gate apa pun). Agen: 3 gate di-AND -- lolos bulan DULU,
+// baru HWCZ (berlaku universal ke semua termin), baru Termin (Tahunan lolos kalau gate-nya
+// terbuka; Bulanan lolos kalau gate Bulanan terbuka ATAU bulannya termasuk pengecualian
+// BlastBulananMonthGate). Case tanpa info (bulan/hwcz/termin kosong) sengaja LOLOS di dimensi itu
+// -- jangan over-hide data lama yg belum lengkap.
+function applyBlastFullGate(recs,isSup){
   if(isSup)return recs;
   return recs.filter(function(r){
     var months=(r.cohortMonths||r.bulan||'').split(',').filter(Boolean);
-    if(!months.length)return true;
-    return months.some(function(m){return BlastMonthGate.isReleased(m);});
+    var monthOk=!months.length||months.some(function(m){return BlastMonthGate.isReleased(m);});
+    if(!monthOk)return false;
+
+    var hwcz=String(r.hwcz||'').trim();
+    var hwczOk=!hwcz||BlastHwczGate.isReleased(hwcz);
+    if(!hwczOk)return false;
+
+    var termin=String(r.termin||'').trim();
+    if(!termin)return true;
+    if(BlastTerminGate.isReleased(termin))return true;
+    if(termin==='Bulanan')return months.some(function(m){return BlastBulananMonthGate.isReleased(m);});
+    return false;
   });
 }
 
@@ -5579,7 +5662,7 @@ function blastFilteredRows(){
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
   var recs=isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;});
-  recs=applyBlastMonthGate(recs,isSup);
+  recs=applyBlastFullGate(recs,isSup);
   // Filter agen cuma relevan buat leader (agen biasa udah ke-scope ke case-nya sendiri di atas).
   // CLM-05 UX (operator 13 Jul): DIBALIK dari EXCLUDE (AC-A4-1) jadi INCLUDE. Alasan: exclude bikin
   // bingung ("mau liat data Sarah doang" → malah harus centang 7 agen lain, dan tetep nggak bisa
@@ -5747,6 +5830,39 @@ function renderBlast(){
           var on=BlastMonthGate.isReleased(m);
           return'<label style="font-size:11px;display:flex;align-items:center;gap:4px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:4px 8px">'
             +'<input type="checkbox" class="month-gate-chk" data-month="'+m+'"'+(on?' checked':'')+'>'+m+' 26</label>';
+        }).join('')
+      +'</div>'
+      +'</div>'
+    ):'')
+    // 19 Agu (request operator): panel gate Termin + Potensi(HWCZ) -- pola sama persis panel bulan
+    // di atas. Aturan bisnis: agen defaultnya cuma boleh blast Tahunan+Hot; toggle di sini yg
+    // nentuin pengecualiannya.
+    +(isSup?(
+      '<div class="cfg-panel">'
+      +'<div class="cfg-title">🔓 Buka Termin & Potensi (HWCZ) ke Agen</div>'
+      +'<div class="pay-info" style="margin-bottom:8px">Default: cuma Tahunan + Hot yang kebuka ke agen buat Blast WABA. Sisanya tetap kelihatan penuh di My Worksheet, cuma nggak muncul di daftar Blast ini (follow-up manual). Nggak ngaruh ke Responses Update/My Worksheet.</div>'
+      +'<div style="font-size:11px;font-weight:600;color:var(--tx3);margin-bottom:4px">Termin</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
+      +['Bulanan','Tahunan'].map(function(t){
+          var on=BlastTerminGate.isReleased(t);
+          return'<label style="font-size:11px;display:flex;align-items:center;gap:4px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:4px 8px">'
+            +'<input type="checkbox" class="termin-gate-chk" data-termin="'+t+'"'+(on?' checked':'')+'>'+t+'</label>';
+        }).join('')
+      +'</div>'
+      +'<div style="font-size:11px;font-weight:600;color:var(--tx3);margin-bottom:4px">Potensi (HWCZ)</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
+      +blastHwczOpts().map(function(o){
+          var on=BlastHwczGate.isReleased(o.value);
+          return'<label style="font-size:11px;display:flex;align-items:center;gap:4px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:4px 8px">'
+            +'<input type="checkbox" class="hwcz-gate-chk" data-hwcz="'+o.value+'"'+(on?' checked':'')+'>'+o.label+'</label>';
+        }).join('')
+      +'</div>'
+      +'<div style="font-size:11px;font-weight:600;color:var(--tx3);margin-bottom:4px">Pengecualian: Termin=Bulanan tetap boleh di bulan ini <span style="font-weight:400">(tetap wajib Hot)</span></div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:8px">'
+      +MONTH_KEYS.map(function(m){
+          var on=BlastBulananMonthGate.isReleased(m);
+          return'<label style="font-size:11px;display:flex;align-items:center;gap:4px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:4px 8px">'
+            +'<input type="checkbox" class="bulanan-monthgate-chk" data-month="'+m+'"'+(on?' checked':'')+'>'+m+' 26</label>';
         }).join('')
       +'</div>'
       +'</div>'
@@ -7336,7 +7452,7 @@ function openCsvModal(){
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
   var recs=isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;});
-  recs=applyBlastMonthGate(recs,isSup);
+  recs=applyBlastFullGate(recs,isSup);
   // CLM-05 (operator 14 Jul): tabel Blast & CSV SAMA granularitas = per-nomor-alternatif. Seleksi
   // (csvSelectedIds) = key per-nomor (id_nomor); CSV = TEPAT nomor yg dipilih. Nomor internal/GC & dummy
   // nggak bisa dipilih (checkbox disabled) -> otomatis kekecuali. Kosong = warn (nggak ada silent dump).
@@ -8949,6 +9065,25 @@ tabContent.addEventListener('change',function(e){
     toast((tgt.checked?'Bulan '+tgt.dataset.month+' dibuka':'Bulan '+tgt.dataset.month+' ditutup')+' ke semua agen (Blast WABA)');
     renderBlast();
   }
+  // 19 Agu: 3 checkbox gate baru, pola identik month-gate-chk di atas.
+  if(tgt.classList.contains('termin-gate-chk')){
+    BlastTerminGate.setReleased(tgt.dataset.termin,tgt.checked);
+    BlastTerminGate.push();
+    toast((tgt.checked?'Termin '+tgt.dataset.termin+' dibuka':'Termin '+tgt.dataset.termin+' ditutup')+' ke semua agen (Blast WABA)');
+    renderBlast();
+  }
+  if(tgt.classList.contains('hwcz-gate-chk')){
+    BlastHwczGate.setReleased(tgt.dataset.hwcz,tgt.checked);
+    BlastHwczGate.push();
+    toast((tgt.checked?'Potensi '+tgt.dataset.hwcz+' dibuka':'Potensi '+tgt.dataset.hwcz+' ditutup')+' ke semua agen (Blast WABA)');
+    renderBlast();
+  }
+  if(tgt.classList.contains('bulanan-monthgate-chk')){
+    BlastBulananMonthGate.setReleased(tgt.dataset.month,tgt.checked);
+    BlastBulananMonthGate.push();
+    toast((tgt.checked?'Bulanan bulan '+tgt.dataset.month+' dibuka':'Pengecualian bulan '+tgt.dataset.month+' ditutup')+' (tetap wajib Hot)');
+    renderBlast();
+  }
   if(tgt.classList.contains('ws-chk')){
     var rid=tgt.dataset.id;
     if(tgt.checked)wsSelectedIds.add(rid);else wsSelectedIds.delete(rid);
@@ -9161,6 +9296,10 @@ function startApp(){
   setTimeout(function(){syncTemplatesFromServer({silent:true});},jms(2400));
   // CLM-13 v56: tarik month-gate blast otoritatif on-load (agen baca gate yg bener, bukan default lokal).
   setTimeout(function(){BlastMonthGate.syncFromServer();},jms(2600));
+  // 19 Agu: sama pola -- tarik 3 gate baru (Termin/HWCZ/pengecualian-bulan-Bulanan) otoritatif on-load.
+  setTimeout(function(){BlastTerminGate.syncFromServer();},jms(2650));
+  setTimeout(function(){BlastHwczGate.syncFromServer();},jms(2700));
+  setTimeout(function(){BlastBulananMonthGate.syncFromServer();},jms(2750));
   // CLM-13 v56: tarik daftar batch blast (metadata, leader) on-load.
   setTimeout(function(){if(Auth.isSuperior())syncBlastBatchesFromServer();},jms(2800));
   // (operator 16 Jul): auto-sync klaim upsell on-load (silent) -- tombol manual cuma di tab leader, jadi
