@@ -7966,53 +7966,109 @@ function syncAssignOnly(monthParam){
   var btns=[document.getElementById('sync-assign-btn'),document.getElementById('sync-assign-self-btn')].filter(Boolean);
   var origTexts=btns.map(function(b){return b.textContent;});
   btns.forEach(function(b){b.disabled=true;b.textContent='⏳ Memuat...';});
-  var monLbl=mon?'('+mon+') ':'';
-  toast('Mengambil data assignment agen '+monLbl+'… harap tunggu',4000);
-
-  var url=GAS_URL+'?action=assignments'+(mon?'&month='+encodeURIComponent(mon):'')+'&token='+encodeURIComponent(Auth.getToken()||'');
 
   function restoreButtons(){
     btns.forEach(function(b,i){b.disabled=false;b.textContent=origTexts[i]||'📥 Sync Agen';});
   }
 
-  function attempt(n){
-    var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
-    var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
-    var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
-    fetch(url,opts)
-      .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-      .then(function(json){
-        if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
-        var rows=json.data||[];
-        var d=Store.get();
-        var idx={};var outletIdx={};
-        d.records.forEach(function(r){
-          idx[r.id]=r;
-          if(r.outletId)outletIdx[String(r.outletId)]=r;
-        });
-        var n2=0,nf=0;
-        rows.forEach(function(row){
-          var jc=String(row['Join code']||'').trim();if(!jc)return;
-          // Match by: 1) compound key, 2) plain outletId, 3) extract outletId from Join code (jc = outletId + 5-digit serial)
-          var outletPart=jc.length>5?jc.slice(0,-5):'';
-          var rec=idx[jc]||outletIdx[jc]||(outletPart?outletIdx[outletPart]:null);
-          if(!rec){nf++;return;}
-          // Kolom sheet sempat di-rename "Assign Manual"->"Assigned to" mulai tab bulan berjalan (Jul26+)
-          // -- tab bulan lama masih pakai nama lama. Terima dua-duanya biar nggak putus lagi kalau diganti lagi.
-          var ag=_matchAgent(row['Assign Manual']!==undefined?row['Assign Manual']:row['Assigned to']);
-          if(ag){rec.assignedAgent=ag;n2++;}
-        });
-        Store.set(d);renderTab(currentTab);
-        toast(n2+' agen diupdate dari '+rows.length+' baris'+(mon?' ['+mon+']':'')+' ('+nf+' tdk match)',6000);
-        restoreButtons();
-      }).catch(function(err){
-        if(timer)clearTimeout(timer);
-        if(n<3){setTimeout(function(){attempt(n+1);},1000*(n+1));return;}
-        toast('Gagal sync agen setelah beberapa percobaan: '+(err&&err.message||'')+' — coba lagi sebentar',5000);
-        restoreButtons();
-      });
+  // 1 bulan = 1 request GAS RINGAN (getAssignments baca 1 tab "Assign <Bulan>26" doang). Dipakai baik
+  // mode scoped (mon eksplisit) maupun sekuensial per-bulan di mode unscoped di bawah.
+  function fetchOneMonth(m){
+    var url=GAS_URL+'?action=assignments'+(m?'&month='+encodeURIComponent(m):'')+'&token='+encodeURIComponent(Auth.getToken()||'');
+    return new Promise(function(resolve,reject){
+      function attempt(n){
+        var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+        var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
+        var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
+        fetch(url,opts)
+          .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+          .then(function(json){
+            if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
+            resolve(json);
+          }).catch(function(err){
+            if(timer)clearTimeout(timer);
+            if(n<3){setTimeout(function(){attempt(n+1);},1000*(n+1));return;}
+            reject(err);
+          });
+      }
+      attempt(0);
+    });
   }
-  attempt(0);
+
+  function mergeRows(rows){
+    var d=Store.get();
+    var idx={};var outletIdx={};
+    d.records.forEach(function(r){
+      idx[r.id]=r;
+      if(r.outletId)outletIdx[String(r.outletId)]=r;
+    });
+    var n2=0,nf=0;
+    rows.forEach(function(row){
+      var jc=String(row['Join code']||'').trim();if(!jc)return;
+      // Match by: 1) compound key, 2) plain outletId, 3) extract outletId from Join code (jc = outletId + 5-digit serial)
+      var outletPart=jc.length>5?jc.slice(0,-5):'';
+      var rec=idx[jc]||outletIdx[jc]||(outletPart?outletIdx[outletPart]:null);
+      if(!rec){nf++;return;}
+      // Kolom sheet sempat di-rename "Assign Manual"->"Assigned to" mulai tab bulan berjalan (Jul26+)
+      // -- tab bulan lama masih pakai nama lama. Terima dua-duanya biar nggak putus lagi kalau diganti lagi.
+      var ag=_matchAgent(row['Assign Manual']!==undefined?row['Assign Manual']:row['Assigned to']);
+      if(ag){rec.assignedAgent=ag;n2++;}
+    });
+    Store.set(d);
+    return {n2:n2,nf:nf,total:rows.length};
+  }
+
+  if(mon){
+    // scoped ke 1 bulan spesifik -- request tunggal, udah ringan by design.
+    toast('Mengambil data assignment agen ('+mon+')… harap tunggu',4000);
+    fetchOneMonth(mon).then(function(json){
+      var res=mergeRows(json.data||[]);
+      renderTab(currentTab);
+      toast(res.n2+' agen diupdate dari '+res.total+' baris ['+mon+'] ('+res.nf+' tdk match)',6000);
+      restoreButtons();
+    }).catch(function(err){
+      toast('Gagal sync agen ['+mon+']: '+(err&&err.message||'')+' — coba lagi sebentar',5000);
+      restoreButtons();
+    });
+    return;
+  }
+
+  // 17 Agu (insiden operasional: agen lapor worksheet kosong, sync gagal terus di kondisi GAS lambat
+  // -- ~299 akun KLOPOS + backlog assignment lain lagi rame hari ini). SEBELUMNYA unscoped langsung
+  // minta GAS baca SEMUA 12 tab "Assign <Bulan>26" dalam SATU eksekusi (getAssignments tanpa
+  // filterMonth = getDataRange().getValues() x12 tab sekaligus) -- di kondisi GAS lambat ini TIMEOUT
+  // TOTAL, nol data masuk sama sekali walau yang beneran dibutuhin cuma 1 bulan. Pola SAMA persis
+  // kayak yang udah diketahui & di-fix di action=data auto-sync (lihat catatan syncFromGAS: "unscoped
+  // 'data' narik 36rb+ baris... sering kena 503"), belum pernah diterapkan ke assignment. Fix:
+  // sekuensial PER-BULAN (Jan..bulan berjalan) -- tiap bulan 1 request RINGAN (1 tab doang) + retry
+  // sendiri-sendiri, Store.set tiap bulan kelar (bukan nunggu semua) biar 1 bulan gagal nggak nge-drop
+  // progress bulan lain. Lebih lambat total (N request vs 1) tapi JAUH lebih resilient -- lebih baik
+  // dapet 11/12 bulan drpd nol sama sekali.
+  var monthsToSync=MONTH_KEYS.slice(0,MONTH_KEYS.indexOf(currentMonthAbbr())+1);
+  var totalN2=0,totalNf=0,totalRows=0,failedMonths=[];
+  function syncMonth(i){
+    if(i>=monthsToSync.length){
+      renderTab(currentTab);
+      if(failedMonths.length){
+        toast(totalN2+' agen diupdate dari '+totalRows+' baris ('+totalNf+' tdk match) -- TAPI '+failedMonths.length+' bulan gagal disync: '+failedMonths.join(', ')+' (coba sync bulan itu spesifik dari dropdown)',9000);
+      }else{
+        toast(totalN2+' agen diupdate dari '+totalRows+' baris, semua '+monthsToSync.length+' bulan tersinkron ('+totalNf+' tdk match)',6000);
+      }
+      restoreButtons();
+      return;
+    }
+    var m=monthsToSync[i];
+    toast('Sync assignment '+m+'… ('+(i+1)+'/'+monthsToSync.length+')',2500);
+    fetchOneMonth(m).then(function(json){
+      var res=mergeRows(json.data||[]);
+      totalN2+=res.n2;totalNf+=res.nf;totalRows+=res.total;
+      syncMonth(i+1);
+    }).catch(function(){
+      failedMonths.push(m);
+      syncMonth(i+1);
+    });
+  }
+  syncMonth(0);
 }
 
 // CLM-03: sync-down klaim upsell dari GAS (?action=upsell) — biar Sekar lihat klaim semua agen lintas-device.
