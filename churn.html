@@ -1770,6 +1770,20 @@ function computeRenewalTeamCX(period){
   var denom=hasOutletId?Object.keys(outletSet).length:rows.length;
   return{arpu:denom?Math.round(sum/denom):0,revenue:sum,count:denom,synced:true};
 }
+// 19 Agu (request operator): Renewal Revenue di kartu "Target Tim Bulan Ini" definisi Nasional-nya =
+// SEMUA kategori (CLM+CC+TC+Self Onboard+Sales, match PERSIS "Semua (Nasional)" di Daily View) --
+// BEDA dari computeRenewalTeamCX di atas yg scope-nya CX-only (CLM+CC+TC). computeRenewalTeamCX
+// SENGAJA TIDAK disentuh -- itu sumber metrik target configurable "Renewal Revenue/ARPU (Team)"
+// (keputusan 4 Agu, lihat memory decision_renewal_revenue_arpu_team_sumber_cx, jangan diubah diam2).
+// Fungsi baru ini sum SEMUA row tanpa filter tim sama sekali -- setiap row di dailyViewTeamBucketOf
+// otomatis jatuh ke salah satu bucket (CLM/CC/TC/SELF_ONBOARD/SALES, nol row yg exclude), jadi
+// "Nasional" = literally semua row, konsisten sama cara Daily View ngitung "Semua (Nasional)".
+function computeRenewalNasional(period){
+  var fin=period?UpsellTeamStore.getMonth(period):null;
+  if(!fin||!fin.renewalsRaw||!fin.renewalsRaw.length)return{revenue:0,count:0,synced:false};
+  var sum=fin.renewalsRaw.reduce(function(s,r){return s+r.subtotal;},0);
+  return{revenue:sum,count:fin.renewalsRaw.length,synced:true};
+}
 // CLM-11 Fase F2 (REVISI 12 Jul — Rahul minta pisah): 4-tier warna Upsell Revenue per-agen, MURNI
 // Rupiah+ARPU sekarang. Hardware/Tablet DIKELUARIN dari sini (dulu jadi "bump" tier1-2 -> hijau kalau
 // evidence>=threshold) -- dipindah jadi metric independen sendiri di "Upsell per-SKU", convention
@@ -4048,7 +4062,7 @@ function renderOverview(){
   // 4 Agu (operator): sumber dipindah ke UpsellTeamStore/Tim CX (computeRenewalTeamCX), konsisten
   // sama kartu "Progres vs Target" (computeMetricRaw intercept) -- dulu FinancialsStore, beda dari card
   // ARPU yang udah lebih dulu dipindah, bikin 2 kartu Revenue vs ARPU nunjukin scope beda tanpa sadar.
-  var renewalAch=computeRenewalTeamCX(currentMonthKey).revenue;
+  var renewalAch=computeRenewalNasional(currentMonthKey).revenue;
   // CLM-11 B2: card Rating&Review = Sigma klaim APPROVED doang (AC-B2-1/B2-2) -- SEBELUMNYA pakai
   // claimedMaps/claimedApps (semua status ikut kehitung, termasuk Pending/Rejected) + fallback
   // hardcode 156/104 yg kebetulan sama kayak angka reference screenshot Muthia (placeholder lama,
@@ -4516,19 +4530,31 @@ function renderOverview(){
     // QA round 2 (operator, 13 Jul): (a) urutan kolom Jun DULU baru Jul -- konsisten tabel MTD di
     // bawahnya, dulu kebalik bikin salah baca; (b) nominal LENGKAP (fmtRpFull) + rata kanan, bukan
     // pembulatan "Rp 80 jt".
+    // 19 Agu (request operator): 2 kolom baru -- (a) 🔴 live (s.d. HARI INI, bukan H-1) reuse
+    // dvCurSeries yg sama, tinggal baca index dayOfMonth-1 (hari ini) drpd dayOfMonthLocked-1
+    // (H-1) -- data mentahnya udah ada, nol komputasi baru; (b) Proyeksi Closing per-tim, formula
+    // run-rate SAMA kayak kartu Target Tim (mtdAmount/hari-berjalan*total-hari), BUKAN dari
+    // Potensi Invoice -- basis-nya curVal (H-1-locked) dibagi dayOfMonthLocked (bukan dayOfMonth)
+    // biar konsisten pembilang/penyebutnya (sama2 "s.d. H-1"), bukan reuse runRateProjection()
+    // langsung (fungsi itu basisnya dayOfMonth, mismatch 1 hari kalau dipasangin curVal H-1-locked).
     var dvRows=Object.keys(DAILY_VIEW_BUCKETS).map(function(k){
       var curVal=dvCurSeries[k][dayOfMonthLocked-1]||0;
+      var liveVal=dvCurSeries[k][dayOfMonth-1];
+      if(liveVal==null)liveVal=curVal;
       var prevVal=(dvPrevSeries&&sameDayIdx>=0)?(dvPrevSeries[k][sameDayIdx]||0):0;
       var deltaRp=curVal-prevVal;
       var deltaPct=prevVal?Math.round(deltaRp/prevVal*100):(curVal>0?100:0);
       var deltaColor=deltaRp>=0?'var(--grn)':'var(--red)';
       var renC=dvRenCounts[k]||0,upsC=dvUpsCounts[k]||0;
       var attach=renC?Math.round(upsC/renC*100):0;
+      var projected=dayOfMonthLocked?Math.round(curVal/dayOfMonthLocked*daysInMonth):0;
       return'<tr><td>'+DAILY_VIEW_BUCKETS[k].label+'</td><td style="text-align:right">'+fmtRpFull(prevVal)+'</td><td style="text-align:right">'+fmtRpFull(curVal)+'</td>'
+        +'<td style="text-align:right">'+fmtRpFull(liveVal)+'</td>'
         +'<td style="text-align:right;color:'+deltaColor+'">'+(deltaRp>=0?'+':'-')+fmtRpFull(Math.abs(deltaRp))+' ('+(deltaPct>=0?'+':'')+deltaPct+'%)</td>'
         +'<td style="text-align:right">'+renC+'</td>'
         +'<td style="text-align:right">'+upsC+'</td>'
-        +'<td style="text-align:right">'+attach+'%</td></tr>';
+        +'<td style="text-align:right">'+attach+'%</td>'
+        +'<td style="text-align:right;color:var(--pri)">'+fmtRpFull(projected)+'</td></tr>';
     }).join('');
     // QA round 2b: tabel Jenis Add-On (ex Multi-team Upsell Tracker) -- ngikutin dropdown tim yg sama
     // (Semua=semua baris, CLM/CC/TC/SO=filter, Sales=sisanya), bulan berjalan, nominal lengkap.
@@ -4550,7 +4576,7 @@ function renderOverview(){
       +'<div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--tx3)"><span>▬ '+currentMonthKey+' 26 (s.d. kemarin)</span><span>┄ '+prevMonthKey+' 26 (penuh)</span></div>'
       +'</div>'
       +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap"><table class="summary-tbl">'
-      +'<thead><tr><th>Tim</th><th style="text-align:right">'+prevMonthKey+' 26 (s.d. hari ke-'+Math.min(dayOfMonthLocked,daysInPrevMonth)+')</th><th style="text-align:right">'+currentMonthKey+' 26 (s.d. hari ke-'+dayOfMonthLocked+')</th><th style="text-align:right">Selisih</th><th style="text-align:right">Deal Renewal ('+currentMonthKey+')</th><th style="text-align:right">Deal Upsell ('+currentMonthKey+')</th><th style="text-align:right">Attach Rate</th></tr></thead>'
+      +'<thead><tr><th>Tim</th><th style="text-align:right">'+prevMonthKey+' 26 (s.d. hari ke-'+Math.min(dayOfMonthLocked,daysInPrevMonth)+')</th><th style="text-align:right">'+currentMonthKey+' 26 (s.d. hari ke-'+dayOfMonthLocked+')</th><th style="text-align:right" title="Revenue s.d. HARI INI, bukan H-1 -- bisa naik lagi sepanjang hari">🔴 '+currentMonthKey+' (live)</th><th style="text-align:right">Selisih</th><th style="text-align:right">Deal Renewal ('+currentMonthKey+')</th><th style="text-align:right">Deal Upsell ('+currentMonthKey+')</th><th style="text-align:right">Attach Rate</th><th style="text-align:right" title="Run-rate: pace s.d. H-1 diproyeksikan ke akhir bulan (BUKAN dari Potensi Invoice)">📈 Proyeksi Closing</th></tr></thead>'
       +'<tbody>'+dvRows+'</tbody></table></div></div>'
       +(dvSalesNamesHtml?'<div style="font-size:10px;color:var(--tx3);margin-top:6px">Sales (non-CX, non-SO) '+currentMonthKey+' 26: '+dvSalesNamesHtml+' — nama yang harusnya CX tapi nongol di sini = belum ada / beda ejaan di tab Agent CX</div>':'')
       +'<div class="ov-section-title" style="margin-top:12px">🧩 Jenis Add-On ('+currentMonthKey+' 26 — '+DAILY_VIEW_BUCKETS[dailyViewBucketSel].label+') <span style="font-size:9px;color:var(--tx3)">(dari RENEWAL & UPSELL 2026, ikut dropdown tim di atas)</span></div>'
