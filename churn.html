@@ -6985,6 +6985,13 @@ function renderChurnTrend(){
 // ── RENDER TAB ─────────────────────────────────────────────────────────────
 function renderTab(tab){
   if(tab!=='worksheet'){wsSelectedIds.clear();updateWsBulkBar();}
+  // 20 Agu (operator): Targets cuma di-refresh dari server lewat perubahan sendiri (add/edit/reorder
+  // push doang, nggak pernah pull) -- `syncTargetsFromServer()` sempat jadi dead code (nggak dipanggil
+  // dari mana pun), efeknya perubahan target leader LAIN nggak pernah nyampe ke akun ini sampai
+  // di-trigger manual. Fix: tarik ulang tiap kali BENERAN pindah ke tab Overview/Kelola Target (bukan
+  // re-render tab yang sama) -- guard `isNav` di bawah nyegah loop, karena callback
+  // syncTargetsFromServer() sendiri manggil `renderTab(currentTab)` dengan tab yang SAMA (isNav=false).
+  var isNav=(currentTab!==tab);
   currentTab=tab;
   document.querySelectorAll('.ntab').forEach(function(b){b.classList.toggle('active',b.dataset.tab===tab);});
   switch(tab){
@@ -7002,6 +7009,7 @@ function renderTab(tab){
     case 'myjourney':renderMyJourney();break;
     case 'konfigakun':renderKonfigurasiAkun();break;
   }
+  if(isNav&&(tab==='overview'||tab==='targetsmanage'))syncTargetsFromServer();
 }
 
 // ── MODALS ─────────────────────────────────────────────────────────────────
