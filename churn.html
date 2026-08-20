@@ -258,6 +258,16 @@ tr:hover td{background:var(--sur2)}
       <div class="auth-note" id="auth-resend-link">Kirim ulang kode</div>
       <button class="btn-sec" id="auth-otp-back-btn" style="margin-top:8px;width:100%">← Ganti Email</button>
     </div>
+    <!-- 19 Agu (request operator): sesi expired/dicabut TIDAK lagi langsung tawarin form email+OTP di
+    tab ini -- form itu jalan (sendOtpRequest udah ada timeout+retry), tapi state auth-step di halaman
+    yg SUDAH lama kebuka bisa nyangkut/nggak transisi mulus ke step OTP (dicurigai state basi di tab
+    lama, belum ke-reproduce pasti). Refresh = state auth-screen 100% fresh dari nol, cara paling aman
+    nutup kelas bug ini tanpa perlu tau akar pastinya. Form email+OTP TETAP dipakai apa adanya buat
+    login awal (cold-load) -- panel ini CUMA dipicu forceReLogin(), satu2nya pemanggil showLoginScreen(). -->
+    <div id="auth-step-expired" style="display:none">
+      <div class="auth-hint">Refresh halaman ini buat lanjut login ulang.</div>
+      <button class="btn-pri" id="auth-refresh-btn">🔄 Refresh Halaman</button>
+    </div>
   </div>
 </div>
 
@@ -2407,7 +2417,7 @@ var Auth={
 function forceReLogin(){
   Auth.logout();
   document.getElementById('app').style.display='none';
-  showLoginScreen('Sesi habis atau akses dicabut — silakan login lagi.');
+  showLoginScreen('Sesi habis atau akses dicabut.');
 }
 // 12 Agu (insiden: beberapa leader ke-logout paksa berulang -- console nunjukin 404 di
 // script.googleusercontent.com/macros/echo, pola SAMA persis "Gangguan GAS/Drive-serving intermiten
@@ -2463,10 +2473,14 @@ function confirmUnauthorizedThenLogout(){
       });
   },2000);
 }
+// 19 Agu: satu2nya pemanggil ini adalah forceReLogin() (sesi revoked/expired mid-use) -- BUKAN
+// dipakai buat cold-load pertama kali (itu state default statik di HTML, nggak lewat fungsi ini).
+// Jadi aman nunjukin panel "refresh" doang di sini, form email+OTP normal nggak kesenggol.
 function showLoginScreen(errMsg){
   document.getElementById('auth-screen').style.display='flex';
   document.getElementById('auth-step-otp').style.display='none';
-  document.getElementById('auth-step1').style.display='';
+  document.getElementById('auth-step1').style.display='none';
+  document.getElementById('auth-step-expired').style.display='';
   showAuthError(errMsg||'');
 }
 
@@ -9502,6 +9516,10 @@ function initAuth(){
     document.getElementById('auth-step-otp').style.display='none';
     document.getElementById('auth-step1').style.display='';
     showAuthError('');
+  });
+
+  document.getElementById('auth-refresh-btn').addEventListener('click',function(){
+    location.reload();
   });
 
   document.getElementById('logout-btn').addEventListener('click',function(){
