@@ -3387,6 +3387,7 @@ var syncMonthFilter='';
 var dailyViewBucketSel='NASIONAL'; // CLM-11 Fase C (rev. QA round 2): bucket aktif Daily view (NASIONAL/CLM/CC/TC/SELF_ONBOARD/SALES)
 var dailyViewMetricSel='renewal'; // CLM-11 Fase C: metrik aktif Daily view (renewal/upsell revenue)
 var dailyViewSeriesMode='cumulative'; // CLM-11 Fase G (25 Jul): 'cumulative' (MTD berjalan) atau 'daily' (per-hari, buat liat tren gap)
+var dvCompareMonth=''; // 19 Agu (request operator): bulan pembanding Daily View, bebas pilih (bukan selalu bulan-1) -- '' = default (bulan-1, sama kayak prevMonthKey biasa)
 // 10-11 Agu (operator): "My Journey" -- state filter granularitas+periode+drill-in agen (leader-only).
 var myJourneyGranularity='month'; // 'day'|'week'|'month'|'year'
 var myJourneyDaySel=localDateStr(new Date());
@@ -4468,7 +4469,12 @@ function renderOverview(){
       +'<tbody>'+invTcRowsHtml+'</tbody></table></div></div>'):'');
 
   var dvCurUT=UpsellTeamStore.getMonth(currentMonthKey);
-  var dvPrevUT=UpsellTeamStore.getMonth(prevMonthKey);
+  // 19 Agu (request operator): compare month Daily View bebas pilih -- dvPrevMonthKey/dvDaysInPrevMonth
+  // LOKAL ke section ini doang (BUKAN nimpa prevMonthKey/daysInPrevMonth global, itu tetap dipakai
+  // section lain kayak MTD per-Agen yg harus tetap bulan-1 fixed). Tahun masih fixed 2026.
+  var dvPrevMonthKey=dvCompareMonth||prevMonthKey;
+  var dvDaysInPrevMonth=new Date(2026,MONTH_KEYS.indexOf(dvPrevMonthKey)+1,0).getDate();
+  var dvPrevUT=UpsellTeamStore.getMonth(dvPrevMonthKey);
   var dailyViewSection='';
   if(!dvCurUT){
     dailyViewSection='<div class="ov-section"><div class="ov-section-title">📅 Daily View ('+currentMonthKey+' 26)</div>'
@@ -4500,7 +4506,7 @@ function renderOverview(){
       return buildDailyCumulativeSeries(ut[dvMetricField],days,map,dvIsCumulative);
     }
     var dvCurSeries=dvSeriesFor(dvCurUT,daysInMonth,dvCurMap);
-    var dvPrevSeries=dvPrevUT?dvSeriesFor(dvPrevUT,daysInPrevMonth,dvRosterMap(dvPrevUT)):null;
+    var dvPrevSeries=dvPrevUT?dvSeriesFor(dvPrevUT,dvDaysInPrevMonth,dvRosterMap(dvPrevUT)):null;
     // QA round 2b: count deal renewal/upsell + attach rate per tim (bulan berjalan) -- gantiin 4 stat
     // card Multi-team Upsell Tracker yg dilebur ke section ini.
     function dvCountsFor(rows){
@@ -4530,6 +4536,14 @@ function renderOverview(){
     var dvSeriesModeSelHtml='<select id="daily-view-mode-sel" style="width:auto;padding:4px 8px;font-size:11px;margin-bottom:0">'
       +DV_SERIES_OPTS.map(function(o){return'<option value="'+o[0]+'"'+(o[0]===dailyViewSeriesMode?' selected':'')+'>'+o[1]+'</option>';}).join('')
       +'</select>';
+    // 19 Agu (request operator): bulan pembanding bebas pilih (misal Aug vs Jun) -- bukan selalu
+    // bulan-1. Dropdown tahun SCAFFOLDING doang (disabled) -- sistem masih single-year (2026), nol
+    // data tahun lain buat dipilih beneran. Biar UI-nya udah siap begitu multi-tahun ada suatu saat,
+    // tanpa nge-klaim fungsi yg belum jalan.
+    var dvCompareMonthSelHtml='<select id="dv-compare-month-sel" style="width:auto;padding:4px 8px;font-size:11px;margin-bottom:0">'
+      +MONTH_KEYS.map(function(m){return'<option value="'+m+'"'+(m===dvPrevMonthKey?' selected':'')+'>'+m+' 26</option>';}).join('')
+      +'</select>';
+    var dvCompareYearSelHtml='<select disabled title="Multi-tahun belum didukung -- data sekarang cuma 2026" style="width:auto;padding:4px 8px;font-size:11px;margin-bottom:0;opacity:.5"><option>2026</option></select>';
     // QA round 2: breakdown "siapa aja di Sales" -- jawab langsung pertanyaan kelas "250rb ini siapa?"
     // (kasus Heriyandi). Distinct creatorName bucket SALES bulan berjalan + total Rp, biar nama
     // non-roster (bener2 sales ATAU salah ejaan di tab Agent CX) langsung keliatan tanpa buka sheet.
@@ -4543,11 +4557,11 @@ function renderOverview(){
     var dvSalesNamesHtml=Object.keys(dvSalesNames).sort(function(a,b){return dvSalesNames[b]-dvSalesNames[a];})
       .map(function(nm){return nm+' ('+fmtRp(dvSalesNames[nm])+')';}).join(' · ');
     // 25 Jul: chart & tabel dikunci ke H-1 (dayOfMonthLocked), bukan hari ini -- lihat catatan di deklarasi var.
-    var dvChartHtml=renderDailyTrendSVG(dvCurSeries[dailyViewBucketSel],dvPrevSeries?dvPrevSeries[dailyViewBucketSel]:new Array(daysInPrevMonth).fill(0),daysInPrevMonth,dayOfMonthLocked,DAILY_VIEW_BUCKETS[dailyViewBucketSel].color);
+    var dvChartHtml=renderDailyTrendSVG(dvCurSeries[dailyViewBucketSel],dvPrevSeries?dvPrevSeries[dailyViewBucketSel]:new Array(dvDaysInPrevMonth).fill(0),dvDaysInPrevMonth,dayOfMonthLocked,DAILY_VIEW_BUCKETS[dailyViewBucketSel].color);
     // Tabel ringkas: SEMUA bucket sekaligus (nggak cuma yg lagi dipilih di chart), delta Rp "di titik
     // hari yang sama" -- bandingin s.d. hari ke-X bulan ini vs s.d. hari ke-X yg SAMA bulan lalu
     // (bukan bulan lalu penuh, biar apple-to-apple), dua-duanya di-cap H-1.
-    var sameDayIdx=Math.min(dayOfMonthLocked,daysInPrevMonth)-1;
+    var sameDayIdx=Math.min(dayOfMonthLocked,dvDaysInPrevMonth)-1;
     // QA round 2 (operator, 13 Jul): (a) urutan kolom Jun DULU baru Jul -- konsisten tabel MTD di
     // bawahnya, dulu kebalik bikin salah baca; (b) nominal LENGKAP (fmtRpFull) + rata kanan, bukan
     // pembulatan "Rp 80 jt".
@@ -4617,14 +4631,14 @@ function renderOverview(){
     var dvAddonRows=Object.keys(dvAddonAgg).sort(function(a,b){return dvAddonAgg[b].revenue-dvAddonAgg[a].revenue;}).map(function(ty){
       return'<tr><td>'+ty+'</td><td style="text-align:right">'+dvAddonAgg[ty].count+'</td><td style="text-align:right">'+fmtRpFull(dvAddonAgg[ty].revenue)+'</td></tr>';
     }).join('');
-    dailyViewSection='<div class="ov-section"><div class="ov-section-title">📅 Daily View ('+currentMonthKey+' 26 vs '+prevMonthKey+' 26) <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1)</span></div>'
+    dailyViewSection='<div class="ov-section"><div class="ov-section-title">📅 Daily View ('+currentMonthKey+' 26 vs '+dvPrevMonthKey+' 26) <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1)</span></div>'
       +'<div class="card">'
-      +'<div class="form-row" style="margin-bottom:8px;gap:6px;align-items:center">'+dvMetricTabsHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvBucketSelHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvSeriesModeSelHtml+'</div>'
+      +'<div class="form-row" style="margin-bottom:8px;gap:6px;align-items:center">'+dvMetricTabsHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvBucketSelHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvSeriesModeSelHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span><span style="font-size:11px;color:var(--tx3)">vs</span>'+dvCompareMonthSelHtml+dvCompareYearSelHtml+'</div>'
       +dvChartHtml
-      +'<div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--tx3)"><span>▬ '+currentMonthKey+' 26 (s.d. kemarin)</span><span>┄ '+prevMonthKey+' 26 (penuh)</span></div>'
+      +'<div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--tx3)"><span>▬ '+currentMonthKey+' 26 (s.d. kemarin)</span><span>┄ '+dvPrevMonthKey+' 26 (penuh)</span></div>'
       +'</div>'
       +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap"><table class="summary-tbl" style="font-size:11px">'
-      +'<thead><tr><th>Tim</th><th style="text-align:right">'+prevMonthKey+' 26 (s.d. hari ke-'+Math.min(dayOfMonthLocked,daysInPrevMonth)+')</th><th style="text-align:right">'+currentMonthKey+' 26 (s.d. hari ke-'+dayOfMonthLocked+')</th><th style="text-align:right" title="Revenue s.d. HARI INI, bukan H-1 -- bisa naik lagi sepanjang hari">🔴 '+currentMonthKey+' (live)</th><th style="text-align:right">Selisih</th><th style="text-align:right">Deal Renewal ('+currentMonthKey+')</th><th style="text-align:right">Deal Upsell ('+currentMonthKey+')</th><th style="text-align:right">Attach Rate</th><th style="text-align:right" title="Revenue s.d. H-1 / jumlah outlet unik">ARPU</th><th style="text-align:right" title="Run-rate: pace s.d. H-1 diproyeksikan ke akhir bulan (BUKAN dari Potensi Invoice)">📈 Proyeksi Closing</th></tr></thead>'
+      +'<thead><tr><th>Tim</th><th style="text-align:right">'+dvPrevMonthKey+' 26 (s.d. hari ke-'+Math.min(dayOfMonthLocked,dvDaysInPrevMonth)+')</th><th style="text-align:right">'+currentMonthKey+' 26 (s.d. hari ke-'+dayOfMonthLocked+')</th><th style="text-align:right" title="Revenue s.d. HARI INI, bukan H-1 -- bisa naik lagi sepanjang hari">🔴 '+currentMonthKey+' (live)</th><th style="text-align:right">Selisih</th><th style="text-align:right">Deal Renewal ('+currentMonthKey+')</th><th style="text-align:right">Deal Upsell ('+currentMonthKey+')</th><th style="text-align:right">Attach Rate</th><th style="text-align:right" title="Revenue s.d. H-1 / jumlah outlet unik">ARPU</th><th style="text-align:right" title="Run-rate: pace s.d. H-1 diproyeksikan ke akhir bulan (BUKAN dari Potensi Invoice)">📈 Proyeksi Closing</th></tr></thead>'
       +'<tbody>'+dvRows+'</tbody></table></div></div>'
       +(dvSalesNamesHtml?'<div style="font-size:10px;color:var(--tx3);margin-top:6px">Sales (non-CX, non-SO) '+currentMonthKey+' 26: '+dvSalesNamesHtml+' — nama yang harusnya CX tapi nongol di sini = belum ada / beda ejaan di tab Agent CX</div>':'')
       +'<div class="ov-section-title" style="margin-top:12px">🧩 Jenis Add-On ('+currentMonthKey+' 26 — '+DAILY_VIEW_BUCKETS[dailyViewBucketSel].label+') <span style="font-size:9px;color:var(--tx3)">(dari RENEWAL & UPSELL 2026, ikut dropdown tim di atas)</span></div>'
@@ -9118,6 +9132,7 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='daily-view-bucket-sel'){dailyViewBucketSel=tgt.value;renderTab('overview');return;}
   if(tgt.id==='daily-view-metric-sel'){dailyViewMetricSel=tgt.value;renderTab('overview');return;} // 18 Jul: dropdown metrik (renewal/upsell/total)
   if(tgt.id==='daily-view-mode-sel'){dailyViewSeriesMode=tgt.value;renderTab('overview');return;} // 25 Jul: dropdown kumulatif/harian
+  if(tgt.id==='dv-compare-month-sel'){dvCompareMonth=tgt.value;renderTab('overview');return;} // 19 Agu: bulan pembanding Daily View bebas pilih
   if(tgt.id==='invsum-month'){invsumMonth=tgt.value;renderTab('invsummary');return;}
   if(tgt.id==='mj-gran-sel'){myJourneyGranularity=tgt.value;renderTab('myjourney');return;}
   if(tgt.id==='mj-day-sel'){myJourneyDaySel=tgt.value;renderTab('myjourney');return;}
