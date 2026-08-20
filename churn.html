@@ -2858,15 +2858,21 @@ function applyBlastFullGate(recs,isSup){
 // lokal, balik ke status "belum sync" -- ke-cover UI existing kayak strip "X/N bulan tersync" di My
 // Journey / null-guard "belum ada data" di Overview) DAKASIH TAU sinyal error kayak lama, bukan malah
 // nge-block sync bulan baru yg justru lagi dibutuhin.
-function storageSetMonthWithEviction(key,allData,keepMonth){
+function storageSetMonthWithEviction(key,allData,keepMonth,onEvict){
   try{localStorage.setItem(key,JSON.stringify(allData));return true;}
   catch(e){
     if(e.name!=='QuotaExceededError'&&e.code!==22)return false; // error laen, jangan sok tau ngoprek data
     var months=Object.keys(allData).filter(function(m){return m!==keepMonth;});
     if(!months.length)return false; // tinggal 1 bulan (yg lagi coba ditulis) tapi masih kepenuhan -- nggak ada lagi yg bisa dievict
     months.sort(function(a,b){return MONTH_KEYS.indexOf(a)-MONTH_KEYS.indexOf(b);});
-    delete allData[months[0]];
-    return storageSetMonthWithEviction(key,allData,keepMonth);
+    var evicted=months[0];
+    delete allData[evicted];
+    // 20 Agu (operator): eviction SEBELUMNYA senyap total -- bulan lama ilang dari cache tanpa jejak,
+    // user cuma lihat "kok balik Rp0" tanpa tau kenapa (dikira sync gagal, padahal beneran ke-usir
+    // demi bulan baru muat). onEvict opsional (backward-compat) biar caller bisa toast bulan mana yg
+    // kena, transparan bukan silent-drop.
+    if(onEvict)onEvict(evicted);
+    return storageSetMonthWithEviction(key,allData,keepMonth,onEvict);
   }
 }
 // ── CLM-04 FASE 2: FINANCIALS STORE (per bulan, dari GAS ?action=financials) ─
@@ -2878,7 +2884,10 @@ var FinancialsStore={
   getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
   setMonth:function(month,payload){
     var all=this.getAll();all[month]=payload;
-    if(!storageSetMonthWithEviction(this.KEY,all,month))toast('⚠ Data financials '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
+    var evictedMonths=[];
+    var ok=storageSetMonthWithEviction(this.KEY,all,month,function(m){evictedMonths.push(m);});
+    if(!ok)toast('⚠ Data financials '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
+    else if(evictedMonths.length)toast('⚠ Storage lokal penuh — data Financials bulan '+evictedMonths.join(', ')+' otomatis kehapus dari cache biar '+month+' muat. Perlu di-sync ulang kalau masih dibutuhin.',7000);
   },
   getMonth:function(month){return this.getAll()[month]||null;}
 };
@@ -2892,7 +2901,10 @@ var UpsellTeamStore={
   getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
   setMonth:function(month,payload){
     var all=this.getAll();all[month]=payload;
-    if(!storageSetMonthWithEviction(this.KEY,all,month))toast('⚠ Data Upsell Tim '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
+    var evictedMonths=[];
+    var ok=storageSetMonthWithEviction(this.KEY,all,month,function(m){evictedMonths.push(m);});
+    if(!ok)toast('⚠ Data Upsell Tim '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
+    else if(evictedMonths.length)toast('⚠ Storage lokal penuh — data Upsell Tim bulan '+evictedMonths.join(', ')+' otomatis kehapus dari cache biar '+month+' muat. Perlu di-sync ulang kalau masih dibutuhin.',7000);
   },
   getMonth:function(month){return this.getAll()[month]||null;}
 };
