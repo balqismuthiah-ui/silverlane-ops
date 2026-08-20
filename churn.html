@@ -2023,7 +2023,7 @@ function computeAgentMtdCompare(fieldArr,agentName,curPeriod,prevPeriod,dayCap){
   var prevFin=prevPeriod?UpsellTeamStore.getMonth(prevPeriod):null;
   var agents=AgentsConfig.getAll();
   function agg(fin,capDay){
-    if(!fin||!fin[fieldArr]||!fin[fieldArr].length)return{revenue:0,count:0,synced:false};
+    if(!fin||!fin[fieldArr]||!fin[fieldArr].length)return{revenue:0,count:0,arpu:0,synced:false};
     var rows=fin[fieldArr].filter(function(r){
       if(matchAgentFuzzy(r.creatorName,agents)!==agentName)return false;
       if(capDay&&r.paidDate){
@@ -2032,7 +2032,14 @@ function computeAgentMtdCompare(fieldArr,agentName,curPeriod,prevPeriod,dayCap){
       }
       return true;
     });
-    return{revenue:rows.reduce(function(s,r){return s+r.subtotal;},0),count:rows.length,synced:true};
+    var revenue=rows.reduce(function(s,r){return s+r.subtotal;},0);
+    // 19 Agu (request operator): ARPU -- pola PERSIS computeRenewalTeamCX (denom = distinct outlet,
+    // fallback ke jumlah baris kalau nol row punya outletId), BUKAN sekadar revenue/count (count di
+    // sini itu jumlah DEAL, bukan jumlah outlet unik -- bisa beda kalau 1 outlet ada >1 baris/bulan).
+    var outletSet={},hasOutletId=false;
+    rows.forEach(function(r){if(r.outletId){hasOutletId=true;outletSet[r.outletId]=true;}});
+    var arpuDenom=hasOutletId?Object.keys(outletSet).length:rows.length;
+    return{revenue:revenue,count:rows.length,arpu:arpuDenom?Math.round(revenue/arpuDenom):0,synced:true};
   }
   // 25 Jul (operator): CUR sekarang JUGA di-cap ke dayCap (dulu nol cap = full bulan berjalan s.d.
   // detik sync terakhir, bisa jam berapa aja -- nggak apple-to-apple ke PREV yang dicap ke hari
@@ -4544,13 +4551,39 @@ function renderOverview(){
     // QA round 2 (operator, 13 Jul): (a) urutan kolom Jun DULU baru Jul -- konsisten tabel MTD di
     // bawahnya, dulu kebalik bikin salah baca; (b) nominal LENGKAP (fmtRpFull) + rata kanan, bukan
     // pembulatan "Rp 80 jt".
-    // 19 Agu (request operator): 2 kolom baru -- (a) 🔴 live (s.d. HARI INI, bukan H-1) reuse
+    // 19 Agu (request operator): 3 kolom baru -- (a) 🔴 live (s.d. HARI INI, bukan H-1) reuse
     // dvCurSeries yg sama, tinggal baca index dayOfMonth-1 (hari ini) drpd dayOfMonthLocked-1
-    // (H-1) -- data mentahnya udah ada, nol komputasi baru; (b) Proyeksi Closing per-tim, formula
-    // run-rate SAMA kayak kartu Target Tim (mtdAmount/hari-berjalan*total-hari), BUKAN dari
-    // Potensi Invoice -- basis-nya curVal (H-1-locked) dibagi dayOfMonthLocked (bukan dayOfMonth)
-    // biar konsisten pembilang/penyebutnya (sama2 "s.d. H-1"), bukan reuse runRateProjection()
-    // langsung (fungsi itu basisnya dayOfMonth, mismatch 1 hari kalau dipasangin curVal H-1-locked).
+    // (H-1) -- data mentahnya udah ada, nol komputasi baru; (b) ARPU per-tim (s.d. H-1) -- BEDA
+    // dari (a)/(revenue Rp) krn butuh distinct-outlet-count, bukan cuma sum subtotal, jadi hitung
+    // ulang dari raw rows (dvArpuFor), bukan dari dvCurSeries yg cuma nyimpen sum; (c) Proyeksi
+    // Closing per-tim, formula run-rate SAMA kayak kartu Target Tim (mtdAmount/hari-berjalan*
+    // total-hari), BUKAN dari Potensi Invoice -- basis-nya curVal (H-1-locked) dibagi
+    // dayOfMonthLocked (bukan dayOfMonth) biar konsisten pembilang/penyebutnya.
+    function dvArpuFor(ut,rosterMap,cutoffDay){
+      var acc={};
+      Object.keys(DAILY_VIEW_BUCKETS).forEach(function(k){acc[k]={revenue:0,outlets:{}};});
+      function ingest(rows){
+        (rows||[]).forEach(function(r){
+          if(!r.paidDate)return;
+          var day=parseInt(r.paidDate.slice(8,10),10);
+          if(!day||day<1||(cutoffDay&&day>cutoffDay))return;
+          var b=dailyViewTeamBucketOf(r.creatorName,r.region,rosterMap);
+          acc.NASIONAL.revenue+=r.subtotal;if(r.outletId)acc.NASIONAL.outlets[r.outletId]=true;
+          acc[b].revenue+=r.subtotal;if(r.outletId)acc[b].outlets[r.outletId]=true;
+        });
+      }
+      if(ut){
+        if(dailyViewMetricSel==='total'){ingest(ut.renewalsRaw);ingest(ut.upsellRaw);}
+        else ingest(ut[dvMetricField]);
+      }
+      var out={};
+      Object.keys(acc).forEach(function(k){
+        var denom=Object.keys(acc[k].outlets).length;
+        out[k]=denom?Math.round(acc[k].revenue/denom):0;
+      });
+      return out;
+    }
+    var dvArpuLocked=dvArpuFor(dvCurUT,dvCurMap,dayOfMonthLocked);
     var dvRows=Object.keys(DAILY_VIEW_BUCKETS).map(function(k){
       var curVal=dvCurSeries[k][dayOfMonthLocked-1]||0;
       var liveVal=dvCurSeries[k][dayOfMonth-1];
@@ -4568,6 +4601,7 @@ function renderOverview(){
         +'<td style="text-align:right">'+renC+'</td>'
         +'<td style="text-align:right">'+upsC+'</td>'
         +'<td style="text-align:right">'+attach+'%</td>'
+        +'<td style="text-align:right">'+fmtRpFull(dvArpuLocked[k]||0)+'</td>'
         +'<td style="text-align:right;color:var(--pri)">'+fmtRpFull(projected)+'</td></tr>';
     }).join('');
     // QA round 2b: tabel Jenis Add-On (ex Multi-team Upsell Tracker) -- ngikutin dropdown tim yg sama
@@ -4589,8 +4623,8 @@ function renderOverview(){
       +dvChartHtml
       +'<div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--tx3)"><span>▬ '+currentMonthKey+' 26 (s.d. kemarin)</span><span>┄ '+prevMonthKey+' 26 (penuh)</span></div>'
       +'</div>'
-      +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap"><table class="summary-tbl">'
-      +'<thead><tr><th>Tim</th><th style="text-align:right">'+prevMonthKey+' 26 (s.d. hari ke-'+Math.min(dayOfMonthLocked,daysInPrevMonth)+')</th><th style="text-align:right">'+currentMonthKey+' 26 (s.d. hari ke-'+dayOfMonthLocked+')</th><th style="text-align:right" title="Revenue s.d. HARI INI, bukan H-1 -- bisa naik lagi sepanjang hari">🔴 '+currentMonthKey+' (live)</th><th style="text-align:right">Selisih</th><th style="text-align:right">Deal Renewal ('+currentMonthKey+')</th><th style="text-align:right">Deal Upsell ('+currentMonthKey+')</th><th style="text-align:right">Attach Rate</th><th style="text-align:right" title="Run-rate: pace s.d. H-1 diproyeksikan ke akhir bulan (BUKAN dari Potensi Invoice)">📈 Proyeksi Closing</th></tr></thead>'
+      +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap"><table class="summary-tbl" style="font-size:11px">'
+      +'<thead><tr><th>Tim</th><th style="text-align:right">'+prevMonthKey+' 26 (s.d. hari ke-'+Math.min(dayOfMonthLocked,daysInPrevMonth)+')</th><th style="text-align:right">'+currentMonthKey+' 26 (s.d. hari ke-'+dayOfMonthLocked+')</th><th style="text-align:right" title="Revenue s.d. HARI INI, bukan H-1 -- bisa naik lagi sepanjang hari">🔴 '+currentMonthKey+' (live)</th><th style="text-align:right">Selisih</th><th style="text-align:right">Deal Renewal ('+currentMonthKey+')</th><th style="text-align:right">Deal Upsell ('+currentMonthKey+')</th><th style="text-align:right">Attach Rate</th><th style="text-align:right" title="Revenue s.d. H-1 / jumlah outlet unik">ARPU</th><th style="text-align:right" title="Run-rate: pace s.d. H-1 diproyeksikan ke akhir bulan (BUKAN dari Potensi Invoice)">📈 Proyeksi Closing</th></tr></thead>'
       +'<tbody>'+dvRows+'</tbody></table></div></div>'
       +(dvSalesNamesHtml?'<div style="font-size:10px;color:var(--tx3);margin-top:6px">Sales (non-CX, non-SO) '+currentMonthKey+' 26: '+dvSalesNamesHtml+' — nama yang harusnya CX tapi nongol di sini = belum ada / beda ejaan di tab Agent CX</div>':'')
       +'<div class="ov-section-title" style="margin-top:12px">🧩 Jenis Add-On ('+currentMonthKey+' 26 — '+DAILY_VIEW_BUCKETS[dailyViewBucketSel].label+') <span style="font-size:9px;color:var(--tx3)">(dari RENEWAL & UPSELL 2026, ikut dropdown tim di atas)</span></div>'
@@ -4697,11 +4731,15 @@ function renderOverview(){
           +attachCell
           +'<td style="text-align:right">'+fmtRpFull(live.cur.revenue)+'</td>'
           +'<td style="text-align:right">'+live.cur.count+'</td>'
+          +'<td style="text-align:right">'+fmtRpFull(live.cur.arpu)+'</td>'
           +potentialCell
           +'</tr>';
       }).join('');
       var totalRevGrowth=totals.prevRev?Math.round((totals.curRev-totals.prevRev)/totals.prevRev*100):null;
       var totalCntGrowth=totals.prevCnt?Math.round((totals.curCnt-totals.prevCnt)/totals.prevCnt*100):null;
+      // 19 Agu: ARPU Total = revenue live total / qty live total (bukan rata2 ARPU per-agen -- itu
+      // biasnya kalau agen dgn sedikit deal ARPU-nya ekstrem, ngaruh nggak proporsional ke rata2).
+      var totalArpu=totals.liveCnt?Math.round(totals.liveRev/totals.liveCnt):0;
       var totalRow='<tr style="font-weight:700;border-top:2px solid var(--bdr)"><td>Total</td>'
         +'<td style="text-align:right">'+fmtRpFull(totals.prevRev)+'</td>'
         +'<td style="text-align:right">'+fmtRpFull(totals.curRev)+'</td>'
@@ -4712,14 +4750,15 @@ function renderOverview(){
         +(withAttach?'<td></td>':'')
         +'<td style="text-align:right">'+fmtRpFull(totals.liveRev)+'</td>'
         +'<td style="text-align:right">'+totals.liveCnt+'</td>'
+        +'<td style="text-align:right">'+fmtRpFull(totalArpu)+'</td>'
         +'<td style="text-align:right;color:var(--blu)">'+fmtRpFull(totals.potential)+'</td>'
         +'</tr>';
       return rows+totalRow;
     }
     function mtdTableHtml(title,fieldArr,withAttach,potentialKey){
       return'<div style="margin-bottom:14px"><div style="font-size:11px;font-weight:700;color:var(--tx3);margin-bottom:4px">'+title+'</div>'
-        +'<div class="tbl-wrap"><table class="summary-tbl">'
-        +'<thead><tr><th>Agen</th><th style="text-align:right">'+prevMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">'+currentMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">Growth Rp</th><th style="text-align:right">'+prevMonthKey+' Deal</th><th style="text-align:right">'+currentMonthKey+' Deal</th><th style="text-align:right">Growth Deal</th>'+(withAttach?'<th style="text-align:right">Attach Rate</th>':'')+'<th style="text-align:right" title="Revenue realized (paid) bulan ini, s.d. HARI INI -- BEDA dari kolom '+currentMonthKey+' Rp di atas yg dikunci H-1 apple-to-apple">🔴 Revenue ('+currentMonthKey+', live)</th><th style="text-align:right" title="Deal realized (paid) bulan ini, s.d. HARI INI -- BEDA dari kolom '+currentMonthKey+' Deal di atas yg dikunci H-1 apple-to-apple">🔴 Qty (live)</th><th style="text-align:right" title="Invoice DIBUAT bulan ini, status VALIDATED/APPROVED-INVOICE/PROFORMA/REQUESTED-PAYMENT (exclude PAID/EXPIRED/VOID/REJECTED)">Potensi ('+currentMonthKey+', created bulan ini)</th></tr></thead>'
+        +'<div class="tbl-wrap"><table class="summary-tbl" style="font-size:11px">'
+        +'<thead><tr><th>Agen</th><th style="text-align:right">'+prevMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">'+currentMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">Growth Rp</th><th style="text-align:right">'+prevMonthKey+' Deal</th><th style="text-align:right">'+currentMonthKey+' Deal</th><th style="text-align:right">Growth Deal</th>'+(withAttach?'<th style="text-align:right">Attach Rate</th>':'')+'<th style="text-align:right" title="Revenue realized (paid) bulan ini, s.d. HARI INI -- BEDA dari kolom '+currentMonthKey+' Rp di atas yg dikunci H-1 apple-to-apple">🔴 Revenue ('+currentMonthKey+', live)</th><th style="text-align:right" title="Deal realized (paid) bulan ini, s.d. HARI INI -- BEDA dari kolom '+currentMonthKey+' Deal di atas yg dikunci H-1 apple-to-apple">🔴 Qty (live)</th><th style="text-align:right" title="Revenue live / jumlah outlet unik (bukan jumlah deal) -- pola sama ARPU kartu Target Tim">ARPU (live)</th><th style="text-align:right" title="Invoice DIBUAT bulan ini, status VALIDATED/APPROVED-INVOICE/PROFORMA/REQUESTED-PAYMENT (exclude PAID/EXPIRED/VOID/REJECTED)">Potensi ('+currentMonthKey+', created bulan ini)</th></tr></thead>'
         +'<tbody>'+mtdRowsHtml(fieldArr,withAttach,potentialKey)+'</tbody></table></div></div>';
     }
     agentMtdSection='<div class="ov-section"><div class="ov-section-title">📊 MTD per-Agen ('+prevMonthKey+' s.d. hari ke-'+mtdDayCap+' vs '+currentMonthKey+' s.d. hari ke-'+mtdDayCap+') <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1), dua bulan apple-to-apple</span></div>'
