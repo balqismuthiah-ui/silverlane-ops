@@ -190,6 +190,13 @@ tr:hover td{background:var(--sur2)}
 /* Summary table */
 .summary-tbl th{font-size:11px}
 .summary-tbl td{font-size:12px}
+/* 19 Agu (request operator): tabel padat (Daily View per-tim + MTD per-Agen) -- header BOLEH wrap
+(biar kolomnya nggak dipaksa lebar cuma buat nampung teks header), tapi DATA (angka/Rp) JANGAN wrap
+(biar baris nggak jadi tinggi gara2 "Rp" kepisah baris dari angkanya). Scope CUMA .compact-tbl,
+bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap normal. */
+.compact-tbl th{white-space:normal;line-height:1.25;padding:4px 6px}
+.compact-tbl td{white-space:nowrap;padding:4px 6px}
+.compact-tbl td,.compact-tbl th{font-size:10px}
 .ov-section{margin-bottom:20px}
 .ov-section-title{font-size:13px;font-weight:700;color:var(--tx2);margin-bottom:10px}
 /* BULK BAR */
@@ -4469,9 +4476,10 @@ function renderOverview(){
       +'<tbody>'+invTcRowsHtml+'</tbody></table></div></div>'):'');
 
   var dvCurUT=UpsellTeamStore.getMonth(currentMonthKey);
-  // 19 Agu (request operator): compare month Daily View bebas pilih -- dvPrevMonthKey/dvDaysInPrevMonth
-  // LOKAL ke section ini doang (BUKAN nimpa prevMonthKey/daysInPrevMonth global, itu tetap dipakai
-  // section lain kayak MTD per-Agen yg harus tetap bulan-1 fixed). Tahun masih fixed 2026.
+  // 19 Agu (request operator): compare month bebas pilih -- dvPrevMonthKey/dvDaysInPrevMonth
+  // dipakai BARENG oleh Daily View DAN MTD per-Agen (1 state `dvCompareMonth` shared, biar dropdown
+  // di Daily View juga ngatur MTD per-Agen -- konsisten, nggak perlu 2 kontrol beda-beda). Tahun
+  // masih fixed 2026 (scaffolding, belum ada data multi-tahun).
   var dvPrevMonthKey=dvCompareMonth||prevMonthKey;
   var dvDaysInPrevMonth=new Date(2026,MONTH_KEYS.indexOf(dvPrevMonthKey)+1,0).getDate();
   var dvPrevUT=UpsellTeamStore.getMonth(dvPrevMonthKey);
@@ -4661,8 +4669,14 @@ function renderOverview(){
       +dvChartHtml
       +'<div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--tx3)"><span>▬ '+currentMonthKey+' 26 (s.d. kemarin)</span><span>┄ '+dvPrevMonthKey+' 26 (penuh)</span></div>'
       +'</div>'
-      +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap"><table class="summary-tbl" style="font-size:11px">'
-      +'<thead><tr><th>Tim</th><th style="text-align:right">'+dvPrevMonthKey+' 26 (s.d. hari ke-'+Math.min(dayOfMonthLocked,dvDaysInPrevMonth)+')</th><th style="text-align:right">'+currentMonthKey+' 26 (s.d. hari ke-'+dayOfMonthLocked+')</th><th style="text-align:right" title="Revenue s.d. HARI INI, bukan H-1 -- bisa naik lagi sepanjang hari">🔴 '+currentMonthKey+' (live)</th><th style="text-align:right">Selisih</th><th style="text-align:right">Deal Renewal ('+dvPrevMonthKey+')</th><th style="text-align:right">Deal Renewal ('+currentMonthKey+')</th><th style="text-align:right">Deal Upsell ('+dvPrevMonthKey+')</th><th style="text-align:right">Deal Upsell ('+currentMonthKey+')</th><th style="text-align:right">Attach Rate ('+dvPrevMonthKey+')</th><th style="text-align:right">Attach Rate ('+currentMonthKey+')</th><th style="text-align:right" title="Revenue '+dvPrevMonthKey+' s.d. hari ke-'+Math.min(dayOfMonthLocked,dvDaysInPrevMonth)+' / jumlah outlet unik">ARPU ('+dvPrevMonthKey+')</th><th style="text-align:right" title="Revenue s.d. H-1 / jumlah outlet unik">ARPU ('+currentMonthKey+')</th><th style="text-align:right" title="Run-rate: pace s.d. H-1 diproyeksikan ke akhir bulan (BUKAN dari Potensi Invoice)">📈 Proyeksi Closing</th></tr></thead>'
+      +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap"><table class="summary-tbl compact-tbl">'
+      // 19 Agu (request operator): header 2-tingkat (group+sub) -- kolom yg punya pasangan Prev/Cur
+      // (Deal Renewal/Upsell, Attach Rate, ARPU) di-colspan jadi 1 label group, baris ke-2 baru
+      // nyebutin bulan-nya masing2. Jauh lebih ringkas drpd ulang teks penuh 2x per kolom.
+      +'<thead><tr><th rowspan="2">Tim</th><th rowspan="2" style="text-align:right">'+dvPrevMonthKey+' 26<br>(s.d. hari ke-'+Math.min(dayOfMonthLocked,dvDaysInPrevMonth)+')</th><th rowspan="2" style="text-align:right">'+currentMonthKey+' 26<br>(s.d. hari ke-'+dayOfMonthLocked+')</th><th rowspan="2" style="text-align:right" title="Revenue s.d. HARI INI, bukan H-1 -- bisa naik lagi sepanjang hari">🔴 '+currentMonthKey+'<br>(live)</th><th rowspan="2" style="text-align:right">Selisih</th>'
+      +'<th colspan="2" style="text-align:center">Deal Renewal</th><th colspan="2" style="text-align:center">Deal Upsell</th><th colspan="2" style="text-align:center">Attach Rate</th><th colspan="2" style="text-align:center">ARPU</th>'
+      +'<th rowspan="2" style="text-align:right" title="Run-rate: pace s.d. H-1 diproyeksikan ke akhir bulan (BUKAN dari Potensi Invoice)">📈 Proyeksi<br>Closing</th></tr>'
+      +'<tr><th style="text-align:right">'+dvPrevMonthKey+'</th><th style="text-align:right">'+currentMonthKey+'</th><th style="text-align:right">'+dvPrevMonthKey+'</th><th style="text-align:right">'+currentMonthKey+'</th><th style="text-align:right">'+dvPrevMonthKey+'</th><th style="text-align:right">'+currentMonthKey+'</th><th style="text-align:right" title="Revenue '+dvPrevMonthKey+' s.d. hari ke-'+Math.min(dayOfMonthLocked,dvDaysInPrevMonth)+' / jumlah outlet unik">'+dvPrevMonthKey+'</th><th style="text-align:right" title="Revenue s.d. H-1 / jumlah outlet unik">'+currentMonthKey+'</th></tr></thead>'
       +'<tbody>'+dvRows+'</tbody></table></div></div>'
       +(dvSalesNamesHtml?'<div style="font-size:10px;color:var(--tx3);margin-top:6px">Sales (non-CX, non-SO) '+currentMonthKey+' 26: '+dvSalesNamesHtml+' — nama yang harusnya CX tapi nongol di sini = belum ada / beda ejaan di tab Agent CX</div>':'')
       +'<div class="ov-section-title" style="margin-top:12px">🧩 Jenis Add-On ('+currentMonthKey+' 26 — '+DAILY_VIEW_BUCKETS[dailyViewBucketSel].label+') <span style="font-size:9px;color:var(--tx3)">(dari RENEWAL & UPSELL 2026, ikut dropdown tim di atas)</span></div>'
@@ -4687,7 +4701,7 @@ function renderOverview(){
     // 25 Jul (operator): dayCap sekarang dayOfMonthLocked (H-1) + berlaku ke DUA bulan (lihat
     // computeAgentMtdCompare) -- dulu cuma prev yg dicap, cur dibiarin "sampai detik sync terakhir"
     // (jam berapa aja), bikin cur/prev nggak apple-to-apple secara waktu-hari.
-    var mtdDayCap=Math.min(dayOfMonthLocked,daysInPrevMonth);
+    var mtdDayCap=Math.min(dayOfMonthLocked,dvDaysInPrevMonth);
     function mtdGrowthHtml(g){
       if(g==null)return'<span style="color:var(--tx3)">—</span>';
       var clr=g>=0?'var(--grn)':'var(--red)';
@@ -4746,8 +4760,8 @@ function renderOverview(){
     function mtdRowsHtml(fieldArr,withAttach,potentialKey){
       var totals={prevRev:0,curRev:0,prevCnt:0,curCnt:0,liveRev:0,liveCnt:0,potential:0};
       var rows=AGENTS.map(function(ag){
-        var c=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,prevMonthKey,mtdDayCap);
-        var live=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,prevMonthKey,null);
+        var c=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,dvPrevMonthKey,mtdDayCap);
+        var live=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,dvPrevMonthKey,null);
         var attachCell='';
         if(withAttach){
           var ar=computePersonalAttachRate(currentMonthKey,ag);
@@ -4798,13 +4812,17 @@ function renderOverview(){
         +'</tr>';
       return rows+totalRow;
     }
+    // 19 Agu (request operator): header 2-tingkat, pola sama kayak tabel Daily View di atas --
+    // kolom berpasangan Prev/Cur (Revenue MTD, Deal MTD, 🔴Live Revenue/Qty, ARPU) di-colspan jadi
+    // 1 label group, baris ke-2 nyebutin sub-labelnya. compact-tbl = header boleh wrap, data nggak.
     function mtdTableHtml(title,fieldArr,withAttach,potentialKey){
       return'<div style="margin-bottom:14px"><div style="font-size:11px;font-weight:700;color:var(--tx3);margin-bottom:4px">'+title+'</div>'
-        +'<div class="tbl-wrap"><table class="summary-tbl" style="font-size:11px">'
-        +'<thead><tr><th>Agen</th><th style="text-align:right">'+prevMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">'+currentMonthKey+' Rp (s.d. hari ke-'+mtdDayCap+')</th><th style="text-align:right">Growth Rp</th><th style="text-align:right">'+prevMonthKey+' Deal</th><th style="text-align:right">'+currentMonthKey+' Deal</th><th style="text-align:right">Growth Deal</th>'+(withAttach?'<th style="text-align:right">Attach Rate</th>':'')+'<th style="text-align:right" title="Revenue realized (paid) bulan ini, s.d. HARI INI -- BEDA dari kolom '+currentMonthKey+' Rp di atas yg dikunci H-1 apple-to-apple">🔴 Revenue ('+currentMonthKey+', live)</th><th style="text-align:right" title="Deal realized (paid) bulan ini, s.d. HARI INI -- BEDA dari kolom '+currentMonthKey+' Deal di atas yg dikunci H-1 apple-to-apple">🔴 Qty (live)</th><th style="text-align:right" title="Revenue '+prevMonthKey+' (s.d. hari ke-'+mtdDayCap+') / jumlah outlet unik -- apple-to-apple sama kolom Rp/Deal '+prevMonthKey+' di kiri">ARPU ('+prevMonthKey+')</th><th style="text-align:right" title="Revenue live / jumlah outlet unik (bukan jumlah deal) -- pola sama ARPU kartu Target Tim">ARPU (live)</th><th style="text-align:right" title="Invoice DIBUAT bulan ini, status VALIDATED/APPROVED-INVOICE/PROFORMA/REQUESTED-PAYMENT (exclude PAID/EXPIRED/VOID/REJECTED)">Potensi ('+currentMonthKey+', created bulan ini)</th></tr></thead>'
+        +'<div class="tbl-wrap"><table class="summary-tbl compact-tbl">'
+        +'<thead><tr><th rowspan="2">Agen</th><th colspan="2" style="text-align:center">Revenue MTD (s.d. h-'+mtdDayCap+')</th><th rowspan="2" style="text-align:right">Growth<br>Rp</th><th colspan="2" style="text-align:center">Deal MTD (s.d. h-'+mtdDayCap+')</th><th rowspan="2" style="text-align:right">Growth<br>Deal</th>'+(withAttach?'<th rowspan="2" style="text-align:right">Attach<br>Rate</th>':'')+'<th colspan="2" style="text-align:center" title="Realized (paid) bulan ini s.d. HARI INI -- BEDA dari kolom MTD di kiri yg dikunci H-1 apple-to-apple">🔴 Live</th><th colspan="2" style="text-align:center">ARPU</th><th rowspan="2" style="text-align:right" title="Invoice DIBUAT bulan ini, status VALIDATED/APPROVED-INVOICE/PROFORMA/REQUESTED-PAYMENT (exclude PAID/EXPIRED/VOID/REJECTED)">Potensi<br>('+currentMonthKey+')</th></tr>'
+        +'<tr><th style="text-align:right">'+dvPrevMonthKey+'</th><th style="text-align:right">'+currentMonthKey+'</th><th style="text-align:right">'+dvPrevMonthKey+'</th><th style="text-align:right">'+currentMonthKey+'</th><th style="text-align:right">Revenue</th><th style="text-align:right">Qty</th><th style="text-align:right" title="Revenue '+dvPrevMonthKey+' (s.d. h-'+mtdDayCap+') / jumlah outlet unik">'+dvPrevMonthKey+'</th><th style="text-align:right" title="Revenue live / jumlah outlet unik">live</th></tr></thead>'
         +'<tbody>'+mtdRowsHtml(fieldArr,withAttach,potentialKey)+'</tbody></table></div></div>';
     }
-    agentMtdSection='<div class="ov-section"><div class="ov-section-title">📊 MTD per-Agen ('+prevMonthKey+' s.d. hari ke-'+mtdDayCap+' vs '+currentMonthKey+' s.d. hari ke-'+mtdDayCap+') <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1), dua bulan apple-to-apple</span></div>'
+    agentMtdSection='<div class="ov-section"><div class="ov-section-title">📊 MTD per-Agen ('+dvPrevMonthKey+' s.d. hari ke-'+mtdDayCap+' vs '+currentMonthKey+' s.d. hari ke-'+mtdDayCap+') <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1), dua bulan apple-to-apple -- bulan pembanding ikut dropdown "vs" di Daily View</span></div>'
       +(!mtdCurUT
         ?'<div class="card empty">Belum ada data — klik "📥 Sync Upsell Tim" di tab Master (pilih bulan '+currentMonthKey+' dulu)</div>'
         :'<div class="card">'+mtdTableHtml('💰 Renewal','renewalsRaw',true,'renewal')+mtdTableHtml('📈 Upsell','upsellRaw',false,'upsell')+'</div>')
