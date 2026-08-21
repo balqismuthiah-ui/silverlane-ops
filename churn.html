@@ -3062,8 +3062,19 @@ function _targetExistsOnServer(id){
 }
 // CLM-11 Fase E: tarik Targets lintas-akun leader dari GAS (PropertiesService per-bulan). Best-effort
 // background -- gagal (offline/timeout) diam-diam, cache lokal (localStorage) tetap dipakai apa adanya.
+// 21 Agu (operator, insiden GAS overload di tengah jalan): dipanggil tiap kali nav ke tab
+// Overview/Kelola Target (lihat renderTab) -- tanpa throttle ini nembak GAS ?action=targets SETIAP
+// klik tab, nambah beban ke backend yang lagi keteteran (executions numpuk 15-36dtk). Throttle 3
+// menit (pola sama fin_ut_autosync_ts_v1) -- masih jauh lebih fresh dari "2 hari nggak sync" kasus
+// awal, tapi nggak nembak GAS berkali-kali per sesi cuma krn user pindah-pindah tab.
+var TARGETS_AUTOSYNC_TS_KEY='targets_autosync_ts_v1';
 function syncTargetsFromServer(){
   if(!Auth.getToken())return;
+  try{
+    var last=parseInt(localStorage.getItem(TARGETS_AUTOSYNC_TS_KEY)||'0',10);
+    if(Date.now()-last<3*60*1000)return;
+    localStorage.setItem(TARGETS_AUTOSYNC_TS_KEY,String(Date.now()));
+  }catch(e){}
   _gasGet('targets').then(function(json){
     if(!json||json.ok===false)return;
     Targets.save(json.data||[]);
