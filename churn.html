@@ -9538,7 +9538,10 @@ function initAuth(){
   function sendOtpRequest(email,onDone){
     function attempt(n){
       var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
-      var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
+      // 21 Agu (operator, insiden GAS overload): 20dtk kependekan pas GAS lagi lambat (Executions log
+      // kebukti langsung 15-36dtk buat 1 eksekusi doang) -- naik ke 45dtk biar nggak abort premature
+      // pas server SEBENARNYA masih jalan (bukan mati), cuma lambat.
+      var timer=ctrl?setTimeout(function(){ctrl.abort();},45000):null;
       var opts={method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'requestOtp',email:email})};
       if(ctrl)opts.signal=ctrl.signal;
       fetch(GAS_URL,opts)
@@ -9615,7 +9618,13 @@ function initAuth(){
     btn.disabled=true;btn.textContent='Memverifikasi...';
     function attempt(n){
       var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
-      var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
+      // 21 Agu (operator, insiden GAS overload -- Novianty ke-lockout 3x OTP baru berturut-turut):
+      // 20dtk kependekan buat kondisi lambat SEKARANG (Executions log kebukti 15-36dtk/eksekusi).
+      // Abort premature di sini paling berbahaya dibanding endpoint lain -- verifyOtp BUKAN idempotent
+      // (lihat catatan residual-risk di bawah), abort SEBELUM server kelar bikin retry berikutnya
+      // ketemu otp_invalid padahal kode aslinya sukses. Naik ke 45dtk ngurangin (bukan ngilangin
+      // total) peluang race ini pas GAS emang masih lambat, bukan mati.
+      var timer=ctrl?setTimeout(function(){ctrl.abort();},45000):null;
       var opts={method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'verifyOtp',email:pendingEmail,otp:otp})};
       if(ctrl)opts.signal=ctrl.signal;
       fetch(GAS_URL,opts)
