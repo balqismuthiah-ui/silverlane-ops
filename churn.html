@@ -3409,7 +3409,7 @@ var GC_CACHE_KEY='klopos_gcwatchlist_v1';
 var gcWatchlistData=(function(){try{return JSON.parse(localStorage.getItem(GC_CACHE_KEY)||'[]');}catch(e){return[];}})();
 var gcFlagMap={};
 var GC_NEEDCHECK_KATEGORI='Need check Get Contact'; // CLM-09: samain persis string GAS
-var GAS_URL='https://script.google.com/macros/s/AKfycbwM3SwvRlObyQCvmFjx9gaRASEQaMsFDXVPYJDZD-Nu6_lDviBQlUMNEYVp1dBlc7JVOw/exec'; // 12 Agu: emergency redeploy "CODE AI 2" (echo 404 meluas ke action=data/assignments/requestOtp di project lama, brief Ubay)
+var GAS_URL='https://script.google.com/macros/s/AKfycbyuzEjH2n5o0lMipJaouFOb-qIECYi-J2MbNWJ4h6XWuL7lRa6n8v5r44ltxesz46OPtw/exec'; // 22 Agu: pindah ke deployment "NEWNEW" -- deployment lama (di atas) ternyata TERPISAH dari NEWNEW (nggak ikut ke-update pas redeploy versi baru), padahal churn.html masih manggil yang lama selama ini. NEWNEW yang bawa fix getData() baca KLOPOS langsung + filter ID-Outlet-kosong (lihat scoping_opsi3_leg_klopos.md). POST masih 405 di NEWNEW juga -- belum kefix, itu issue terpisah.
 var syncMonthFilter='';
 // (QA round 2b, 13 Jul: var upsellTeamViewSel dihapus -- section Multi-team Upsell Tracker dilebur
 // ke Daily View, view-nya sekarang dropdown dailyViewBucketSel. UPSELL_TEAM_VIEWS/computeUpsellTeamView
