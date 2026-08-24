@@ -3390,6 +3390,10 @@ var blastSearch='',BLAST_DISPLAY_CAP=500,blastPage=0;
 // (bulan langganan habis). + tarikCp = "Jadwal Blast": FILTER TABEL WYSIWYG (all/today/H-3/H+2/H+8);
 // yg keliatan di tabel = persis yg bakal ke-CSV. Semua ikut ke blastFilteredRows (dipakai tabel + CSV + Pilih Semua).
 var blastTerminFilter=[],blastExpMonthFilter=[],blastHwczFilter=[],tarikCp='all';
+// 22 Agu (operator): filter tambahan leader-only -- range tanggal Expired Date HISTORICAL (beda dari
+// blastExpMonthFilter yg berbasis bulan dari Expired Date LATEST). Pola sama invStartDate/invEndDate
+// (Invoice Summary, line ~3437).
+var blastExpHistFrom='',blastExpHistTo='';
 // CLM-05 (operator 14 Jul): filter Respon (mis. saring/kecualiin RESPON NEGATIF) + Last Blast
 // (belum pernah vs udah pernah diblast) -- biar bisa jeda blast & nggak nge-spam outlet yg sama.
 var blastRespFilter=[],blastLastBlastFilter=[];
@@ -5853,6 +5857,15 @@ function blastFilteredRows(){
   // CLM-05 (operator 14 Jul): filter Termin (Bulanan/Tahunan) + Bulan Expired. Available agen+leader.
   if(blastTerminFilter.length)recs=recs.filter(function(r){return blastTerminFilter.indexOf(r.termin)>=0;});
   if(blastExpMonthFilter.length)recs=recs.filter(function(r){var s=localDateStr(r.expiryDate);return s&&blastExpMonthFilter.indexOf(MONTH_KEYS[parseInt(s.slice(5,7),10)-1])>=0;});
+  // 22 Agu (operator): range tanggal Exp (Historical), leader-only, beda dari Bln Expired di atas
+  // (yg berbasis Expired Date LATEST + bucket bulan doang, bukan range tanggal presisi).
+  if(isSup&&(blastExpHistFrom||blastExpHistTo))recs=recs.filter(function(r){
+    var s=localDateStr(r.expiredDateHistorical);
+    if(!s)return false;
+    if(blastExpHistFrom&&s<blastExpHistFrom)return false;
+    if(blastExpHistTo&&s>blastExpHistTo)return false;
+    return true;
+  });
   if(blastHwczFilter.length)recs=recs.filter(function(r){return blastHwczFilter.indexOf(String(r.hwcz||'').trim())>=0;});
   // CLM-05 (operator 14 Jul): filter Respon -- '__none__' = belum ada respon sama sekali. Kepake buat
   // nyaring/ngecualiin RESPON NEGATIF biar nggak diblast lagi (udah nolak, jangan di-spam).
@@ -6093,6 +6106,15 @@ function renderBlast(){
     +(isSup?('<div class="frow" style="margin-bottom:10px;gap:8px;flex-wrap:wrap">'
       +renderMultiSelect('blastAgentFilter','Agen',blastAgentOptsArr,blastAgentFilter)
       +'<span style="font-size:11px;color:var(--tx3);align-self:center">Kosongkan = semua agen · Pilih = tampilin agen itu aja (mis. pilih Sarah = cuma data Sarah)</span>'
+      +'</div>'
+      // 22 Agu (operator): range tanggal Exp (Historical), leader-only.
+      +'<div class="frow" style="margin-bottom:10px;gap:8px;flex-wrap:wrap;align-items:center">'
+      +'<span style="font-size:12px;color:var(--tx2)">Exp (Historical):</span>'
+      +'<input type="date" id="blast-exphist-from" value="'+blastExpHistFrom+'" style="padding:5px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:12px">'
+      +'<span style="font-size:12px;color:var(--tx3)">s.d.</span>'
+      +'<input type="date" id="blast-exphist-to" value="'+blastExpHistTo+'" style="padding:5px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur);color:var(--tx);font-size:12px">'
+      +(blastExpHistFrom||blastExpHistTo?'<button class="btn btn-sec" id="blast-exphist-clear" style="font-size:11px;padding:4px 8px">✕ Clear</button>':'')
+      +'<span style="font-size:11px;color:var(--tx3)">Filter berdasarkan tanggal Expired Date Historical (bukan Latest) — kosongkan salah satu buat open-ended</span>'
       +'</div>'):'')
     // CLM-05 UX (operator 13 Jul): search outlet/nomor/ID (cari nomor exploded 1 outlet) + counter.
     +'<div class="frow" style="margin-bottom:8px;gap:8px;align-items:center">'
@@ -9097,9 +9119,10 @@ tabContent.addEventListener('click',function(e){
     var selRows=blastFilteredRows().filter(function(row){return!row.isGC&&!row.isDummy;});
     selRows.forEach(function(row){csvSelectedIds.add(row.key);});
     renderBlast();
-    toast(selRows.length+' nomor bersih dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||blastHwczFilter.length||blastRespFilter.length||blastLastBlastFilter.length||(tarikCp&&tarikCp!=='all')||blastSearch||blastHidePaid)?' (sesuai filter aktif)':''));
+    toast(selRows.length+' nomor bersih dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||blastHwczFilter.length||blastRespFilter.length||blastLastBlastFilter.length||(tarikCp&&tarikCp!=='all')||blastSearch||blastHidePaid||blastExpHistFrom||blastExpHistTo)?' (sesuai filter aktif)':''));
   }
   else if(tgt.id==='desel-all-blast-btn'){csvSelectedIds.clear();renderBlast();}
+  else if(tgt.id==='blast-exphist-clear'){blastExpHistFrom='';blastExpHistTo='';blastPage=0;renderBlast();}
   else if(tgt.id==='blast-prev'){if(blastPage>0){blastPage--;refreshBlastBody();}}
   else if(tgt.id==='blast-next'){blastPage++;refreshBlastBody();}
   else if(tgt.id==='month-gate-all'){MONTH_KEYS.forEach(function(m){BlastMonthGate.setReleased(m,true);});BlastMonthGate.push();toast('Semua bulan dibuka ke agen');renderBlast();}
@@ -9329,6 +9352,8 @@ tabContent.addEventListener('input',function(e){
   if(tgt.id==='inv-day'){invDay=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='inv-start-date'){invStartDate=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='inv-end-date'){invEndDate=tgt.value;refreshInvoiceBody();}
+  if(tgt.id==='blast-exphist-from'){blastExpHistFrom=tgt.value;blastPage=0;renderBlast();}
+  if(tgt.id==='blast-exphist-to'){blastExpHistTo=tgt.value;blastPage=0;renderBlast();}
   if(tgt.id==='resp-search'){respSearch=tgt.value;respPage=0;renderResponseResults();}
   if(tgt.id==='wl-search'){wlSearch=tgt.value;renderWatchlistTable();}
   if(tgt.id==='wl-new-phone'){
