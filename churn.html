@@ -5825,6 +5825,20 @@ function blastFilteredRows(){
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
   var recs=isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;});
+  // 22 Agu (operator): dedupe per outlet GLOBAL -- 1 outlet bisa punya banyak record historis (1 per
+  // siklus renewal, recId=outletId+Expired Date Historical, by design sejak Spec CLM-01 awal proyek).
+  // Blast WABA sebelum ini NOL dedup -- 1 outlet dengan N siklus lama nongol N kali di tabel/CSV blast,
+  // padahal cuma siklus yg LAGI berjalan yg relevan buat di-blast. Tie-break expiryDate (Expired Date
+  // Latest) paling baru menang -- pola sama kayak myJourneyRecsByOutletId() (line ~1425). Dipasang di
+  // KEDUA titik yg bangun pool blast (tabel + CSV builder) biar CSV nggak bisa lolos duplikat-per-outlet
+  // walau ada state csvSelectedIds yg stale dari sebelum fix ini.
+  var _blastLatestByOutlet={};
+  recs.forEach(function(r){
+    if(!r.outletId)return;
+    var prev=_blastLatestByOutlet[r.outletId];
+    if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))_blastLatestByOutlet[r.outletId]=r;
+  });
+  recs=recs.filter(function(r){return !r.outletId||_blastLatestByOutlet[r.outletId]===r;});
   recs=applyBlastFullGate(recs,isSup);
   // Filter agen cuma relevan buat leader (agen biasa udah ke-scope ke case-nya sendiri di atas).
   // CLM-05 UX (operator 13 Jul): DIBALIK dari EXCLUDE (AC-A4-1) jadi INCLUDE. Alasan: exclude bikin
@@ -7623,6 +7637,20 @@ function openCsvModal(){
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
   var recs=isSup?d.records:d.records.filter(function(r){return r.assignedAgent===me;});
+  // 22 Agu (operator): dedupe per outlet GLOBAL -- 1 outlet bisa punya banyak record historis (1 per
+  // siklus renewal, recId=outletId+Expired Date Historical, by design sejak Spec CLM-01 awal proyek).
+  // Blast WABA sebelum ini NOL dedup -- 1 outlet dengan N siklus lama nongol N kali di tabel/CSV blast,
+  // padahal cuma siklus yg LAGI berjalan yg relevan buat di-blast. Tie-break expiryDate (Expired Date
+  // Latest) paling baru menang -- pola sama kayak myJourneyRecsByOutletId() (line ~1425). Dipasang di
+  // KEDUA titik yg bangun pool blast (tabel + CSV builder) biar CSV nggak bisa lolos duplikat-per-outlet
+  // walau ada state csvSelectedIds yg stale dari sebelum fix ini.
+  var _blastLatestByOutlet={};
+  recs.forEach(function(r){
+    if(!r.outletId)return;
+    var prev=_blastLatestByOutlet[r.outletId];
+    if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))_blastLatestByOutlet[r.outletId]=r;
+  });
+  recs=recs.filter(function(r){return !r.outletId||_blastLatestByOutlet[r.outletId]===r;});
   recs=applyBlastFullGate(recs,isSup);
   // CLM-05 (operator 14 Jul): tabel Blast & CSV SAMA granularitas = per-nomor-alternatif. Seleksi
   // (csvSelectedIds) = key per-nomor (id_nomor); CSV = TEPAT nomor yg dipilih. Nomor internal/GC & dummy
