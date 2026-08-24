@@ -9098,7 +9098,14 @@ tabContent.addEventListener('click',function(e){
     var tpls2=Templates.getAll();var tpl2=tpls2.find(function(t){return t.id===tplId2;});
     if(!tpl2){toast('Template tidak ditemukan');return;}
     var me2t=Auth.getActive();
-    var normTest2=normPhone(testPhone2.trim());
+    // 22 Agu (operator): FIX -- sebelumnya nomorTest2 langsung di-normPhone() dari string MENTAH tanpa
+    // di-split dulu, jadi multi-nomor (pisah spasi/koma) ke-strip semua non-digit terus numpuk jadi 1
+    // angka gabungan (bukan N baris terpisah). Samain pola split+dedup yang udah bener dipakai di CSV
+    // builder utama (line ~7798).
+    var _seenT2={};
+    var testPhones2=testPhone2.split(/[\s,;]+/).map(function(x){return x.trim();}).filter(Boolean)
+      .map(function(x){return normPhone(x);}).filter(function(p){if(!p||_seenT2[p])return false;_seenT2[p]=1;return true;});
+    if(!testPhones2.length){toast('Nomor test tidak valid');return;}
     var headers2=['name','e-mail','phone_number'].concat((tpl2.variableMap||[]).map(function(vm){return String(vm.varNum);}));
     var testVars2=(tpl2.variableMap||[]).map(function(vm){
       var val='';
@@ -9109,9 +9116,12 @@ tabContent.addEventListener('click',function(e){
       else val='[TEST]';
       return cleanCsvField(val);
     });
-    var csvTest=[headers2.map(cleanCsvField).join(','),[cleanCsvField('[TEST] '+me2t),'test@majoo.id',cleanCsvField(normTest2)].concat(testVars2).join(',')].join('\n');
+    var testRows2=testPhones2.map(function(p){
+      return[cleanCsvField('[TEST] '+me2t),'test@majoo.id',cleanCsvField(p)].concat(testVars2).join(',');
+    });
+    var csvTest=[headers2.map(cleanCsvField).join(',')].concat(testRows2).join('\n');
     downloadCSV(csvTest,'waba_test_'+new Date().toISOString().slice(0,10)+'.csv');
-    toast('CSV test didownload (1 baris)');
+    toast('CSV test didownload ('+testPhones2.length+' baris)');
   }
   else if(tgt.id==='sel-all-blast-btn'){
     // CLM-05 (operator 14 Jul): Pilih Semua = pilih nomor BERSIH doang (skip internal/GC + dummy) dari
