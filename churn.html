@@ -3406,6 +3406,10 @@ var mPage=0,wsPage=0,respPage=0;
 var wlSearch='';
 var mLifecycle=[]; // CLM-08 (e): multi-select
 var mBulan=[]; // CLM-08 (e): multi-select
+// 22 Agu (operator): filter Status Visit TC -- kunjungan langsung tim TC/trainer, field TERPISAH
+// dari response biasa (r.visitTC, bukan r.response). Options dibangun dinamis dari nilai yang
+// benar-benar ada di data (lihat masterVisitTcOpts di dekat masterRows()).
+var mVisitTc=[];
 // CLM-09: GC Watchlist bidirectional -- gcWatchlistData = array mentah dari ?action=gcwatchlist
 // (SEMUA entry non-Not-Found, termasuk need-check), gcFlagMap = turunan buat auto-flag badge doang
 // (confirmed/Done + belum di-resolve). Cache localStorage biar nggak blank pas reload sebelum sync jalan.
@@ -5118,6 +5122,8 @@ function masterRows(d){
     }
     if(mResp.length&&!mResp.some(function(v){return v==='__none__'?!(r.response&&r.response.category):(r.response&&r.response.category===v);}))return false;
     if(mPayment.length&&!mPayment.some(function(v){return v==='__none__'?!r.paymentStatus:r.paymentStatus===v;}))return false;
+    // 22 Agu (operator): filter Status Visit TC -- field TERPISAH (r.visitTC), bukan r.response.
+    if(mVisitTc.length&&!mVisitTc.some(function(v){return v==='__none__'?!r.visitTC:(r.visitTC&&r.visitTC.statusVisit===v);}))return false;
     return true;
   });
   // Simpan di var modul (bukan cuma tulis ke DOM) -- dipake renderMaster buat isi #master-count
@@ -5171,6 +5177,7 @@ function renderMaster(){
   var payOptsArr=Object.keys(PAYMENT_STATUS).map(function(p){return{value:p,label:PAYMENT_STATUS[p].label};})
     .concat([{value:'__none__',label:'Belum Ada Status'}]);
   var lcOptsArr=masterLifecycleOpts();
+  var visitTcOptsArr=masterVisitTcOpts();
   var monthOpts='<option value="">Semua Bulan (Jan–Des 26)</option>';
   ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].forEach(function(m){
     monthOpts+='<option value="'+m+'"'+(syncMonthFilter===m?' selected':'')+'>'+m+' 26</option>';
@@ -5204,6 +5211,7 @@ function renderMaster(){
     +'<button class="btn btn-blu" id="sync-financials-btn" style="padding:5px 12px;font-size:12px" title="Import Revenue/MRR/ARPU/Upsell dari RENEWAL & UPSELL 2026 (sesuai bulan sync)">📥 Sync Financials</button>'
     +'<button class="btn btn-blu" id="sync-upsellteam-btn" style="padding:5px 12px;font-size:12px" title="Import Multi-team Upsell Tracker (roster+renewal+upsell per add-on) dari RENEWAL & UPSELL 2026 (sesuai bulan sync)">📥 Sync Upsell Tim</button>'
     +'<button class="btn btn-blu" id="sync-invoicetracker-btn" style="padding:5px 12px;font-size:12px" title="Import Invoice Tracker (semua invoice riil) dari Data Invoice CX -- TIDAK terikat Sync Bulan">📥 Sync Invoice Tracker</button>'
+    +'<button class="btn btn-blu" id="sync-visittc-btn" style="padding:5px 12px;font-size:12px" title="Import kunjungan langsung tim TC/trainer dari sheet Cek Visit TC -- TIDAK terikat Sync Bulan">📥 Sync Visit TC</button>'
     +'<button class="btn btn-sec" id="sync-3m-btn" style="padding:5px 12px;font-size:12px" title="Sync 2 bulan ke belakang s/d Desember (bukan Jan-Des penuh -- storage browser nggak muat 1 tahun)">📅 Sync Semua Bulan</button>'
     +syncInfo+lastSyncInfo
     +'<label class="btn btn-sec" style="cursor:pointer">📁 Import CSV<input type="file" id="csv-import" accept=".csv" style="display:none"></label>'
@@ -5218,6 +5226,7 @@ function renderMaster(){
     +renderMultiSelect('mBlast','Status Blast',blastOptsArr,mBlast)
     +renderMultiSelect('mResp','Respon',respOptsArr,mResp)
     +renderMultiSelect('mPayment','Status Pembayaran',payOptsArr,mPayment)
+    +renderMultiSelect('mVisitTc','Status Visit TC',visitTcOptsArr,mVisitTc)
     +'<span id="master-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+masterCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
@@ -7143,6 +7152,25 @@ function openDetail(id){
         }).join('')
         +'</div>';
     })()
+    // 22 Agu (operator): section Visit TC -- field TERPISAH (r.visitTC), bukan digabung ke Kategori/
+    // Detail di atas (yang sumbernya blast response biasa). Flag "double" MUNCUL DI SINI kalau case
+    // ini juga punya response biasa (r.response.category keisi) -- bukan dihapus otomatis, cuma
+    // ditandain biar keliatan pas dicek manual (per keputusan operator: flag, jangan hapus).
+    +(r.visitTC?('<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--bdr)">'
+      +'<div style="font-size:11px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">🚶 Visit TC</div>'
+      +(resp.category?'<div style="font-size:11px;color:var(--org);background:var(--sur2);border:1px solid var(--org);border-radius:var(--rs);padding:6px 8px;margin-bottom:8px">⚠ Case ini juga punya response biasa (Report) — kemungkinan sama-sama tercatat, cek histori sebelum dipakai buat laporan churn reason.</div>':'')
+      +'<table style="width:100%;font-size:12px">'
+      +'<tr><td style="color:var(--tx3);width:45%">Nama CS/Trainer</td><td>'+(r.visitTC.csName||'—')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">Program</td><td>'+(r.visitTC.program||'—')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">Status Visit</td><td>'+(r.visitTC.statusVisit||'—')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">Alasan Churn</td><td>'+(r.visitTC.alasanChurn||'—')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">Note Tambahan</td><td>'+(r.visitTC.noteTambahan||'—')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">Ingin Tetap Berlangganan</td><td>'+(r.visitTC.inginTetap||'—')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">PIC Ditemui</td><td>'+(r.visitTC.picNama||'—')+(r.visitTC.picRole?' ('+r.visitTC.picRole+')':'')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">PIC Dapat Dihubungi</td><td>'+(r.visitTC.picKontakNama||'—')+(r.visitTC.picKontak?' — '+r.visitTC.picKontak:'')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">Kompetitor</td><td>'+(r.visitTC.kompetitor||'—')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">Foto Visit</td><td>'+(r.visitTC.fotoVisit?'<a href="'+r.visitTC.fotoVisit+'" target="_blank" style="color:var(--pri)">Lihat ↗</a>':'—')+'</td></tr>'
+      +'</table></div>'):'')
     +(r.responseAudit&&r.responseAudit.length
       ?'<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--bdr)">'
         +'<div style="font-size:11px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">🕘 Riwayat Perubahan</div>'
@@ -8644,6 +8672,12 @@ function masterLifecycleOpts(){
   var set={};Store.get().records.forEach(function(r){var l=String(r.lifecycleStatus||'').trim();if(l)set[l]=1;});
   return Object.keys(set).sort(function(a,b){var ia=LIFECYCLE_ORDER.indexOf(a),ib=LIFECYCLE_ORDER.indexOf(b);if(ia<0)ia=99;if(ib<0)ib=99;return ia-ib||a.localeCompare(b);}).map(function(l){return{value:l,label:l};});
 }
+// 22 Agu (operator): opsi filter Status Visit TC dari nilai distinct r.visitTC.statusVisit yang
+// BENERAN ada di data (bukan daftar hardcoded -- sheet Visit TC bisa nambah kategori baru kapan aja).
+function masterVisitTcOpts(){
+  var set={};Store.get().records.forEach(function(r){if(r.visitTC&&r.visitTC.statusVisit)set[r.visitTC.statusVisit]=1;});
+  return Object.keys(set).sort().map(function(v){return{value:v,label:v};}).concat([{value:'__none__',label:'Belum ada Visit TC'}]);
+}
 // CLM-05 (operator 14 Jul): opsi filter Potensi (HWCZ = Hot/Warm/Cold/Zombie) dari nilai distinct di records.
 var HWCZ_ORDER=['Hot','Warm','Cold','Zombie'];
 function blastHwczOpts(){
@@ -8784,6 +8818,53 @@ function syncInvoiceTrackerOnly(){
     }).then(function(){
       var b=document.getElementById('sync-invoicetracker-btn');
       if(b){b.disabled=false;b.textContent='📥 Sync Invoice Tracker';}
+    });
+}
+
+// 22 Agu (operator): sync-down Visit TC (kunjungan langsung tim TC/trainer ke gerai). SENGAJA disimpen
+// sebagai field TERPISAH r.visitTC (bukan digabung ke r.response) -- ini bukan blast response, jangan
+// numpuk semantik. Matching pakai 3-tier SAMA PERSIS kayak mergeRows() assignment (compound key ->
+// outletId langsung -> outletId hasil slice 5 digit terakhir dari Join), krn "Join" di sheet Visit TC
+// udah pakai konvensi yang sama.
+function syncVisitTCOnly(){
+  var btn=document.getElementById('sync-visittc-btn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+  toast('Mengambil data Visit TC…',4000);
+
+  var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+  var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
+  var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
+  var url=GAS_URL+'?action=visittc&token='+encodeURIComponent(Auth.getToken()||'');
+
+  fetch(url,opts)
+    .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(json){
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
+      var d=Store.get();
+      var idx={},outletIdx={};
+      d.records.forEach(function(r){idx[r.id]=r;if(r.outletId)outletIdx[String(r.outletId)]=r;});
+      var matched=0,notFound=0;
+      (json.data||[]).forEach(function(row){
+        var jc=String(row.joinKey||'').trim();if(!jc)return;
+        var outletPart=jc.length>5?jc.slice(0,-5):'';
+        var rec=idx[jc]||outletIdx[jc]||(outletPart?outletIdx[outletPart]:null);
+        if(!rec){notFound++;return;}
+        matched++;
+        rec.visitTC={
+          csName:row.csName,outletName:row.outletName,program:row.program,fotoVisit:row.fotoVisit,
+          statusVisit:row.statusVisit,alasanChurn:row.alasanChurn,noteTambahan:row.noteTambahan,
+          inginTetap:row.inginTetap,picNama:row.picNama,picRole:row.picRole,
+          picKontakNama:row.picKontakNama,picKontak:row.picKontak,kompetitor:row.kompetitor
+        };
+      });
+      Store.set(d);
+      renderTab(currentTab);
+      toast('Visit TC tersimpan: '+matched+' outlet ('+notFound+' tdk match)',6000);
+    }).catch(function(err){
+      toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Visit TC: '+err.message,5000);
+    }).then(function(){
+      var b=document.getElementById('sync-visittc-btn');
+      if(b){b.disabled=false;b.textContent='📥 Sync Visit TC';}
     });
 }
 
@@ -9068,6 +9149,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='sync-financials-btn')syncFinancialsOnly();
   else if(tgt.id==='sync-upsellteam-btn')syncUpsellTeamOnly();
   else if(tgt.id==='sync-invoicetracker-btn')syncInvoiceTrackerOnly();
+  else if(tgt.id==='sync-visittc-btn')syncVisitTCOnly();
   else if(tgt.id==='sync-3m-btn')syncThreeMonths();
   else if(tgt.id==='reset-records-btn'){
     if(!confirm('Hapus SEMUA records? Tindakan ini tidak bisa dibatalkan.\n(Response & blast history tidak akan terhapus)'))return;
@@ -9214,7 +9296,7 @@ function refreshRespResults(){respPage=0;renderResponseResults();}
 // Peta nama var-filter -> fungsi refresh yg sesuai, dipake handler checkbox .msel-opt generik.
 var MSEL_REFRESH={
   mAgent:refreshMasterBody,mBulan:refreshMasterBody,mLifecycle:refreshMasterBody,
-  mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,
+  mBlast:refreshMasterBody,mResp:refreshMasterBody,mPayment:refreshMasterBody,mVisitTc:refreshMasterBody,
   wsAgentFilter:refreshWsBody,wsPayment:refreshWsBody,
   wsMonthFilter:refreshWsBody,wsTerminFilter:refreshWsBody,wsHwczFilter:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
