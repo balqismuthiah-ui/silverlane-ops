@@ -605,6 +605,7 @@ var SUMMARY_CHURN_REVERSE=(function(){
   Object.keys(SUMMARY_CHURN_BUCKETS).forEach(function(bucket){
     SUMMARY_CHURN_BUCKETS[bucket].forEach(function(det){m[det]=bucket;});
   });
+  m['AKUN BARU']='Masih Menggunakan majoo'; // alias data lama (pre-taxonomy-rebuild), sebelum ada prefix "INDIKASI"
   return m;
 })();
 // Paid-detail values yang exempt dari evidence gate & trigger auto paymentStatus='paid'
@@ -658,10 +659,13 @@ function applyAutoPaidResponse(r){
 // 22 Agu (operator, konfirmasi eksplisit): "TC menang" kalau visit TC punya hasil BEDA dari response
 // existing -- dianggap evidence PALING BARU, mirip pola auto-paid di atas. alasanChurn dari TC sebagian
 // besar SUDAH pakai taksonomi yang sama (match langsung), 2 rename khusus buat frasa TC yang beda kata
-// tapi sama makna. Kalau nggak match apa pun (termasuk "Outlet Tidak Ditemukan" yang alasanChurn-nya
-// kosong) -- JANGAN maksa nebak (0 jujur), biarin manual, nggak di-override sama sekali.
-function tcAlasanToRespDetail(alasanChurn){
-  var a=String(alasanChurn||'').trim();
+// tapi sama makna. statusVisit "Outlet Tidak Ditemukan" (alasanChurn-nya biasanya kosong) di-treat
+// sebagai OUTLET TUTUP PERMANEN (keputusan operator: masuk grup "Outlet Tutup" di Summary Churn).
+// Kalau nggak match apa pun -- JANGAN maksa nebak (0 jujur), biarin manual, nggak di-override sama sekali.
+function tcAlasanToRespDetail(visitTC){
+  var status=String(visitTC.statusVisit||'').trim();
+  if(status==='Outlet Tidak Ditemukan')return'OUTLET TUTUP PERMANEN';
+  var a=String(visitTC.alasanChurn||'').trim();
   if(!a)return null;
   if(a.indexOf('MASIH MENGGUNAKAN MAJOO')===0)return'INDIKASI AKUN BARU';
   if(a.indexOf('OUTLET TUTUP SEMENTARA')===0)return'OUTLET TUTUP SEMENTARA';
@@ -670,13 +674,14 @@ function tcAlasanToRespDetail(alasanChurn){
 }
 function computeAutoTcResponse(r){
   if(!r.visitTC)return null;
-  var det=tcAlasanToRespDetail(r.visitTC.alasanChurn);
+  var det=tcAlasanToRespDetail(r.visitTC);
   if(!det)return null;
   return{category:'RESPON NEGATIF',detail:det};
 }
 // Mutasi in-place, pola SAMA PERSIS applyAutoPaidResponse di atas (idempotent, audit-logged). Caller
-// (syncVisitTCOnly) WAJIB panggil applyAutoPaidResponse LAGI abis ini di record yang sama -- paid
-// SELALU menang final regardless urutan, TC cuma boleh nempel kalau case-nya belum kebayar.
+// (syncVisitTCOnly) WAJIB cek paid DULUAN sebelum manggil ini -- kalau case udah kebayar, applyAutoTcResponse
+// JANGAN dipanggil sama sekali (bukan cuma "biar ketimpa lagi") -- dulu ini bikin oscillasi TC<->Paid
+// tiap sync ulang, audit log spam nggak berguna. Paid SELALU menang, TC cuma relevan kalau BELUM kebayar.
 function applyAutoTcResponse(r){
   var target=computeAutoTcResponse(r);
   if(!target)return false;
@@ -7109,7 +7114,10 @@ function renderChurnTrend(){
   // jangan diam-diam ilang dari total.
   var summaryChurnMap={};
   churnReasonRows.forEach(function(c){
-    var bucket=SUMMARY_CHURN_REVERSE[c.det]||'(Lainnya)';
+    // c.det = "{category} - {detail}" (format buildCatDetailMap) -- outcome 'churn' cuma dari
+    // category RESPON NEGATIF (lihat respOutcome), jadi prefix di sini selalu tetap & aman di-strip.
+    var bareDet=c.det.indexOf('RESPON NEGATIF - ')===0?c.det.slice('RESPON NEGATIF - '.length):c.det;
+    var bucket=SUMMARY_CHURN_REVERSE[bareDet]||'(Lainnya)';
     if(!summaryChurnMap[bucket])summaryChurnMap[bucket]=churnMonths.map(function(){return 0;});
     c.counts.forEach(function(n,i){summaryChurnMap[bucket][i]+=n;});
   });
@@ -8959,12 +8967,34 @@ function syncVisitTCOnly(){
     .then(function(json){
       if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       var d=Store.get();
+      // 27 Agu (fix): 1 outlet bisa punya BANYAK record (1 per cohort-month, key = outletId+expiredDateHistorical).
+      // Dulu di sini "latest expiryDate wins" dipilih SEKALI di awal per-outlet -- salah, bikin visit TC buat
+      // cohort LAMA (mis. Apr) numpuk ke record cohort BARU/nggak relevan (mis. Jun) yang kebetulan expiry-nya
+      // paling akhir. Sekarang: kumpulin SEMUA record per outlet, per-row TC baru pilih record yang cohort
+      // month-nya PALING DEKAT ke tanggal submit form (row.timestamp, dari GAS). Fallback ke "latest expiryDate"
+      // cuma kalau timestamp nggak ada/invalid (data lama) atau expiryDate record nggak keparse.
       var outletIdx={};
       d.records.forEach(function(r){
         if(!r.outletId)return;
-        var prev=outletIdx[r.outletId];
-        if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))outletIdx[r.outletId]=r;
+        (outletIdx[r.outletId]=outletIdx[r.outletId]||[]).push(r);
       });
+      function pickClosestTcRecord(candidates,visitTs){
+        if(candidates.length===1)return candidates[0];
+        var visitYm=null;
+        if(visitTs){var vd=new Date(visitTs);if(!isNaN(vd.getTime()))visitYm=vd.getFullYear()*12+vd.getMonth();}
+        var best=null,bestDist=Infinity;
+        candidates.forEach(function(r){
+          var s=localDateStr(r.expiryDate);
+          var dist=Infinity;
+          if(s&&visitYm!=null){
+            var ym=parseInt(s.slice(0,4),10)*12+(parseInt(s.slice(5,7),10)-1);
+            dist=Math.abs(ym-visitYm);
+          }
+          var better=dist<bestDist||(dist===bestDist&&(!best||String(r.expiryDate||'')>String(best.expiryDate||'')));
+          if(better){bestDist=dist;best=r;}
+        });
+        return best;
+      }
       var matched=0,notFound=0;
       // 22 Agu: kumpulin record yang response-nya keubah OTOMATIS (TC menang / paid tetap final di
       // atasnya) -- write-back ke server abis Store.set(), BUKAN di tengah loop (sama pola auto-paid
@@ -8972,9 +9002,10 @@ function syncVisitTCOnly(){
       var autoChanged=[];
       (json.data||[]).forEach(function(row){
         var oid=String(row.outletId||'').trim();if(!oid)return;
-        var rec=outletIdx[oid];
-        if(!rec){notFound++;return;}
+        var candidates=outletIdx[oid];
+        if(!candidates||!candidates.length){notFound++;return;}
         matched++;
+        var rec=pickClosestTcRecord(candidates,row.timestamp);
         rec.visitTC={
           csName:row.csName,outletName:row.outletName,program:row.program,fotoVisit:row.fotoVisit,
           statusVisit:row.statusVisit,alasanChurn:row.alasanChurn,noteTambahan:row.noteTambahan,
@@ -8986,11 +9017,17 @@ function syncVisitTCOnly(){
           pernahMenggunakanMajoo:row.pernahMenggunakanMajoo,collectAlasanRecycle:row.collectAlasanRecycle,
           linkRecording:row.linkRecording
         };
-        // TC menang dulu, TAPI paid tetap final di atasnya -- urutan ini WAJIB (bukan sebaliknya).
-        var tcChanged=applyAutoTcResponse(rec);
-        var paidChanged=applyAutoPaidResponse(rec);
-        if(paidChanged)autoChanged.push({r:rec,by:'Sistem (Auto-Paid)'});
-        else if(tcChanged)autoChanged.push({r:rec,by:'Sistem (Auto-TC Visit)'});
+        // 27 Agu (fix oscillation): Paid dicek DULUAN -- kalau case ini emang udah kebayar,
+        // applyAutoTcResponse JANGAN dipanggil SAMA SEKALI (dulu keduanya dipanggil tiap sync,
+        // dan kalau paid menang di akhir, TC-nya sempat "menang" sesaat lalu ketimpa lagi tiap
+        // klik sync ulang -- audit log oscillasi TC<->Paid nggak berguna).
+        if(computeAutoPaidResponse(rec)){
+          var paidChanged=applyAutoPaidResponse(rec);
+          if(paidChanged)autoChanged.push({r:rec,by:'Sistem (Auto-Paid)'});
+        }else{
+          var tcChanged=applyAutoTcResponse(rec);
+          if(tcChanged)autoChanged.push({r:rec,by:'Sistem (Auto-TC Visit)'});
+        }
       });
       Store.set(d);
       if(autoChanged.length){
