@@ -8978,19 +8978,25 @@ function syncVisitTCOnly(){
         if(!r.outletId)return;
         (outletIdx[r.outletId]=outletIdx[r.outletId]||[]).push(r);
       });
+      // 27 Agu (koreksi lanjutan): dist HARUS pakai expiredDateHistorical, BUKAN expiryDate.
+      // expiryDate = "Expired Date Latest" -- angka rolling yg reflect state SEKARANG, bisa IDENTIK di
+      // banyak record historis outlet yang sama selama belum renewal (kasus nyata: Lia Resto and
+      // Coffeshop, 8 record, expiryDate SAMA PERSIS '2026-08-10' di semuanya -- expiryDate nggak bisa
+      // dipakai buat bedain cohort). expiredDateHistorical itu field yang emang jadi anchor "Periode"
+      // per-record (juga komponen recId, lihat wsHistMonth) -- itu yg beda-beda per snapshot bulanan.
       function pickClosestTcRecord(candidates,visitTs){
         if(candidates.length===1)return candidates[0];
         var visitYm=null;
         if(visitTs){var vd=new Date(visitTs);if(!isNaN(vd.getTime()))visitYm=vd.getFullYear()*12+vd.getMonth();}
         var best=null,bestDist=Infinity;
         candidates.forEach(function(r){
-          var s=localDateStr(r.expiryDate);
+          var s=r.expiredDateHistorical;
           var dist=Infinity;
-          if(s&&visitYm!=null){
+          if(s&&s.length>=7&&visitYm!=null){
             var ym=parseInt(s.slice(0,4),10)*12+(parseInt(s.slice(5,7),10)-1);
             dist=Math.abs(ym-visitYm);
           }
-          var better=dist<bestDist||(dist===bestDist&&(!best||String(r.expiryDate||'')>String(best.expiryDate||'')));
+          var better=dist<bestDist||(dist===bestDist&&(!best||String(r.expiredDateHistorical||'')>String(best.expiredDateHistorical||'')));
           if(better){bestDist=dist;best=r;}
         });
         return best;
