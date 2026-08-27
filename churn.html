@@ -402,7 +402,7 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
     <div class="modal-bd" id="bulk-body">
       <div id="bulk-count-lbl" style="font-weight:700;margin-bottom:12px"></div>
       <label>Kategori Respon</label>
-      <select id="bulk-cat"><option value="">— Pilih Kategori —</option><option value="NO RESPONSE">NO RESPONSE</option><option value="NOMOR TIDAK VALID">NOMOR TIDAK VALID</option><option value="RESPON POSITIF">RESPON POSITIF</option><option value="RESPON NEGATIF">RESPON NEGATIF</option><option value="Self Onboard">Self Onboard</option><option value="BUKAN RENEWAL">BUKAN RENEWAL</option></select>
+      <select id="bulk-cat"><option value="">— Pilih Kategori —</option><option value="NO RESPONSE">NO RESPONSE</option><option value="NOMOR TIDAK VALID">NOMOR TIDAK VALID</option><option value="RESPON POSITIF">RESPON POSITIF</option><option value="RESPON NEGATIF">RESPON NEGATIF</option><option value="BUKAN RENEWAL">BUKAN RENEWAL</option></select>
       <div id="bulk-detail-wrap"><label>Detail</label><select id="bulk-detail"><option value="">—</option></select></div>
       <label>Catatan (opsional)</label>
       <textarea id="bulk-note" rows="2" placeholder="Catatan untuk semua outlet yang dipilih..."></textarea>
@@ -562,25 +562,51 @@ const ALL_USERS=[...AGENTS,...SUPERIOR];
 const STORE_KEY='klopos_churn_v4';
 
 // Taksonomi baku CLM-02 (mapping-summary-keterangan.md) — sumber tunggal, reuse di Index/Overview/KLOPOS
+// 22 Agu (operator, rebuild taksonomi -- konfirmasi eksplisit setelah beberapa putaran klarifikasi):
+// - 'Self Onboard' DIHAPUS dari kategori selectable (0 baris pakai ini di produksi per audit 18 Jul,
+//   lihat respOutcome() -- aman dihapus, PAID SELF ONBOARD pindah jadi detail di bawah RESPON POSITIF).
+// - 'COMPARE HARGA - ON PRO'/'COMPARE HARGA - DEAL' DIHAPUS dari detail selectable -- ini BUKAN churn
+//   reason, jadi info tambahan ("Cara Deal") pas outcome-nya PAID, bukan kategori sendiri.
+// - 'COMPARE HARGA - TIDAK COCOK' PINDAH dari RESPON POSITIF ke RESPON NEGATIF (sebelumnya salah taruh
+//   -- customer nolak karena harga itu genuinely churn, bukan positif) -- barengan sama 'HARGA TIDAK
+//   COCOK' yg udah ada duluan di situ, sekarang dua-duanya jadi bucket "Harga" di Summary Churn.
+// - 'AKUN BARU' DIHAPUS dari BUKAN RENEWAL, gantinya 'INDIKASI AKUN BARU' masuk RESPON NEGATIF (juga
+//   auto-keisi dari status Visit TC "Masih Menggunakan majoo (Recycle/Renewal dijadikan New)").
 const RESP_CATS={
   'NO RESPONSE':{color:'gray'},
   'NOMOR TIDAK VALID':{color:'gray'},
   'RESPON POSITIF':{color:'grn'},
   'RESPON NEGATIF':{color:'red'},
-  'Self Onboard':{color:'grn'},
   'BUKAN RENEWAL':{color:'org'}
 };
 const RESP_DETAILS={
   'NO RESPONSE':['NO RESPONSE'],
   'NOMOR TIDAK VALID':['NOMOR TIDAK VALID','NOMOR SALES','NOMOR TC','NOMOR INTERNAL','Nomor lain tidak ditemukan'],
-  'RESPON POSITIF':['PROSES NEGOSIASI','AKAN BAYAR SEGERA','PAID CRM','COMPARE HARGA - ON PRO','COMPARE HARGA - DEAL','COMPARE HARGA - TIDAK COCOK'],
-  'RESPON NEGATIF':['OUTLET TUTUP PERMANEN','OUTLET TUTUP SEMENTARA','PINDAH KE KOMPETITOR - NO DETAIL','PINDAH KE KOMPETITOR - FITUR','PINDAH KE KOMPETITOR - HARGA','PINDAH KE KOMPETITOR - KECEWA','PINDAH KE MANUAL','APLIKASI TIDAK TERPAKAI','HARGA TIDAK COCOK','KECEWA DENGAN PELAYANAN','GANTI PEMILIK/MANAGEMENT','INDIKASI PINDAH MASA LANGGANAN','MENOLAK MEMBERIKAN ALASAN','TIDAK DAPAT MEMBERIKAN KEPUTUSAN'],
-  'Self Onboard':['PAID SELF ONBOARD'],
+  'RESPON POSITIF':['PROSES NEGOSIASI','AKAN BAYAR SEGERA','PAID CRM','PAID SELF ONBOARD'],
+  'RESPON NEGATIF':['OUTLET TUTUP PERMANEN','OUTLET TUTUP SEMENTARA','PINDAH KE KOMPETITOR - NO DETAIL','PINDAH KE KOMPETITOR - FITUR','PINDAH KE KOMPETITOR - HARGA','PINDAH KE KOMPETITOR - KECEWA','PINDAH KE MANUAL','APLIKASI TIDAK TERPAKAI','COMPARE HARGA - TIDAK COCOK','HARGA TIDAK COCOK','KECEWA DENGAN PELAYANAN','GANTI PEMILIK/MANAGEMENT','INDIKASI PINDAH MASA LANGGANAN','INDIKASI AKUN BARU','MENOLAK MEMBERIKAN ALASAN','TIDAK DAPAT MEMBERIKAN KEPUTUSAN'],
   // 'TIDAK ADA DI CRM BILLING' (18 Jul, keputusan Muthia): ~1rb+ baris dipakai konsisten agen, secara
   // fungsional respons sah tapi belum resmi masuk taksonomi. Outlet nggak ada di billing CRM = nggak
   // ada yg bisa di-renewal dari sisi CRM = alasan valid BUKAN RENEWAL. Diresmiin ke sini.
-  'BUKAN RENEWAL':['AKUN BARU','BY COCKPIT','XL 1Biz','AKUN INTERNAL','ACCOUNT DELETED','TIDAK ADA DI CRM BILLING']
+  'BUKAN RENEWAL':['BY COCKPIT','XL 1Biz','AKUN INTERNAL','ACCOUNT DELETED','TIDAK ADA DI CRM BILLING']
 };
+// 22 Agu (operator): rollup "Summary Churn" -- grouping detail RESPON NEGATIF jadi 6 bucket level-atas,
+// buat card baru DI ATAS breakdown detail existing (Churn Trend). Reverse-lookup di bawah biar O(1)
+// per detail, bukan nyari array tiap kali.
+const SUMMARY_CHURN_BUCKETS={
+  'Outlet Tutup':['OUTLET TUTUP PERMANEN','OUTLET TUTUP SEMENTARA'],
+  'Kompetitor':['PINDAH KE KOMPETITOR - NO DETAIL','PINDAH KE KOMPETITOR - FITUR','PINDAH KE KOMPETITOR - HARGA','PINDAH KE KOMPETITOR - KECEWA'],
+  'Harga':['COMPARE HARGA - TIDAK COCOK','HARGA TIDAK COCOK'],
+  'Tidak Pakai POS Lagi':['PINDAH KE MANUAL','APLIKASI TIDAK TERPAKAI'],
+  'Masih Menggunakan majoo':['INDIKASI PINDAH MASA LANGGANAN','INDIKASI AKUN BARU'],
+  'Tidak Bisa Ditindaklanjuti':['GANTI PEMILIK/MANAGEMENT','MENOLAK MEMBERIKAN ALASAN','TIDAK DAPAT MEMBERIKAN KEPUTUSAN','KECEWA DENGAN PELAYANAN']
+};
+var SUMMARY_CHURN_REVERSE=(function(){
+  var m={};
+  Object.keys(SUMMARY_CHURN_BUCKETS).forEach(function(bucket){
+    SUMMARY_CHURN_BUCKETS[bucket].forEach(function(det){m[det]=bucket;});
+  });
+  return m;
+})();
 // Paid-detail values yang exempt dari evidence gate & trigger auto paymentStatus='paid'
 const PAID_DETAILS=['PAID CRM','PAID SELF ONBOARD'];
 // Grouping outcome utk Overview (provisional, blm dikunci CLM-04 — lihat mapping-summary-keterangan.md).
@@ -624,6 +650,42 @@ function applyAutoPaidResponse(r){
   r.response=Object.assign({},cur,{category:target.category,detail:target.detail,updatedAt:new Date().toISOString(),updatedBy:'Sistem (Auto-Paid)'});
   r.responseAudit=r.responseAudit||[];
   r.responseAudit.push({by:'Sistem (Auto-Paid)',at:new Date().toISOString(),field:'kategori',
+    from:prevCat?(prevCat+(prevDetail?' - '+prevDetail:'')):'Belum Dikategorikan',
+    to:target.category+' - '+target.detail});
+  return true;
+}
+
+// 22 Agu (operator, konfirmasi eksplisit): "TC menang" kalau visit TC punya hasil BEDA dari response
+// existing -- dianggap evidence PALING BARU, mirip pola auto-paid di atas. alasanChurn dari TC sebagian
+// besar SUDAH pakai taksonomi yang sama (match langsung), 2 rename khusus buat frasa TC yang beda kata
+// tapi sama makna. Kalau nggak match apa pun (termasuk "Outlet Tidak Ditemukan" yang alasanChurn-nya
+// kosong) -- JANGAN maksa nebak (0 jujur), biarin manual, nggak di-override sama sekali.
+function tcAlasanToRespDetail(alasanChurn){
+  var a=String(alasanChurn||'').trim();
+  if(!a)return null;
+  if(a.indexOf('MASIH MENGGUNAKAN MAJOO')===0)return'INDIKASI AKUN BARU';
+  if(a.indexOf('OUTLET TUTUP SEMENTARA')===0)return'OUTLET TUTUP SEMENTARA';
+  if(RESP_DETAILS['RESPON NEGATIF'].indexOf(a)>=0)return a;
+  return null;
+}
+function computeAutoTcResponse(r){
+  if(!r.visitTC)return null;
+  var det=tcAlasanToRespDetail(r.visitTC.alasanChurn);
+  if(!det)return null;
+  return{category:'RESPON NEGATIF',detail:det};
+}
+// Mutasi in-place, pola SAMA PERSIS applyAutoPaidResponse di atas (idempotent, audit-logged). Caller
+// (syncVisitTCOnly) WAJIB panggil applyAutoPaidResponse LAGI abis ini di record yang sama -- paid
+// SELALU menang final regardless urutan, TC cuma boleh nempel kalau case-nya belum kebayar.
+function applyAutoTcResponse(r){
+  var target=computeAutoTcResponse(r);
+  if(!target)return false;
+  var cur=r.response||{};
+  if(cur.category===target.category&&cur.detail===target.detail)return false;
+  var prevCat=cur.category||null,prevDetail=cur.detail||null;
+  r.response=Object.assign({},cur,{category:target.category,detail:target.detail,updatedAt:new Date().toISOString(),updatedBy:'Sistem (Auto-TC Visit)'});
+  r.responseAudit=r.responseAudit||[];
+  r.responseAudit.push({by:'Sistem (Auto-TC Visit)',at:new Date().toISOString(),field:'kategori',
     from:prevCat?(prevCat+(prevDetail?' - '+prevDetail:'')):'Belum Dikategorikan',
     to:target.category+' - '+target.detail});
   return true;
@@ -3758,6 +3820,18 @@ function writeBackAutoPaidBatch(list){
       setTimeout(function(){writeBackResponse(r,'Sistem (Auto-Paid)');},i*WB_AUTOPAID_STAGGER_MS);
     }else{
       var q=wbQueueGet();q.push(buildWbPayload(r,'Sistem (Auto-Paid)'));wbQueueSet(q);
+    }
+  });
+}
+// 22 Agu (operator): varian mixed-label buat batch yang atribusinya BEDA per-record (mis. sync Visit TC
+// -- sebagian keubah krn TC, sebagian keubah krn paid-override yang nempel di atasnya). items:[{r,by}].
+// Nggak ngutak-atik writeBackAutoPaidBatch existing sama sekali (nol resiko ke jalur auto-paid lama).
+function writeBackAutoMixedBatch(items){
+  items.forEach(function(item,i){
+    if(i<WB_AUTOPAID_IMMEDIATE_CAP){
+      setTimeout(function(){writeBackResponse(item.r,item.by);},i*WB_AUTOPAID_STAGGER_MS);
+    }else{
+      var q=wbQueueGet();q.push(buildWbPayload(item.r,item.by));wbQueueSet(q);
     }
   });
 }
@@ -7029,6 +7103,26 @@ function renderChurnTrend(){
       return'<tr><td>'+c.det+'</td>'+cellsHtml+'<td style="text-align:right;font-weight:700;border-left:1px solid var(--bdr)">'+c.total+'</td></tr>';
     }).join('')
     :'<tr><td colspan="'+(churnMonths.length+2)+'" style="text-align:center;color:var(--tx3);padding:12px">Belum ada data RESPON NEGATIF</td></tr>';
+  // 22 Agu (operator): "Summary Churn" -- rollup churnReasonRows (yg udah dihitung di atas) ke 6 bucket
+  // level-atas via SUMMARY_CHURN_REVERSE. Detail yang nggak kemapping ke bucket manapun (harusnya nol
+  // kalau taksonomi konsisten, tapi jaga-jaga taksonomi drift/nilai lama) masuk "(Lainnya)" -- 0 jujur,
+  // jangan diam-diam ilang dari total.
+  var summaryChurnMap={};
+  churnReasonRows.forEach(function(c){
+    var bucket=SUMMARY_CHURN_REVERSE[c.det]||'(Lainnya)';
+    if(!summaryChurnMap[bucket])summaryChurnMap[bucket]=churnMonths.map(function(){return 0;});
+    c.counts.forEach(function(n,i){summaryChurnMap[bucket][i]+=n;});
+  });
+  var summaryChurnRows=Object.keys(summaryChurnMap).map(function(bucket){
+    var counts=summaryChurnMap[bucket];
+    return{bucket:bucket,counts:counts,total:counts.reduce(function(a,b){return a+b;},0)};
+  }).sort(function(a,b){return b.total-a.total;});
+  var summaryChurnRowsHtml=summaryChurnRows.length
+    ?summaryChurnRows.map(function(c){
+      var cellsHtml=c.counts.map(function(n){return'<td style="text-align:right'+(n>0?';color:var(--red);font-weight:600':';color:var(--tx3)')+'">'+n+'</td>';}).join('');
+      return'<tr><td><strong>'+c.bucket+'</strong></td>'+cellsHtml+'<td style="text-align:right;font-weight:700;border-left:1px solid var(--bdr)">'+c.total+'</td></tr>';
+    }).join('')
+    :'<tr><td colspan="'+(churnMonths.length+2)+'" style="text-align:center;color:var(--tx3);padding:12px">Belum ada data RESPON NEGATIF</td></tr>';
 
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📈 Churn Trend <span style="font-size:10px;color:var(--tx3);font-weight:400">Remaining leads (Hot) — basis sama kayak card Konversi Renewal, dikunci s.d. kemarin (H-1)</span></div>'
@@ -7044,6 +7138,9 @@ function renderChurnTrend(){
     +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Breakdown Remaining per Kategori ('+currentMonthKey+') <span style="font-size:10px;color:var(--tx3);font-weight:400">— kenapa lead ini masih remaining, sama kategori kayak KLOPOS Daily</span></div>'
     +'<div class="tbl-wrap"><table><thead><tr><th>Kategori</th><th style="text-align:right">Total</th><th style="text-align:right">Moving</th><th style="text-align:right">Remaining</th></tr></thead>'
     +'<tbody>'+catRowsHtml+'</tbody></table></div></div>'
+    +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Summary Churn — Run Rate '+churnMonths[0]+'–'+currentMonthKey+' <span style="font-size:10px;color:var(--tx3);font-weight:400">— rollup 6 kategori level-atas dari detail di bawah</span></div>'
+    +'<div class="tbl-wrap"><table><thead><tr><th>Kategori</th>'+churnMonthHeaderHtml+'<th style="text-align:right;border-left:1px solid var(--bdr)">Total</th></tr></thead>'
+    +'<tbody>'+summaryChurnRowsHtml+'</tbody></table></div></div>'
     +'<div class="card" style="padding:0;margin-top:12px"><div style="padding:12px 12px 0;font-size:12px;font-weight:600;color:var(--tx2)">Churn Reason (RESPON NEGATIF) — Run Rate '+churnMonths[0]+'–'+currentMonthKey+' <span style="font-size:10px;color:var(--tx3);font-weight:400">— sama taksonomi "Detail Tidak Renewal" di card Konversi Renewal, per bulan</span></div>'
     +'<div class="tbl-wrap"><table><thead><tr><th>Alasan</th>'+churnMonthHeaderHtml+'<th style="text-align:right;border-left:1px solid var(--bdr)">Total</th></tr></thead>'
     +'<tbody>'+churnReasonRowsHtml+'</tbody></table></div></div>'
@@ -7208,6 +7305,13 @@ function openResp(id){
   respOpenSnapshot={id:id,updatedAt:resp.updatedAt||null}; // P1-1: snapshot utk deteksi konflik
   var cats=Object.keys(RESP_CATS);
   var catOpts=cats.map(function(c){return'<option value="'+c+'"'+(resp.category===c?' selected':'')+'>'+c+'</option>';}).join('');
+  // 22 Agu (operator): preserve-unknown buat KATEGORI juga, sama pola kayak detail di bawah -- 'Self
+  // Onboard' baru dihapus dari RESP_CATS (taksonomi rebuild), kalau ADA record lama yg somehow masih
+  // pakai kategori itu (atau taksonomi berubah lagi nanti), dropdown jangan diam2 jatuh ke opsi
+  // pertama terus keclobber pas leader nggak sadar buka-simpan tanpa ganti apa-apa.
+  if(resp.category&&cats.indexOf(resp.category)<0){
+    catOpts+='<option value="'+resp.category+'" selected>'+resp.category+' (nilai lama)</option>';
+  }
   var detailOpts='<option value="">—</option>';
   if(resp.category&&RESP_DETAILS[resp.category]){
     var opts=RESP_DETAILS[resp.category];
@@ -8862,6 +8966,10 @@ function syncVisitTCOnly(){
         if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))outletIdx[r.outletId]=r;
       });
       var matched=0,notFound=0;
+      // 22 Agu: kumpulin record yang response-nya keubah OTOMATIS (TC menang / paid tetap final di
+      // atasnya) -- write-back ke server abis Store.set(), BUKAN di tengah loop (sama pola auto-paid
+      // di syncMonthList). Label per-record beda tergantung siapa yang AKHIRNYA nentuin nilai final.
+      var autoChanged=[];
       (json.data||[]).forEach(function(row){
         var oid=String(row.outletId||'').trim();if(!oid)return;
         var rec=outletIdx[oid];
@@ -8878,10 +8986,19 @@ function syncVisitTCOnly(){
           pernahMenggunakanMajoo:row.pernahMenggunakanMajoo,collectAlasanRecycle:row.collectAlasanRecycle,
           linkRecording:row.linkRecording
         };
+        // TC menang dulu, TAPI paid tetap final di atasnya -- urutan ini WAJIB (bukan sebaliknya).
+        var tcChanged=applyAutoTcResponse(rec);
+        var paidChanged=applyAutoPaidResponse(rec);
+        if(paidChanged)autoChanged.push({r:rec,by:'Sistem (Auto-Paid)'});
+        else if(tcChanged)autoChanged.push({r:rec,by:'Sistem (Auto-TC Visit)'});
       });
       Store.set(d);
+      if(autoChanged.length){
+        console.log('[auto-tc] '+autoChanged.length+' respons ter-update otomatis dari Visit TC (termasuk yang ke-override paid), write-back berjalan di background');
+        writeBackAutoMixedBatch(autoChanged);
+      }
       renderTab(currentTab);
-      toast('Visit TC tersimpan: '+matched+' outlet ('+notFound+' tdk match)',6000);
+      toast('Visit TC tersimpan: '+matched+' outlet ('+notFound+' tdk match)'+(autoChanged.length?', '+autoChanged.length+' respons auto-update':''),6000);
     }).catch(function(err){
       toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Visit TC: '+err.message,5000);
     }).then(function(){
@@ -8940,7 +9057,10 @@ function mapSummaryToCategory(sum){
   var sl=sum.toLowerCase();
   if(sl.indexOf('positif')>=0)return'RESPON POSITIF';
   if(sl.indexOf('negatif')>=0)return'RESPON NEGATIF';
-  if(sl.indexOf('self onboard')>=0)return'Self Onboard';
+  // 22 Agu (operator, taksonomi rebuild): 'Self Onboard' bukan kategori sendiri lagi -- PAID SELF
+  // ONBOARD sekarang detail di bawah RESPON POSITIF. 0 baris riil kena mapping ini sejauh ini (audit
+  // 18 Jul), tapi tetep dibenerin biar nggak jadi orphan-category kalau raw sheet suatu saat kirim ini.
+  if(sl.indexOf('self onboard')>=0)return'RESPON POSITIF';
   if(sl.indexOf('bukan renewal')>=0)return'BUKAN RENEWAL';
   // 18 Jul (Muthia): 1.076 baris punya "tidak ada di crm billing" nyangkut di SLOT KATEGORI (bukan
   // detail) -> dulu map ke null -> jatuh "Belum Dikategorikan". Petain ke BUKAN RENEWAL (sejalan
