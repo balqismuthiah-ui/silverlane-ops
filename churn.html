@@ -7168,8 +7168,20 @@ function openDetail(id){
       +'<tr><td style="color:var(--tx3)">Ingin Tetap Berlangganan</td><td>'+(r.visitTC.inginTetap||'—')+'</td></tr>'
       +'<tr><td style="color:var(--tx3)">PIC Ditemui</td><td>'+(r.visitTC.picNama||'—')+(r.visitTC.picRole?' ('+r.visitTC.picRole+')':'')+'</td></tr>'
       +'<tr><td style="color:var(--tx3)">PIC Dapat Dihubungi</td><td>'+(r.visitTC.picKontakNama||'—')+(r.visitTC.picKontak?' — '+r.visitTC.picKontak:'')+'</td></tr>'
-      +'<tr><td style="color:var(--tx3)">Kompetitor</td><td>'+(r.visitTC.kompetitor||'—')+'</td></tr>'
+      +'<tr><td style="color:var(--tx3)">Pernah Pakai majoo Sebelumnya</td><td>'+(r.visitTC.pernahMenggunakanMajoo||'—')+'</td></tr>'
       +'<tr><td style="color:var(--tx3)">Foto Visit</td><td>'+(r.visitTC.fotoVisit?'<a href="'+r.visitTC.fotoVisit+'" target="_blank" style="color:var(--pri)">Lihat ↗</a>':'—')+'</td></tr>'
+      // 22 Agu: field ekstra khusus cabang form "Recycle/Akun Baru" -- cuma keisi kalau visit itu genuinely
+      // masuk cabang ini, jadi disembunyiin total kalau kosong biar nggak numpuk noise buat visit biasa.
+      +(r.visitTC.emailAkunBaru||r.visitTC.customerId||r.visitTC.noInvoice||r.visitTC.namaSalesMajoo||r.visitTC.collectAlasanRecycle||r.visitTC.recordingEvidenceRecycle
+        ?('<tr><td colspan="2" style="padding-top:8px;color:var(--tx3);font-size:10px;font-weight:700;text-transform:uppercase">— Detail Recycle/Akun Baru —</td></tr>'
+          +'<tr><td style="color:var(--tx3)">Email Akun Baru</td><td>'+(r.visitTC.emailAkunBaru||'—')+'</td></tr>'
+          +'<tr><td style="color:var(--tx3)">Customer ID</td><td>'+(r.visitTC.customerId||'—')+'</td></tr>'
+          +'<tr><td style="color:var(--tx3)">No Invoice</td><td>'+(r.visitTC.noInvoice||'—')+'</td></tr>'
+          +'<tr><td style="color:var(--tx3)">Sales majoo</td><td>'+(r.visitTC.namaSalesMajoo||'—')+(r.visitTC.kontakSalesMajoo?' — '+r.visitTC.kontakSalesMajoo:'')+'</td></tr>'
+          +'<tr><td style="color:var(--tx3)">Alasan Recycle</td><td>'+(r.visitTC.collectAlasanRecycle||'—')+'</td></tr>'
+          +'<tr><td style="color:var(--tx3)">Evidence Recycle</td><td>'+(r.visitTC.recordingEvidenceRecycle?'<a href="'+r.visitTC.recordingEvidenceRecycle+'" target="_blank" style="color:var(--pri)">Lihat ↗</a>':'—')+(r.visitTC.noteEvidenceRecycle?'<br><span style="font-size:11px;color:var(--tx3)">'+r.visitTC.noteEvidenceRecycle+'</span>':'')+'</td></tr>')
+        :'')
+      +(r.visitTC.linkRecording?'<tr><td style="color:var(--tx3)">Link Recording</td><td><a href="'+r.visitTC.linkRecording+'" target="_blank" style="color:var(--pri)">Lihat ↗</a></td></tr>':'')
       +'</table></div>'):'')
     +(r.responseAudit&&r.responseAudit.length
       ?'<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--bdr)">'
@@ -8821,11 +8833,13 @@ function syncInvoiceTrackerOnly(){
     });
 }
 
-// 22 Agu (operator): sync-down Visit TC (kunjungan langsung tim TC/trainer ke gerai). SENGAJA disimpen
-// sebagai field TERPISAH r.visitTC (bukan digabung ke r.response) -- ini bukan blast response, jangan
-// numpuk semantik. Matching pakai 3-tier SAMA PERSIS kayak mergeRows() assignment (compound key ->
-// outletId langsung -> outletId hasil slice 5 digit terakhir dari Join), krn "Join" di sheet Visit TC
-// udah pakai konvensi yang sama.
+// 22 Agu (operator): sync-down Visit TC (kunjungan langsung tim TC/trainer ke gerai), dari Google Form
+// mentah langsung (bukan sheet turunan "Cek Visit TC" -- itu ternyata kemungkinan cuma IMPORTRANGE+
+// VLOOKUP di atas form ini). SENGAJA disimpen sebagai field TERPISAH r.visitTC (bukan digabung ke
+// r.response) -- ini bukan blast response, jangan numpuk semantik. Sumbernya nggak punya Join code,
+// match by ID OUTLET POLOS. outletIdx dibangun pakai "expiryDate terbaru menang" kalau 1 outlet punya
+// >1 record historis -- SAMA PERSIS pola dedup Blast WABA (22 Agu) -- biar visit nempel ke siklus yg
+// LAGI berjalan, bukan ke case lama yang kebetulan diproses duluan di forEach.
 function syncVisitTCOnly(){
   var btn=document.getElementById('sync-visittc-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
@@ -8841,20 +8855,28 @@ function syncVisitTCOnly(){
     .then(function(json){
       if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       var d=Store.get();
-      var idx={},outletIdx={};
-      d.records.forEach(function(r){idx[r.id]=r;if(r.outletId)outletIdx[String(r.outletId)]=r;});
+      var outletIdx={};
+      d.records.forEach(function(r){
+        if(!r.outletId)return;
+        var prev=outletIdx[r.outletId];
+        if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))outletIdx[r.outletId]=r;
+      });
       var matched=0,notFound=0;
       (json.data||[]).forEach(function(row){
-        var jc=String(row.joinKey||'').trim();if(!jc)return;
-        var outletPart=jc.length>5?jc.slice(0,-5):'';
-        var rec=idx[jc]||outletIdx[jc]||(outletPart?outletIdx[outletPart]:null);
+        var oid=String(row.outletId||'').trim();if(!oid)return;
+        var rec=outletIdx[oid];
         if(!rec){notFound++;return;}
         matched++;
         rec.visitTC={
           csName:row.csName,outletName:row.outletName,program:row.program,fotoVisit:row.fotoVisit,
           statusVisit:row.statusVisit,alasanChurn:row.alasanChurn,noteTambahan:row.noteTambahan,
           inginTetap:row.inginTetap,picNama:row.picNama,picRole:row.picRole,
-          picKontakNama:row.picKontakNama,picKontak:row.picKontak,kompetitor:row.kompetitor
+          picKontakNama:row.picKontakNama,picKontak:row.picKontak,
+          emailAkunBaru:row.emailAkunBaru,noInvoice:row.noInvoice,namaSalesMajoo:row.namaSalesMajoo,
+          kontakSalesMajoo:row.kontakSalesMajoo,customerId:row.customerId,
+          recordingEvidenceRecycle:row.recordingEvidenceRecycle,noteEvidenceRecycle:row.noteEvidenceRecycle,
+          pernahMenggunakanMajoo:row.pernahMenggunakanMajoo,collectAlasanRecycle:row.collectAlasanRecycle,
+          linkRecording:row.linkRecording
         };
       });
       Store.set(d);
