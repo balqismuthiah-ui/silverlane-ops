@@ -7096,11 +7096,37 @@ function renderChurnTrend(){
   churnMonthMaps.forEach(function(map){
     Object.keys(map).forEach(function(k){if(k.indexOf('churn||')===0)churnKeys[k.slice(7)]=true;});
   });
+  // c.det = "{category} - {detail}" (format buildCatDetailMap) -- outcome 'churn' cuma dari category
+  // RESPON NEGATIF (lihat respOutcome), jadi prefix di sini selalu tetap & aman di-strip buat lookup bucket.
   var churnReasonRows=Object.keys(churnKeys).map(function(det){
     var counts=churnMonthMaps.map(function(map){return map['churn||'+det]||0;});
     var total=counts.reduce(function(a,b){return a+b;},0);
-    return{det:det,counts:counts,total:total};
+    var bareDet=det.indexOf('RESPON NEGATIF - ')===0?det.slice('RESPON NEGATIF - '.length):det;
+    var bucket=SUMMARY_CHURN_REVERSE[bareDet]||'(Lainnya)';
+    return{det:det,counts:counts,total:total,bucket:bucket};
+  });
+  // 22 Agu (operator): "Summary Churn" -- rollup churnReasonRows (yg udah dihitung di atas) ke 6 bucket
+  // level-atas via SUMMARY_CHURN_REVERSE. Detail yang nggak kemapping ke bucket manapun (harusnya nol
+  // kalau taksonomi konsisten, tapi jaga-jaga taksonomi drift/nilai lama) masuk "(Lainnya)" -- 0 jujur,
+  // jangan diam-diam ilang dari total.
+  var summaryChurnMap={};
+  churnReasonRows.forEach(function(c){
+    if(!summaryChurnMap[c.bucket])summaryChurnMap[c.bucket]=churnMonths.map(function(){return 0;});
+    c.counts.forEach(function(n,i){summaryChurnMap[c.bucket][i]+=n;});
+  });
+  var summaryChurnRows=Object.keys(summaryChurnMap).map(function(bucket){
+    var counts=summaryChurnMap[bucket];
+    return{bucket:bucket,counts:counts,total:counts.reduce(function(a,b){return a+b;},0)};
   }).sort(function(a,b){return b.total-a.total;});
+  // 27 Agu (operator): urutan detail di "Churn Reason" disamain sama urutan grup di "Summary Churn" di
+  // atasnya (bukan sort total flat) -- per grup (sesuai ranking summaryChurnRows), di dalam grup tetap
+  // total terbesar dulu. Biar 2 tabel ini "connected" secara visual, gampang nelusurin grup ke detailnya.
+  var churnBucketOrder={};
+  summaryChurnRows.forEach(function(sc,i){churnBucketOrder[sc.bucket]=i;});
+  churnReasonRows.sort(function(a,b){
+    var bo=churnBucketOrder[a.bucket]-churnBucketOrder[b.bucket];
+    return bo!==0?bo:b.total-a.total;
+  });
   var churnMonthHeaderHtml=churnMonths.map(function(mk){return'<th style="text-align:right">'+mk+'</th>';}).join('');
   var churnReasonRowsHtml=churnReasonRows.length
     ?churnReasonRows.map(function(c){
@@ -7108,23 +7134,6 @@ function renderChurnTrend(){
       return'<tr><td>'+c.det+'</td>'+cellsHtml+'<td style="text-align:right;font-weight:700;border-left:1px solid var(--bdr)">'+c.total+'</td></tr>';
     }).join('')
     :'<tr><td colspan="'+(churnMonths.length+2)+'" style="text-align:center;color:var(--tx3);padding:12px">Belum ada data RESPON NEGATIF</td></tr>';
-  // 22 Agu (operator): "Summary Churn" -- rollup churnReasonRows (yg udah dihitung di atas) ke 6 bucket
-  // level-atas via SUMMARY_CHURN_REVERSE. Detail yang nggak kemapping ke bucket manapun (harusnya nol
-  // kalau taksonomi konsisten, tapi jaga-jaga taksonomi drift/nilai lama) masuk "(Lainnya)" -- 0 jujur,
-  // jangan diam-diam ilang dari total.
-  var summaryChurnMap={};
-  churnReasonRows.forEach(function(c){
-    // c.det = "{category} - {detail}" (format buildCatDetailMap) -- outcome 'churn' cuma dari
-    // category RESPON NEGATIF (lihat respOutcome), jadi prefix di sini selalu tetap & aman di-strip.
-    var bareDet=c.det.indexOf('RESPON NEGATIF - ')===0?c.det.slice('RESPON NEGATIF - '.length):c.det;
-    var bucket=SUMMARY_CHURN_REVERSE[bareDet]||'(Lainnya)';
-    if(!summaryChurnMap[bucket])summaryChurnMap[bucket]=churnMonths.map(function(){return 0;});
-    c.counts.forEach(function(n,i){summaryChurnMap[bucket][i]+=n;});
-  });
-  var summaryChurnRows=Object.keys(summaryChurnMap).map(function(bucket){
-    var counts=summaryChurnMap[bucket];
-    return{bucket:bucket,counts:counts,total:counts.reduce(function(a,b){return a+b;},0)};
-  }).sort(function(a,b){return b.total-a.total;});
   var summaryChurnRowsHtml=summaryChurnRows.length
     ?summaryChurnRows.map(function(c){
       var cellsHtml=c.counts.map(function(n){return'<td style="text-align:right'+(n>0?';color:var(--red);font-weight:600':';color:var(--tx3)')+'">'+n+'</td>';}).join('');
