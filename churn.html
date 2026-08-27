@@ -600,6 +600,10 @@ const SUMMARY_CHURN_BUCKETS={
   'Masih Menggunakan majoo':['INDIKASI PINDAH MASA LANGGANAN','INDIKASI AKUN BARU'],
   'Tidak Bisa Ditindaklanjuti':['GANTI PEMILIK/MANAGEMENT','MENOLAK MEMBERIKAN ALASAN','TIDAK DAPAT MEMBERIKAN KEPUTUSAN','KECEWA DENGAN PELAYANAN']
 };
+// 27 Agu (operator): urutan tampil FIXED (bukan sort-by-total lagi) -- "Tidak Pakai POS Lagi" nggak
+// disebutin eksplisit pas request, sementara ditaruh sebelum "(Lainnya)" (posisi terakhir di antara
+// bucket bernama). '(Lainnya)' SELALU paling bawah, di luar array ini (fallback, lihat pemakaian).
+var SUMMARY_CHURN_DISPLAY_ORDER=['Outlet Tutup','Kompetitor','Harga','Masih Menggunakan majoo','Tidak Bisa Ditindaklanjuti','Tidak Pakai POS Lagi'];
 var SUMMARY_CHURN_REVERSE=(function(){
   var m={};
   Object.keys(SUMMARY_CHURN_BUCKETS).forEach(function(bucket){
@@ -7117,7 +7121,14 @@ function renderChurnTrend(){
   var summaryChurnRows=Object.keys(summaryChurnMap).map(function(bucket){
     var counts=summaryChurnMap[bucket];
     return{bucket:bucket,counts:counts,total:counts.reduce(function(a,b){return a+b;},0)};
-  }).sort(function(a,b){return b.total-a.total;});
+  }).sort(function(a,b){
+    // 27 Agu (operator): urutan FIXED sesuai SUMMARY_CHURN_DISPLAY_ORDER, BUKAN sort-by-total lagi.
+    // '(Lainnya)' dipaksa paling bawah; bucket di luar daftar (harusnya nggak ada) ikut nempel sebelum Lainnya.
+    var ia=SUMMARY_CHURN_DISPLAY_ORDER.indexOf(a.bucket);var ib=SUMMARY_CHURN_DISPLAY_ORDER.indexOf(b.bucket);
+    if(a.bucket==='(Lainnya)')return 1;if(b.bucket==='(Lainnya)')return-1;
+    if(ia<0)ia=SUMMARY_CHURN_DISPLAY_ORDER.length;if(ib<0)ib=SUMMARY_CHURN_DISPLAY_ORDER.length;
+    return ia-ib;
+  });
   // 27 Agu (operator): urutan detail di "Churn Reason" disamain sama urutan grup di "Summary Churn" di
   // atasnya (bukan sort total flat) -- per grup (sesuai ranking summaryChurnRows), di dalam grup tetap
   // total terbesar dulu. Biar 2 tabel ini "connected" secara visual, gampang nelusurin grup ke detailnya.
