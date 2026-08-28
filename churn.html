@@ -2933,10 +2933,23 @@ function storageSetMonthWithEviction(key,allData,keepMonth,onEvict){
   try{localStorage.setItem(key,JSON.stringify(allData));return true;}
   catch(e){
     if(e.name!=='QuotaExceededError'&&e.code!==22)return false; // error laen, jangan sok tau ngoprek data
+    // 27 Agu (fix, operator): SEBELUMNYA eviction cuma exclude keepMonth doang, terus evict bulan
+    // ter-CALENDAR-AWAL di antara SISANYA -- kalau sync MUNDUR (Aug->Jul->Jun->...), keepMonth (Jun)
+    // selalu lebih tua dari yang udah ke-cache (Aug/Jul), jadi Aug/Jul (yang lebih relevan, baru aja
+    // disync) yang keusir demi nyimpen Jun yang lebih lama. Sekarang: CUMA evict bulan yang beneran
+    // lebih LAMA dari keepMonth -- jangan pernah korbanin bulan yang lebih baru dari yang lagi ditulis.
+    var keepIdx=MONTH_KEYS.indexOf(keepMonth);
     var months=Object.keys(allData).filter(function(m){return m!==keepMonth;});
-    if(!months.length)return false; // tinggal 1 bulan (yg lagi coba ditulis) tapi masih kepenuhan -- nggak ada lagi yg bisa dievict
-    months.sort(function(a,b){return MONTH_KEYS.indexOf(a)-MONTH_KEYS.indexOf(b);});
-    var evicted=months[0];
+    var olderCandidates=keepIdx<0?months:months.filter(function(m){return MONTH_KEYS.indexOf(m)<keepIdx;});
+    if(!olderCandidates.length){
+      // Nggak ada kandidat yang lebih lama buat dikorbanin (keepMonth sendiri yang paling lama, atau
+      // storage tetap penuh biarpun cuma nyisain bulan2 yang lebih baru) -- daripada ngehapus yang
+      // lebih baru, MENYERAH nyimpen keepMonth kali ini. Data-nya tetap kepake buat render sesi ini
+      // (caller pegang payload-nya di memory), cuma nggak persist ke localStorage buat next reload.
+      return false;
+    }
+    olderCandidates.sort(function(a,b){return MONTH_KEYS.indexOf(a)-MONTH_KEYS.indexOf(b);});
+    var evicted=olderCandidates[0];
     delete allData[evicted];
     // 20 Agu (operator): eviction SEBELUMNYA senyap total -- bulan lama ilang dari cache tanpa jejak,
     // user cuma lihat "kok balik Rp0" tanpa tau kenapa (dikira sync gagal, padahal beneran ke-usir
@@ -2957,7 +2970,7 @@ var FinancialsStore={
     var all=this.getAll();all[month]=payload;
     var evictedMonths=[];
     var ok=storageSetMonthWithEviction(this.KEY,all,month,function(m){evictedMonths.push(m);});
-    if(!ok)toast('⚠ Data financials '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
+    if(!ok)toast('⚠ Storage lokal penuh — data Financials '+month+' TIDAK disimpan (tetap tampil sesi ini) biar bulan yang lebih baru nggak ke-korbanin. Sync bulan lama terakhir kalau memang perlu.',6000);
     else if(evictedMonths.length)toast('⚠ Storage lokal penuh — data Financials bulan '+evictedMonths.join(', ')+' otomatis kehapus dari cache biar '+month+' muat. Perlu di-sync ulang kalau masih dibutuhin.',7000);
   },
   getMonth:function(month){return this.getAll()[month]||null;}
@@ -2974,7 +2987,7 @@ var UpsellTeamStore={
     var all=this.getAll();all[month]=payload;
     var evictedMonths=[];
     var ok=storageSetMonthWithEviction(this.KEY,all,month,function(m){evictedMonths.push(m);});
-    if(!ok)toast('⚠ Data Upsell Tim '+month+' nggak muat disimpan lokal (storage penuh) — sync bulan lain lebih sedikit dulu',5000);
+    if(!ok)toast('⚠ Storage lokal penuh — data Upsell Tim '+month+' TIDAK disimpan (tetap tampil sesi ini) biar bulan yang lebih baru nggak ke-korbanin. Sync bulan lama terakhir kalau memang perlu.',6000);
     else if(evictedMonths.length)toast('⚠ Storage lokal penuh — data Upsell Tim bulan '+evictedMonths.join(', ')+' otomatis kehapus dari cache biar '+month+' muat. Perlu di-sync ulang kalau masih dibutuhin.',7000);
   },
   getMonth:function(month){return this.getAll()[month]||null;}
