@@ -1585,7 +1585,12 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
   // ke-dobel-hitung; raw-row TETAP presisi/distinct kalau bulan itu ada raw-nya). "0 jujur" tetap
   // dipegang: bulan yang beneran nggak ada di raw MAUPUN cache -> masuk missingMonths, bukan 0 senyap.
   var summaryOnlyMonths=[];
-  if(granularity==='year'){
+  // 27 Agu (Option C Step 3): fallback diperluas dari 'year' doang ke 'year'+'month' -- endpoint
+  // server myjourney_summary ngasih ringkasan PER-BULAN (bukan cuma agregat tahunan), jadi lihat 1
+  // bulan tunggal yang raw-nya belum ke-sync (2025 SELALU begini, nggak ada UI raw-sync buat tahun
+  // itu) sekarang bisa kepenuhi dari cache juga -- ini yang bikin "ganti bulan nggak perlu sync
+  // manual" beneran nyambung ke granularity 'month', bukan cuma 'year'.
+  if(granularity==='year'||granularity==='month'){
     relevantMonths.forEach(function(m){
       if(syncedMonths.indexOf(m)>=0)return;
       var cached=MyJourneySummaryStore.getMonth(year+'-'+m);
@@ -1671,10 +1676,10 @@ function computeMyJourneyTeamTotal(granularity,periodSel,year){
       if(myJourneyRowInPeriod(r,granularity,periodSel,year)&&matchAgentFuzzy(r.creatorName,agents))totalRevenueUpsell+=r.subtotal;
     });
   });
-  // Fallback cache (granularity 'year' doang) -- sama pola kayak computeMyJourneyPersonal, jumlahin
-  // ringkasan SEMUA agen buat bulan yang raw-nya nggak ada.
+  // Fallback cache (27 Agu: 'year'+'month', lihat catatan computeMyJourneyPersonal) -- sama pola,
+  // jumlahin ringkasan SEMUA agen buat bulan yang raw-nya nggak ada.
   var summaryOnlyMonths=[];
-  if(granularity==='year'){
+  if(granularity==='year'||granularity==='month'){
     relevantMonths.forEach(function(m){
       if(syncedMonths.indexOf(m)>=0)return;
       var cached=MyJourneySummaryStore.getMonth(year+'-'+m);
@@ -1710,7 +1715,7 @@ function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOut
       else excluded++;
     });
   });
-  if(granularity==='year'){
+  if(granularity==='year'||granularity==='month'){
     relevantMonths.forEach(function(m){
       if(syncedMonths.indexOf(m)>=0)return;
       var cached=MyJourneySummaryStore.getMonth(year+'-'+m);
@@ -3002,15 +3007,42 @@ var UpsellTeamStore={
 // yang disimpen di sini -- ukurannya kecil banget (~ratusan KB TOTAL buat 3 tahun sekalipun), jadi
 // AMAN nggak kena masalah kapasitas lagi. Diisi otomatis abis tiap sync Upsell Tim sukses (lihat
 // myJourneyComputeAndCacheSummary + hook di syncUpsellTeamOnly) -- begitu raw bulan ke-evict, ringkasan
-// bulan itu TETAP ada, dipake fallback di computeMyJourneyPersonal/TeamTotal (granularity 'year' doang
-// -- day/week/month tetep butuh raw krn perlu presisi harian). Key = 'YYYY-Mon' (eksplisit tahun dari
-// awal, bukan cuma 'Mon', biar siap nampung histori 2024/2025 kapan pun ditambah tanpa migrasi key).
+// bulan itu TETAP ada, dipake fallback di computeMyJourneyPersonal/TeamTotal (granularity 'year'+
+// 'month' -- day/week tetep butuh raw krn perlu presisi harian, summary cuma granularitas bulanan).
+// Key = 'YYYY-Mon' (eksplisit tahun dari awal, bukan cuma 'Mon', biar siap nampung histori 2024/2025
+// kapan pun ditambah tanpa migrasi key).
 var MyJourneySummaryStore={
   KEY:'klopos_myjourney_summary_v1',
   getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
   setMonth:function(key,payload){var all=this.getAll();all[key]=payload;localStorage.setItem(this.KEY,JSON.stringify(all));}, // kecil, nggak butuh eviction
   getMonth:function(key){return this.getAll()[key]||null;}
 };
+// 27 Agu (Option C Step 3): isi MyJourneySummaryStore dari server (?action=myjourney_summary),
+// GANTI JALUR client compute raw+myJourneyComputeAndCacheSummary yang butuh sync manual per-bulan.
+// 1x call = 12 bulan sekaligus, drop-in ke store yang SAMA (key 'YYYY-Mon' identik) -- computeMyJourneyPersonal/
+// TeamTotal/TeamPaketBreakdown otomatis kepake tanpa perubahan lain. 2025 SELALU lewat jalur ini
+// (nggak ada UI raw-sync buat tahun itu sama sekali); 2026 tetap BOLEH sync-raw manual (drill-down
+// harian bulan aktif), summary ini cuma fallback tambahan buat bulan yang belum di-raw-sync.
+function syncMyJourneySummaryFromServer(year,silent){
+  var url=GAS_URL+'?action=myjourney_summary&year='+encodeURIComponent(year)+'&token='+encodeURIComponent(Auth.getToken()||'');
+  var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+  var timer=ctrl?setTimeout(function(){ctrl.abort();},60000):null;
+  var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
+  return fetch(url,opts)
+    .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(json){
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
+      if(json&&json.error)throw new Error(json.error);
+      var months=Object.keys(json.months||{});
+      months.forEach(function(m){MyJourneySummaryStore.setMonth(year+'-'+m,{perAgent:json.months[m].perAgent});});
+      if(!silent)toast('My Journey '+year+' tersinkron ('+months.length+' bulan)',4000);
+      return months.length;
+    }).catch(function(err){
+      if(timer)clearTimeout(timer);
+      if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync My Journey '+year+': '+err.message,5000);
+      throw err;
+    });
+}
 
 // CLM-10 §1: Invoice Tracker (Data Invoice CX, GAS ?action=invoicetracker) -- SATU blob (bukan
 // per-bulan kayak store lain) krn Invoice Tracker perlu di-search/filter LINTAS periode (invoice
@@ -3517,6 +3549,7 @@ var myJourneyWeekAnchor=localDateStr(new Date()); // tanggal apa aja dalam mingg
 var myJourneyMonthSel=MONTH_KEYS[new Date().getMonth()];
 var myJourneyYearSel='2026'; // param, bukan magic-string ditebar -- gampang extend pas ada data 2024/2025
 var myJourneySelectedAgent=null; // leader-only: null=leaderboard, nama=drill-in ke 1 agen
+var myJourneySummaryAutoSyncInFlight={}; // 27 Agu: guard nyegah 2 fetch bersamaan buat tahun yang sama (renderMyJourney)
 // CLM-10 §1: Invoice Tracker state -- invAgentFilter cuma relevan buat leader (pola sama wsAgentFilter)
 // invCreatorFilter (13 Jul, feedback operator): filter by PEMBUAT invoice (creatorName) -- beda dari
 // invAgentFilter (agentName hasil join/tag). Dipake buat gampangin cari invoice buatan leader yg
@@ -6423,7 +6456,12 @@ function renderMyJourney(){
       +MONTH_KEYS.map(function(m){return'<option value="'+m+'"'+(myJourneyMonthSel===m?' selected':'')+'>'+m+'</option>';}).join('')
       +'</select>';
   }
-  var yearSelHtml='<select id="mj-year-sel" style="width:auto;padding:4px 8px;font-size:11px"><option value="2026"'+(myJourneyYearSel==='2026'?' selected':'')+'>2026</option></select>';
+  // 27 Agu (Option C Step 3): 2025 ditambah -- data-nya SELALU dari MyJourneySummaryStore (server
+  // pre-aggregated, lihat syncMyJourneySummaryFromServer), nggak ada raw-sync UI buat tahun ini sama
+  // sekali (beda dari 2026 yang masih bisa raw-sync manual buat drill-down harian bulan aktif).
+  var yearSelHtml='<select id="mj-year-sel" style="width:auto;padding:4px 8px;font-size:11px">'
+    +['2026','2025'].map(function(y){return'<option value="'+y+'"'+(myJourneyYearSel===y?' selected':'')+'>'+y+'</option>';}).join('')
+    +'</select>';
 
   var agentPickerHtml='';
   if(isSup){
@@ -6434,8 +6472,21 @@ function renderMyJourney(){
       +'</select>';
   }
 
+  // Tombol manual + auto-sync throttled -- "ganti bulan/tahun nggak perlu sync manual" (komplain awal
+  // fitur ini dibangun) TAPI tetap kasih tombol eksplisit buat re-sync kalau data server berubah.
+  var yearHasSummary=Object.keys(MyJourneySummaryStore.getAll()).some(function(k){return k.indexOf(myJourneyYearSel+'-')===0;});
+  var syncBtnHtml='<button id="mj-sync-btn" class="btn btn-blu" style="padding:4px 10px;font-size:11px" title="Tarik ringkasan '+myJourneyYearSel+' dari server (1x, semua bulan sekaligus)">🔄 Sync '+myJourneyYearSel+'</button>'
+    +(yearHasSummary?'':'<span style="font-size:10px;color:var(--tx3)">⏳ Menyinkronkan '+myJourneyYearSel+'…</span>');
+
+  // 27 Agu: disclosure jujur -- MRR/Top Paket 2025 di-join server ke snapshot KLOPOS SEKARANG (2026),
+  // bukan histori 2025 (nggak ada arsip per-titik-waktu). Total Revenue/deal count TETAP akurat penuh
+  // (lihat mrrPaketBestEffort di endpoint GAS) -- 0 jujur, jangan diam-diam nutupin keterbatasan ini.
+  var bestEffortNoteHtml=(myJourneyYearSel==='2025')
+    ?'<div style="font-size:10px;color:var(--tx3);width:100%">ℹ MRR & Top Sold Subscription '+myJourneyYearSel+' best-effort (join ke data KLOPOS sekarang, bukan histori '+myJourneyYearSel+') — Total Revenue &amp; jumlah deal tetap akurat penuh.</div>'
+    :'';
+
   var controlsHtml='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">'
-    +granSelHtml+periodCtrlHtml+yearSelHtml+agentPickerHtml+'</div>';
+    +granSelHtml+periodCtrlHtml+yearSelHtml+agentPickerHtml+syncBtnHtml+bestEffortNoteHtml+'</div>';
 
   // Bangun sekali per render, di-passing biar leaderboard (s.d. 11 agen) nggak rebuild dari d.records berkali-kali
   var terminMap=myJourneyOutletTerminMap();
@@ -6451,6 +6502,22 @@ function renderMyJourney(){
   }
 
   document.getElementById('tab-content').innerHTML=controlsHtml+bodyHtml;
+
+  // Auto-sync throttled (60dtk cooldown per tahun, cegah retry-spam kalau gagal berulang) -- HANYA
+  // kalau tahun ini beneran nol summary tersimpan (bukan tiap render), biar nggak nembak server tiap
+  // ganti dropdown lain. In-flight guard nyegah 2 fetch bersamaan buat tahun yang sama.
+  if(!yearHasSummary&&!myJourneySummaryAutoSyncInFlight[myJourneyYearSel]){
+    var mjTsKey='myjourney_summary_autosync_ts_'+myJourneyYearSel;
+    var mjLast=parseInt(localStorage.getItem(mjTsKey)||'0',10);
+    if(Date.now()-mjLast>60000){
+      localStorage.setItem(mjTsKey,String(Date.now()));
+      myJourneySummaryAutoSyncInFlight[myJourneyYearSel]=true;
+      syncMyJourneySummaryFromServer(myJourneyYearSel,true).then(function(){
+        delete myJourneySummaryAutoSyncInFlight[myJourneyYearSel];
+        if(currentTab==='myjourney')renderTab('myjourney');
+      }).catch(function(){delete myJourneySummaryAutoSyncInFlight[myJourneyYearSel];});
+    }
+  }
 }
 
 // ── TAB: WATCHLIST ─────────────────────────────────────────────────────────
@@ -9368,6 +9435,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='sync-upsellteam-btn')syncUpsellTeamOnly();
   else if(tgt.id==='sync-invoicetracker-btn')syncInvoiceTrackerOnly();
   else if(tgt.id==='sync-visittc-btn')syncVisitTCOnly();
+  else if(tgt.id==='mj-sync-btn')syncMyJourneySummaryFromServer(myJourneyYearSel).then(function(){renderTab('myjourney');}).catch(function(){});
   else if(tgt.id==='sync-3m-btn')syncThreeMonths();
   else if(tgt.id==='reset-records-btn'){
     if(!confirm('Hapus SEMUA records? Tindakan ini tidak bisa dibatalkan.\n(Response & blast history tidak akan terhapus)'))return;
