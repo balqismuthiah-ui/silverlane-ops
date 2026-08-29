@@ -1841,7 +1841,7 @@ function myJourneySeriesForChart(agentName,granularity,periodSel,year){
 // Chart SVG dependency-free (pola sama renderDailyTrendSVG) -- hover pakai native <title> per titik
 // (zero JS tambahan, browser nampilin tooltip bawaan begitu di-hover, konsisten filosofi app ini
 // "nggak ada Chart.js/D3").
-function renderMyJourneySVGChart(series){
+function renderMyJourneySVGChart(series,shadowSeries){
   var W=680,H=180,padL=46,padR=10,padT=10,padB=22;
   var plotW=W-padL-padR,plotH=H-padT-padB;
   var n=series.labels.length;
@@ -1849,6 +1849,11 @@ function renderMyJourneySVGChart(series){
   var maxVal=0;
   series.renewal.forEach(function(v){if(v>maxVal)maxVal=v;});
   series.upsell.forEach(function(v){if(v>maxVal)maxVal=v;});
+  // 29 Agu: shadowSeries opsional (overlay YoY) -- masuk hitungan skala Y juga biar nggak kepotong.
+  if(shadowSeries){
+    shadowSeries.renewal.forEach(function(v){if(v>maxVal)maxVal=v;});
+    shadowSeries.upsell.forEach(function(v){if(v>maxVal)maxVal=v;});
+  }
   if(maxVal<=0)maxVal=1;
   function xAt(i){return n>1?(padL+i/(n-1)*plotW):padL+plotW/2;}
   function yAt(v){return padT+plotH-(v/maxVal)*plotH;}
@@ -1858,13 +1863,41 @@ function renderMyJourneySVGChart(series){
   }
   var step=Math.max(1,Math.ceil(n/8));
   var xLabelsHtml=series.labels.map(function(l,i){return i%step===0?'<text x="'+xAt(i)+'" y="'+(H-6)+'" font-size="9" fill="var(--tx3)" text-anchor="middle">'+l+'</text>':'';}).join('');
+  // Shadow digambar DULUAN (di bawah) biar garis utama nggak ketutupan; opacity rendah + nol dots/hover
+  // biar jelas ini "bayangan" pembanding, bukan data utama -- shadowSeries WAJIB label-count sama (n)
+  // kayak series utama (dijamin caller, keduanya granularitas 'year' = 12 titik Jan..Dec).
+  var shadowHtml=shadowSeries
+    ?'<path d="'+pathFor(shadowSeries.renewal)+'" fill="none" stroke="var(--grn)" stroke-width="2" opacity="0.3"/>'
+      +'<path d="'+pathFor(shadowSeries.upsell)+'" fill="none" stroke="var(--blu)" stroke-width="2" stroke-dasharray="4,3" opacity="0.3"/>'
+    :'';
   return'<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:180px">'
+    +shadowHtml
     +'<path d="'+pathFor(series.renewal)+'" fill="none" stroke="var(--grn)" stroke-width="2"/>'
     +'<path d="'+pathFor(series.upsell)+'" fill="none" stroke="var(--blu)" stroke-width="2" stroke-dasharray="4,3"/>'
     +dotsFor(series.renewal,'var(--grn)','Renewal')+dotsFor(series.upsell,'var(--blu)','Upsell')
     +xLabelsHtml+'</svg>'
     +'<div style="display:flex;gap:14px;font-size:10px;color:var(--tx3);margin-top:2px">'
-    +'<span>▬ Renewal</span><span>┄ Upsell</span></div>';
+    +'<span>▬ Renewal</span><span>┄ Upsell</span>'+(shadowSeries?'<span style="opacity:.55">▬┄ 2025 (bayangan YoY)</span>':'')+'</div>';
+}
+// 29 Agu: chart gabungan 24-bulan (Jan 2025 s.d. Des 2026) -- REUSE myJourneySeriesForChart('year')
+// buat masing2 tahun (udah year-gated+fallback-aware per fix 29 Agu di atas), tinggal disambung. Nol
+// logic baru buat per-bulan value, cuma concat -- caller (renderMyJourneyTwoYearView) yang nentuin
+// agentName null (tim) atau nama (personal).
+function myJourneySeriesForChartTwoYear(agentName){
+  var s25=myJourneySeriesForChart(agentName,'year',{},'2025');
+  var s26=myJourneySeriesForChart(agentName,'year',{},'2026');
+  return{
+    labels:s25.labels.map(function(l){return l+" '25";}).concat(s26.labels.map(function(l){return l+" '26";})),
+    renewal:s25.renewal.concat(s26.renewal),
+    upsell:s25.upsell.concat(s26.upsell)
+  };
+}
+// Chart doang (request operator: "grafik lg yg nyambung", bukan kartu/tabel duplikat -- MRR/ARPU/paket
+// dari sononya scoped 1 tahun, nggak masuk akal digabung 24 bulan).
+function renderMyJourneyTwoYearView(agentName){
+  var series=myJourneySeriesForChartTwoYear(agentName);
+  var title=agentName?('📈 Progress 2 Tahun — '+agentName):'📈 Progress 2 Tahun (Semua Agen)';
+  return'<div class="ov-section"><div class="ov-section-title">'+title+'</div><div class="card">'+renderMyJourneySVGChart(series)+'</div></div>';
 }
 // Exclude leaderboard default: nonaktif (CLM-06) ATAU tanggal selesai udah lewat. resignDate SENGAJA
 // independen dari `status` (nggak otomatis flip satu sama lain) -- data historis tetap kebaca kalau
@@ -3652,6 +3685,7 @@ var myJourneyWeekAnchor=localDateStr(new Date()); // tanggal apa aja dalam mingg
 var myJourneyMonthSel=MONTH_KEYS[new Date().getMonth()];
 var myJourneyYearSel='2026'; // param, bukan magic-string ditebar -- gampang extend pas ada data 2024/2025
 var myJourneySelectedAgent=null; // leader-only: null=leaderboard, nama=drill-in ke 1 agen
+var myJourneyYoyCompare=false; // 29 Agu: checkbox "Bandingkan ke 2025 (YoY)" di chart Tahunan 2026, default OFF (request operator)
 var myJourneySummaryAutoSyncInFlight={}; // 27 Agu: guard nyegah 2 fetch bersamaan buat tahun yang sama (renderMyJourney)
 var dailyViewCompareAutoSyncInFlight={}; // 27 Agu: guard sama, buat DailyViewCompareStore (bulan pembanding Daily View)
 // CLM-10 §1: Invoice Tracker state -- invAgentFilter cuma relevan buat leader (pola sama wsAgentFilter)
@@ -6552,8 +6586,11 @@ function renderMyJourneyPersonalView(agentName,granularity,periodSel,year,termin
     +myJourneyMetricCard('MRR',fmtRpShort(personal.renewal.mrr))
     +myJourneyMetricCard('ARPU',fmtRpShort(personal.renewal.arpu))
     +'</div>';
+  // 29 Agu: overlay YoY (checkbox "Bandingkan ke 2025") -- cuma masuk akal di granularitas Tahunan
+  // 2026 (2025 sendiri nggak punya "tahun sebelumnya" buat dibandingin di app ini).
+  var yoyShadow=(myJourneyYoyCompare&&granularity==='year'&&year==='2026')?myJourneySeriesForChart(agentName,'year',{},'2025'):null;
   var chartHtml=granularity!=='day'
-    ?'<div class="card" style="margin-top:12px">'+renderMyJourneySVGChart(myJourneySeriesForChart(agentName,granularity,periodSel,year))+'</div>'
+    ?'<div class="card" style="margin-top:12px">'+renderMyJourneySVGChart(myJourneySeriesForChart(agentName,granularity,periodSel,year),yoyShadow)+'</div>'
     :'<div class="pay-info" style="margin-top:12px">Grafik tren tersedia di granularitas Mingguan/Bulanan/Tahunan</div>';
   var upsellRowsHtml=personal.upsell.groups.length
     ?personal.upsell.groups.map(function(g){
@@ -6592,8 +6629,9 @@ function myJourneyLeaderboardHtml(granularity,periodSel,year,terminMap,recsByOut
     +'</div>';
   // Grafik tren gabungan SEMUA agen (operator: "grafik all tahunan pas all agent juga") -- reuse
   // myJourneySeriesForChart dengan agentName=null (agregat, bukan 1 agen).
+  var yoyShadowTeam=(myJourneyYoyCompare&&granularity==='year'&&year==='2026')?myJourneySeriesForChart(null,'year',{},'2025'):null;
   var chartHtml=granularity!=='day'
-    ?'<div class="ov-section"><div class="ov-section-title">📈 Tren Tim (Semua Agen)</div><div class="card">'+renderMyJourneySVGChart(myJourneySeriesForChart(null,granularity,periodSel,year))+'</div></div>'
+    ?'<div class="ov-section"><div class="ov-section-title">📈 Tren Tim (Semua Agen)</div><div class="card">'+renderMyJourneySVGChart(myJourneySeriesForChart(null,granularity,periodSel,year),yoyShadowTeam)+'</div></div>'
     :'';
   var teamPaket=computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOutletId);
   var paketSectionHtml=myJourneyPaketTableHtml(teamPaket.breakdown,'Tim',teamPaket.excluded);
@@ -6623,9 +6661,12 @@ function renderMyJourney(){
   else if(myJourneyGranularity==='month')periodSel={monthKey:myJourneyMonthSel};
   else periodSel={};
 
-  var granLabels={day:'Harian',week:'Mingguan',month:'Bulanan',year:'Tahunan'};
+  // 29 Agu: '2year' = granularitas baru "progress 2 tahun nyambung" (request operator) -- BEDA dari
+  // 'year' biasa, bukan periodSel-driven (nggak butuh myJourneyYearSel), langsung render chart 24-bulan
+  // gabungan 2025+2026 (renderMyJourneyTwoYearView) tanpa lewat computeMyJourneyPersonal/TeamTotal dkk.
+  var granLabels={day:'Harian',week:'Mingguan',month:'Bulanan',year:'Tahunan','2year':'2 Tahun'};
   var granSelHtml='<select id="mj-gran-sel" style="width:auto;padding:4px 8px;font-size:11px">'
-    +['day','week','month','year'].map(function(g){return'<option value="'+g+'"'+(myJourneyGranularity===g?' selected':'')+'>'+granLabels[g]+'</option>';}).join('')
+    +['day','week','month','year','2year'].map(function(g){return'<option value="'+g+'"'+(myJourneyGranularity===g?' selected':'')+'>'+granLabels[g]+'</option>';}).join('')
     +'</select>';
 
   var periodCtrlHtml='';
@@ -6642,7 +6683,9 @@ function renderMyJourney(){
   // 27 Agu (Option C Step 3): 2025 ditambah -- data-nya SELALU dari MyJourneySummaryStore (server
   // pre-aggregated, lihat syncMyJourneySummaryFromServer), nggak ada raw-sync UI buat tahun ini sama
   // sekali (beda dari 2026 yang masih bisa raw-sync manual buat drill-down harian bulan aktif).
-  var yearSelHtml='<select id="mj-year-sel" style="width:auto;padding:4px 8px;font-size:11px">'
+  // 29 Agu: disembunyiin di granularitas '2year' -- view itu SELALU gabungan 2025+2026, milih 1 tahun
+  // nggak relevan lagi.
+  var yearSelHtml=myJourneyGranularity==='2year'?'':'<select id="mj-year-sel" style="width:auto;padding:4px 8px;font-size:11px">'
     +['2026','2025'].map(function(y){return'<option value="'+y+'"'+(myJourneyYearSel===y?' selected':'')+'>'+y+'</option>';}).join('')
     +'</select>';
 
@@ -6658,25 +6701,39 @@ function renderMyJourney(){
   // Tombol manual + auto-sync throttled -- "ganti bulan/tahun nggak perlu sync manual" (komplain awal
   // fitur ini dibangun) TAPI tetap kasih tombol eksplisit buat re-sync kalau data server berubah.
   var yearHasSummary=Object.keys(MyJourneySummaryStore.getAll()).some(function(k){return k.indexOf(myJourneyYearSel+'-')===0;});
-  var syncBtnHtml='<button id="mj-sync-btn" class="btn btn-blu" style="padding:4px 10px;font-size:11px" title="Tarik ringkasan '+myJourneyYearSel+' dari server (1x, semua bulan sekaligus)">🔄 Sync '+myJourneyYearSel+'</button>'
-    +(yearHasSummary?'':'<span style="font-size:10px;color:var(--tx3)">⏳ Menyinkronkan '+myJourneyYearSel+'…</span>');
+  // 29 Agu: '2year' butuh KEDUA tahun tersync, bukan cuma myJourneyYearSel -- tombol single-tahun biasa
+  // nggak relevan di sini, ganti catatan yang jelasin cara sync-nya (masih via dropdown Tahunan biasa).
+  var syncBtnHtml=myJourneyGranularity==='2year'
+    ?'<span style="font-size:10px;color:var(--tx3)">ℹ Progress 2 Tahun butuh 2025 & 2026 sama-sama tersinkron -- pindah ke Tahunan buat sync manual kalau salah satu masih kosong.</span>'
+    :'<button id="mj-sync-btn" class="btn btn-blu" style="padding:4px 10px;font-size:11px" title="Tarik ringkasan '+myJourneyYearSel+' dari server (1x, semua bulan sekaligus)">🔄 Sync '+myJourneyYearSel+'</button>'
+      +(yearHasSummary?'':'<span style="font-size:10px;color:var(--tx3)">⏳ Menyinkronkan '+myJourneyYearSel+'…</span>');
 
   // 27 Agu: disclosure jujur -- MRR/Top Paket 2025 di-join server ke snapshot KLOPOS SEKARANG (2026),
   // bukan histori 2025 (nggak ada arsip per-titik-waktu). Total Revenue/deal count TETAP akurat penuh
   // (lihat mrrPaketBestEffort di endpoint GAS) -- 0 jujur, jangan diam-diam nutupin keterbatasan ini.
-  var bestEffortNoteHtml=(myJourneyYearSel==='2025')
+  var bestEffortNoteHtml=(myJourneyGranularity!=='2year'&&myJourneyYearSel==='2025')
     ?'<div style="font-size:10px;color:var(--tx3);width:100%">ℹ MRR & Top Sold Subscription '+myJourneyYearSel+' best-effort (join ke data KLOPOS sekarang, bukan histori '+myJourneyYearSel+') — Total Revenue &amp; jumlah deal tetap akurat penuh.</div>'
     :'';
 
+  // 29 Agu: checkbox "Bandingkan ke 2025 (YoY)" -- cuma relevan di Tahunan 2026 (2025 nggak punya
+  // "tahun sebelumnya" buat dibandingin di app ini, dan '2year' udah nampilin dua-duanya sekaligus).
+  var yoyCheckboxHtml=(myJourneyGranularity==='year'&&myJourneyYearSel==='2026')
+    ?'<label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--tx2);cursor:pointer"><input type="checkbox" id="mj-yoy-chk"'+(myJourneyYoyCompare?' checked':'')+'> Bandingkan ke 2025 (YoY)</label>'
+    :'';
+
   var controlsHtml='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">'
-    +granSelHtml+periodCtrlHtml+yearSelHtml+agentPickerHtml+syncBtnHtml+bestEffortNoteHtml+'</div>';
+    +granSelHtml+periodCtrlHtml+yearSelHtml+agentPickerHtml+yoyCheckboxHtml+syncBtnHtml+bestEffortNoteHtml+'</div>';
 
   // Bangun sekali per render, di-passing biar leaderboard (s.d. 11 agen) nggak rebuild dari d.records berkali-kali
   var terminMap=myJourneyOutletTerminMap();
   var recsByOutletId=myJourneyRecsByOutletId();
 
   var bodyHtml;
-  if(!isSup){
+  if(myJourneyGranularity==='2year'){
+    bodyHtml=!isSup?renderMyJourneyTwoYearView(me)
+      :!myJourneySelectedAgent?renderMyJourneyTwoYearView(null)
+      :renderMyJourneyTwoYearView(myJourneySelectedAgent);
+  }else if(!isSup){
     bodyHtml=renderMyJourneyPersonalView(me,myJourneyGranularity,periodSel,myJourneyYearSel,terminMap,recsByOutletId);
   }else if(!myJourneySelectedAgent){
     bodyHtml=myJourneyLeaderboardHtml(myJourneyGranularity,periodSel,myJourneyYearSel,terminMap,recsByOutletId);
@@ -6689,17 +6746,25 @@ function renderMyJourney(){
   // Auto-sync throttled (60dtk cooldown per tahun, cegah retry-spam kalau gagal berulang) -- HANYA
   // kalau tahun ini beneran nol summary tersimpan (bukan tiap render), biar nggak nembak server tiap
   // ganti dropdown lain. In-flight guard nyegah 2 fetch bersamaan buat tahun yang sama.
-  if(!yearHasSummary&&!myJourneySummaryAutoSyncInFlight[myJourneyYearSel]){
-    var mjTsKey='myjourney_summary_autosync_ts_'+myJourneyYearSel;
+  // 29 Agu: '2year' butuh DUA tahun, bukan cuma myJourneyYearSel -- loop keduanya lewat helper yang
+  // sama, guard/throttle-nya reuse persis (key per-tahun, bukan per-granularitas).
+  function mjAutoSyncYear(y){
+    var hasSummary=Object.keys(MyJourneySummaryStore.getAll()).some(function(k){return k.indexOf(y+'-')===0;});
+    if(hasSummary||myJourneySummaryAutoSyncInFlight[y])return;
+    var mjTsKey='myjourney_summary_autosync_ts_'+y;
     var mjLast=parseInt(localStorage.getItem(mjTsKey)||'0',10);
-    if(Date.now()-mjLast>60000){
-      localStorage.setItem(mjTsKey,String(Date.now()));
-      myJourneySummaryAutoSyncInFlight[myJourneyYearSel]=true;
-      syncMyJourneySummaryFromServer(myJourneyYearSel,true).then(function(){
-        delete myJourneySummaryAutoSyncInFlight[myJourneyYearSel];
-        if(currentTab==='myjourney')renderTab('myjourney');
-      }).catch(function(){delete myJourneySummaryAutoSyncInFlight[myJourneyYearSel];});
-    }
+    if(Date.now()-mjLast<=60000)return;
+    localStorage.setItem(mjTsKey,String(Date.now()));
+    myJourneySummaryAutoSyncInFlight[y]=true;
+    syncMyJourneySummaryFromServer(y,true).then(function(){
+      delete myJourneySummaryAutoSyncInFlight[y];
+      if(currentTab==='myjourney')renderTab('myjourney');
+    }).catch(function(){delete myJourneySummaryAutoSyncInFlight[y];});
+  }
+  if(myJourneyGranularity==='2year'){
+    mjAutoSyncYear('2025');mjAutoSyncYear('2026');
+  }else if(!yearHasSummary){
+    mjAutoSyncYear(myJourneyYearSel);
   }
 }
 
@@ -9831,6 +9896,7 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='mj-month-sel'){myJourneyMonthSel=tgt.value;renderTab('myjourney');return;}
   if(tgt.id==='mj-year-sel'){myJourneyYearSel=tgt.value;renderTab('myjourney');return;}
   if(tgt.id==='mj-agent-sel'){myJourneySelectedAgent=tgt.value||null;renderTab('myjourney');return;}
+  if(tgt.id==='mj-yoy-chk'){myJourneyYoyCompare=tgt.checked;renderTab('myjourney');return;}
   if(tgt.id==='tarik-cp-sel'){tarikCp=tgt.value;blastPage=0;refreshBlastBody();return;} // CLM-05: Jadwal Blast = filter tabel (WYSIWYG)
   if(tgt.classList.contains('blast-chk')){
     if(tgt.checked)csvSelectedIds.add(tgt.dataset.key);
