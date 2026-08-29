@@ -3075,6 +3075,43 @@ function syncMyJourneySummaryFromServer(year,silent){
     });
 }
 
+// 27 Agu (Daily View "Opsi 2"): ringkasan per-hari per-bucket buat 1 bulan, dari GAS ?action=daily_summary.
+// Payload KECIL (angka doang, bukan raw rows) -- sama semangat MyJourneySummaryStore, nggak butuh
+// eviction. Dipakai KHUSUS buat bulan PEMBANDING Daily View (dvCompareMonth) -- bulan berjalan (live)
+// tetap dari UpsellTeamStore raw seperti biasa, TIDAK disentuh (itu udah aman, selalu bulan terbaru).
+var DailyViewCompareStore={
+  KEY:'klopos_dailyview_compare_v1',
+  getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
+  setMonth:function(month,payload){var all=this.getAll();all[month]=payload;localStorage.setItem(this.KEY,JSON.stringify(all));},
+  getMonth:function(month){return this.getAll()[month]||null;}
+};
+function syncDailyViewCompareFromServer(month,silent){
+  var url=GAS_URL+'?action=daily_summary&month='+encodeURIComponent(month)+'&token='+encodeURIComponent(Auth.getToken()||'');
+  var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+  var timer=ctrl?setTimeout(function(){ctrl.abort();},60000):null; // ringan (1 bulan, nol join KLOPOS) -- 60dtk cukup, beda dari myjourney_summary
+  var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
+  return fetch(url,opts)
+    .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(json){
+      if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
+      if(json&&json.error)throw new Error(json.error);
+      DailyViewCompareStore.setMonth(month,{daysInMonth:json.daysInMonth,renewal:json.renewal,upsell:json.upsell});
+      if(!silent)toast('Daily View '+month+' 26 (pembanding) tersinkron',4000);
+      return true;
+    }).catch(function(err){
+      if(timer)clearTimeout(timer);
+      if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Daily View '+month+': '+err.message,5000);
+      throw err;
+    });
+}
+// Ubah array per-hari (bukan kumulatif) jadi running-total -- sama logic kumulatif buildDailyCumulativeSeries,
+// dipisah jadi helper krn DailyViewCompareStore udah pre-bucketed (nggak lewat buildDailyCumulativeSeries lagi).
+function cumulativeFromDaily(dailyArr){
+  var out=[],running=0;
+  for(var i=0;i<dailyArr.length;i++){running+=dailyArr[i];out.push(running);}
+  return out;
+}
+
 // CLM-10 §1: Invoice Tracker (Data Invoice CX, GAS ?action=invoicetracker) -- SATU blob (bukan
 // per-bulan kayak store lain) krn Invoice Tracker perlu di-search/filter LINTAS periode (invoice
 // lama yg baru dibayar minggu ini tetep harus ketemu). Join ke agen (composite email-primer +
@@ -3581,6 +3618,7 @@ var myJourneyMonthSel=MONTH_KEYS[new Date().getMonth()];
 var myJourneyYearSel='2026'; // param, bukan magic-string ditebar -- gampang extend pas ada data 2024/2025
 var myJourneySelectedAgent=null; // leader-only: null=leaderboard, nama=drill-in ke 1 agen
 var myJourneySummaryAutoSyncInFlight={}; // 27 Agu: guard nyegah 2 fetch bersamaan buat tahun yang sama (renderMyJourney)
+var dailyViewCompareAutoSyncInFlight={}; // 27 Agu: guard sama, buat DailyViewCompareStore (bulan pembanding Daily View)
 // CLM-10 §1: Invoice Tracker state -- invAgentFilter cuma relevan buat leader (pola sama wsAgentFilter)
 // invCreatorFilter (13 Jul, feedback operator): filter by PEMBUAT invoice (creatorName) -- beda dari
 // invAgentFilter (agentName hasil join/tag). Dipake buat gampangin cari invoice buatan leader yg
@@ -4674,6 +4712,23 @@ function renderOverview(){
   var dvPrevMonthKey=dvCompareMonth||prevMonthKey;
   var dvDaysInPrevMonth=new Date(2026,MONTH_KEYS.indexOf(dvPrevMonthKey)+1,0).getDate();
   var dvPrevUT=UpsellTeamStore.getMonth(dvPrevMonthKey);
+  // 27 Agu (Daily View "Opsi 2"): kalau raw bulan pembanding nggak ada (belum di-sync/ke-evict),
+  // fallback ke DailyViewCompareStore (server pre-aggregated, kecil, nggak butuh raw sync manual) --
+  // sama pola My Journey Option C. Chart+tabel Tim doang yang kepenuhin dari sini (scope disepakati);
+  // "MTD per-Agen" TETAP raw-dependent seperti sebelumnya, di luar scope ini.
+  var dvPrevCache=dvPrevUT?null:DailyViewCompareStore.getMonth(dvPrevMonthKey);
+  if(!dvPrevUT&&!dvPrevCache&&!dailyViewCompareAutoSyncInFlight[dvPrevMonthKey]){
+    var dvcTsKey='dailyview_compare_autosync_ts_'+dvPrevMonthKey;
+    var dvcLast=parseInt(localStorage.getItem(dvcTsKey)||'0',10);
+    if(Date.now()-dvcLast>60000){
+      localStorage.setItem(dvcTsKey,String(Date.now()));
+      dailyViewCompareAutoSyncInFlight[dvPrevMonthKey]=true;
+      syncDailyViewCompareFromServer(dvPrevMonthKey,true).then(function(){
+        delete dailyViewCompareAutoSyncInFlight[dvPrevMonthKey];
+        if(currentTab==='overview')renderTab('overview');
+      }).catch(function(){delete dailyViewCompareAutoSyncInFlight[dvPrevMonthKey];});
+    }
+  }
   var dailyViewSection='';
   if(!dvCurUT){
     dailyViewSection='<div class="ov-section"><div class="ov-section-title">📅 Daily View ('+currentMonthKey+' 26)</div>'
@@ -4704,8 +4759,56 @@ function renderOverview(){
       }
       return buildDailyCumulativeSeries(ut[dvMetricField],days,map,dvIsCumulative);
     }
+    // 27 Agu: versi dari DailyViewCompareStore (pre-bucketed per-tim server-side, bukan raw rows) --
+    // dipakai KHUSUS saat dvPrevUT nggak ada. Logic numerator/denominator SENGAJA disamain persis
+    // dvSeriesFor/dvArpuFor asli (lihat komentar masing-masing), biar hasil apple-to-apple sama raw.
+    function dvSeriesFromCache(cache){
+      if(!cache)return null;
+      var out={};
+      Object.keys(DAILY_VIEW_BUCKETS).forEach(function(k){
+        var rArr=(cache.renewal&&cache.renewal.revenue&&cache.renewal.revenue[k])||new Array(cache.daysInMonth).fill(0);
+        var uArr=(cache.upsell&&cache.upsell.revenue&&cache.upsell.revenue[k])||new Array(cache.daysInMonth).fill(0);
+        var dailyArr;
+        if(dailyViewMetricSel==='total')dailyArr=rArr.map(function(v,i){return v+(uArr[i]||0);});
+        else if(dailyViewMetricSel==='upsell')dailyArr=uArr;
+        else dailyArr=rArr;
+        out[k]=dvIsCumulative?cumulativeFromDaily(dailyArr):dailyArr.slice();
+      });
+      return out;
+    }
+    function dvCountsFromCache(cache,cutoffDay){
+      var out={};
+      Object.keys(DAILY_VIEW_BUCKETS).forEach(function(k){
+        var rArr=(cache&&cache.renewal&&cache.renewal.count&&cache.renewal.count[k])||[];
+        var uArr=(cache&&cache.upsell&&cache.upsell.count&&cache.upsell.count[k])||[];
+        var lim=Math.min(cutoffDay,Math.max(rArr.length,uArr.length));
+        out.renewal=out.renewal||{};out.upsell=out.upsell||{};
+        var rs=0,us=0;
+        for(var d=0;d<lim;d++){rs+=rArr[d]||0;us+=uArr[d]||0;}
+        out.renewal[k]=rs;out.upsell[k]=us;
+      });
+      return out;
+    }
+    function dvArpuFromCache(cache,cutoffDay){
+      var out={};
+      Object.keys(DAILY_VIEW_BUCKETS).forEach(function(k){
+        var rRevArr=(cache&&cache.renewal&&cache.renewal.revenue&&cache.renewal.revenue[k])||[];
+        var uRevArr=(cache&&cache.upsell&&cache.upsell.revenue&&cache.upsell.revenue[k])||[];
+        var outArr=(cache&&cache.renewal&&cache.renewal.outletCumulative&&cache.renewal.outletCumulative[k])||[];
+        var idx=Math.min(cutoffDay,Math.max(rRevArr.length,uRevArr.length))-1;
+        if(idx<0){out[k]=0;return;}
+        var cumRev=0;
+        for(var d=0;d<=idx;d++){
+          if(dailyViewMetricSel!=='upsell')cumRev+=rRevArr[d]||0;
+          if(dailyViewMetricSel==='upsell'||dailyViewMetricSel==='total')cumRev+=uRevArr[d]||0;
+        }
+        var denom=dailyViewMetricSel==='upsell'?0:(outArr[idx]||0); // upsell nggak pernah punya outletId, sama kayak raw
+        out[k]=denom?Math.round(cumRev/denom):0;
+      });
+      return out;
+    }
     var dvCurSeries=dvSeriesFor(dvCurUT,daysInMonth,dvCurMap);
-    var dvPrevSeries=dvPrevUT?dvSeriesFor(dvPrevUT,dvDaysInPrevMonth,dvRosterMap(dvPrevUT)):null;
+    var dvPrevSeries=dvPrevUT?dvSeriesFor(dvPrevUT,dvDaysInPrevMonth,dvRosterMap(dvPrevUT)):dvSeriesFromCache(dvPrevCache);
     // QA round 2b: count deal renewal/upsell + attach rate per tim (bulan berjalan) -- gantiin 4 stat
     // card Multi-team Upsell Tracker yg dilebur ke section ini.
     // 19 Agu: rosterMap+cutoffDay dijadiin parameter (SEBELUMNYA hardcode dvCurMap, nol cutoff) --
@@ -4732,8 +4835,9 @@ function renderOverview(){
     // sameDayIdx biar nol dependency ke urutan deklarasi var).
     var dvPrevCutoffDay=Math.min(dayOfMonthLocked,dvDaysInPrevMonth);
     var dvPrevRosterMap=dvPrevUT?dvRosterMap(dvPrevUT):{};
-    var dvPrevRenCounts=dvCountsFor(dvPrevUT?dvPrevUT.renewalsRaw:[],dvPrevRosterMap,dvPrevCutoffDay);
-    var dvPrevUpsCounts=dvCountsFor(dvPrevUT?dvPrevUT.upsellRaw:[],dvPrevRosterMap,dvPrevCutoffDay);
+    var dvPrevCountsFromCache=(!dvPrevUT&&dvPrevCache)?dvCountsFromCache(dvPrevCache,dvPrevCutoffDay):null;
+    var dvPrevRenCounts=dvPrevUT?dvCountsFor(dvPrevUT.renewalsRaw,dvPrevRosterMap,dvPrevCutoffDay):(dvPrevCountsFromCache?dvPrevCountsFromCache.renewal:dvCountsFor([],dvPrevRosterMap,dvPrevCutoffDay));
+    var dvPrevUpsCounts=dvPrevUT?dvCountsFor(dvPrevUT.upsellRaw,dvPrevRosterMap,dvPrevCutoffDay):(dvPrevCountsFromCache?dvPrevCountsFromCache.upsell:dvCountsFor([],dvPrevRosterMap,dvPrevCutoffDay));
     // QA round 2 (Ubay): pilihan bucket jadi DROPDOWN (Semua/CLM/CC/TC/Self Onboard/Sales), bukan deret tombol.
     var dvBucketSelHtml='<select id="daily-view-bucket-sel" style="width:auto;padding:4px 8px;font-size:11px;margin-bottom:0">'
       +Object.keys(DAILY_VIEW_BUCKETS).map(function(k){
@@ -4758,6 +4862,9 @@ function renderOverview(){
       +MONTH_KEYS.map(function(m){return'<option value="'+m+'"'+(m===dvPrevMonthKey?' selected':'')+'>'+m+' 26</option>';}).join('')
       +'</select>';
     var dvCompareYearSelHtml='<select disabled title="Multi-tahun belum didukung -- data sekarang cuma 2026" style="width:auto;padding:4px 8px;font-size:11px;margin-bottom:0;opacity:.5"><option>2026</option></select>';
+    // 27 Agu: manual re-sync buat ringkasan bulan pembanding (fallback server) -- cuma relevan kalau
+    // raw-nya emang nggak ada (auto-sync throttled 60dtk, ini buat retry cepat tanpa nunggu).
+    var dvCompareSyncBtnHtml=dvPrevUT?'':'<button id="dv-compare-sync-btn" class="btn btn-blu" data-month="'+dvPrevMonthKey+'" style="padding:4px 10px;font-size:11px" title="Tarik ringkasan '+dvPrevMonthKey+' 26 dari server">🔄 Sync '+dvPrevMonthKey+'</button>';
     // QA round 2: breakdown "siapa aja di Sales" -- jawab langsung pertanyaan kelas "250rb ini siapa?"
     // (kasus Heriyandi). Distinct creatorName bucket SALES bulan berjalan + total Rp, biar nama
     // non-roster (bener2 sales ATAU salah ejaan di tab Agent CX) langsung keliatan tanpa buka sheet.
@@ -4812,7 +4919,7 @@ function renderOverview(){
       return out;
     }
     var dvArpuLocked=dvArpuFor(dvCurUT,dvCurMap,dayOfMonthLocked);
-    var dvArpuPrevLocked=dvArpuFor(dvPrevUT,dvPrevRosterMap,dvPrevCutoffDay);
+    var dvArpuPrevLocked=dvPrevUT?dvArpuFor(dvPrevUT,dvPrevRosterMap,dvPrevCutoffDay):dvArpuFromCache(dvPrevCache,dvPrevCutoffDay);
     var dvRows=Object.keys(DAILY_VIEW_BUCKETS).map(function(k){
       var curVal=dvCurSeries[k][dayOfMonthLocked-1]||0;
       var liveVal=dvCurSeries[k][dayOfMonth-1];
@@ -4854,9 +4961,14 @@ function renderOverview(){
     var dvAddonRows=Object.keys(dvAddonAgg).sort(function(a,b){return dvAddonAgg[b].revenue-dvAddonAgg[a].revenue;}).map(function(ty){
       return'<tr><td>'+ty+'</td><td style="text-align:right">'+dvAddonAgg[ty].count+'</td><td style="text-align:right">'+fmtRpFull(dvAddonAgg[ty].revenue)+'</td></tr>';
     }).join('');
+    // 27 Agu: disclosure jujur kapan bulan pembanding kepenuhin dari cache server (bukan raw baru).
+    var dvCompareSourceNoteHtml=(!dvPrevUT&&dvPrevCache)
+      ?'<div style="font-size:10px;color:var(--tx3);margin-bottom:8px">ℹ '+dvPrevMonthKey+' 26 (pembanding) dari ringkasan server (bukan raw baru) — angka Tim/chart di atas akurat, "MTD per-Agen" di bawah tetap butuh raw-sync manual buat bulan ini.</div>'
+      :(!dvPrevUT&&!dvPrevCache)?'<div style="font-size:10px;color:var(--tx3);margin-bottom:8px">⏳ Menyinkronkan ringkasan '+dvPrevMonthKey+' 26 (pembanding)…</div>':'';
     dailyViewSection='<div class="ov-section"><div class="ov-section-title">📅 Daily View ('+currentMonthKey+' 26 vs '+dvPrevMonthKey+' 26) <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1)</span></div>'
+      +dvCompareSourceNoteHtml
       +'<div class="card">'
-      +'<div class="form-row" style="margin-bottom:8px;gap:6px;align-items:center">'+dvMetricTabsHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvBucketSelHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvSeriesModeSelHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span><span style="font-size:11px;color:var(--tx3)">vs</span>'+dvCompareMonthSelHtml+dvCompareYearSelHtml+'</div>'
+      +'<div class="form-row" style="margin-bottom:8px;gap:6px;align-items:center">'+dvMetricTabsHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvBucketSelHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span>'+dvSeriesModeSelHtml+'<span style="width:1px;background:var(--bdr);margin:0 4px"></span><span style="font-size:11px;color:var(--tx3)">vs</span>'+dvCompareMonthSelHtml+dvCompareYearSelHtml+dvCompareSyncBtnHtml+'</div>'
       +dvChartHtml
       +'<div style="display:flex;gap:14px;margin-top:6px;font-size:10px;color:var(--tx3)"><span>▬ '+currentMonthKey+' 26 (s.d. kemarin)</span><span>┄ '+dvPrevMonthKey+' 26 (penuh)</span></div>'
       +'</div>'
@@ -9467,6 +9579,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='sync-invoicetracker-btn')syncInvoiceTrackerOnly();
   else if(tgt.id==='sync-visittc-btn')syncVisitTCOnly();
   else if(tgt.id==='mj-sync-btn')syncMyJourneySummaryFromServer(myJourneyYearSel).then(function(){renderTab('myjourney');}).catch(function(){});
+  else if(tgt.id==='dv-compare-sync-btn')syncDailyViewCompareFromServer(tgt.dataset.month).then(function(){renderTab('overview');}).catch(function(){});
   else if(tgt.id==='sync-3m-btn')syncThreeMonths();
   else if(tgt.id==='reset-records-btn'){
     if(!confirm('Hapus SEMUA records? Tindakan ini tidak bisa dibatalkan.\n(Response & blast history tidak akan terhapus)'))return;
