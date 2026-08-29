@@ -2128,7 +2128,7 @@ function computePersonalAttachRate(period,agentName){
 // hari ke-12) biar genuinely MTD apple-to-apple -- dulu bulan lalu kehitung PENUH 1 bulan, jadi growth%
 // selalu keliatan anjlok padahal bulan berjalan baru setengah jalan. Pola sama persis sameDayIdx di
 // Daily View. Bulan-ini nggak perlu di-cap (datanya emang belum ada yg lewat hari ini).
-function computeAgentMtdCompare(fieldArr,agentName,curPeriod,prevPeriod,dayCap){
+function computeAgentMtdCompare(fieldArr,agentName,curPeriod,prevPeriod,dayCap,prevCache){
   var curFin=curPeriod?UpsellTeamStore.getMonth(curPeriod):null;
   var prevFin=prevPeriod?UpsellTeamStore.getMonth(prevPeriod):null;
   var agents=AgentsConfig.getAll();
@@ -2151,10 +2151,29 @@ function computeAgentMtdCompare(fieldArr,agentName,curPeriod,prevPeriod,dayCap){
     var arpuDenom=hasOutletId?Object.keys(outletSet).length:rows.length;
     return{revenue:revenue,count:rows.length,arpu:arpuDenom?Math.round(revenue/arpuDenom):0,synced:true};
   }
+  // 29 Agu -- MTD per-Agen extension: kalau prevFin (raw) nggak ada, fallback ke DailyViewCompareStore
+  // (byAgent, server pre-aggregated -- sama cache & endpoint yang dipakai Daily View chart+tabel Tim,
+  // lihat getDailySummary GAS). CUR nggak pernah lewat sini -- bulan berjalan selalu raw/reliable.
+  // Cache LAMA (ke-sync sebelum extension ini) nggak punya byAgent -- section.byAgent falsy -> synced
+  // false, angka dikosongin apa adanya (bukan nebak 0), UI nunjukin "—" sampe di-re-sync manual.
+  function aggFromCache(section,capDay){
+    if(!section||!section.byAgent)return{revenue:0,count:0,arpu:0,synced:false};
+    var revArr=section.byAgent.revenue[agentName],cntArr=section.byAgent.count[agentName];
+    if(!revArr||!cntArr)return{revenue:0,count:0,arpu:0,synced:true}; // byAgent ADA, agen ini genuinely nol row bulan itu
+    var upTo=capDay?Math.min(capDay,revArr.length):revArr.length;
+    var revenue=0,count=0;
+    for(var i=0;i<upTo;i++){revenue+=revArr[i];count+=cntArr[i];}
+    var outArr=section.byAgent.outletCumulative&&section.byAgent.outletCumulative[agentName];
+    var arpuDenom=outArr?(outArr[upTo-1]||0):count; // upsell nggak track outletCumulative -- fallback count (ARPU upsell emang selalu 0 dari dulu, bukan regresi)
+    return{revenue:revenue,count:count,arpu:arpuDenom?Math.round(revenue/arpuDenom):0,synced:true};
+  }
   // 25 Jul (operator): CUR sekarang JUGA di-cap ke dayCap (dulu nol cap = full bulan berjalan s.d.
   // detik sync terakhir, bisa jam berapa aja -- nggak apple-to-apple ke PREV yang dicap ke hari
   // penuh). Dua-duanya cap yang SAMA (dayCap = H-1, lihat dayOfMonthLocked) = genuinely apple-to-apple.
-  var cur=agg(curFin,dayCap||null),prev=agg(prevFin,dayCap||null);
+  var cur=agg(curFin,dayCap||null);
+  var prev=prevFin?agg(prevFin,dayCap||null)
+    :prevCache?aggFromCache(fieldArr==='renewalsRaw'?prevCache.renewal:prevCache.upsell,dayCap||null)
+    :agg(null,dayCap||null);
   var revGrowth=(prev.synced&&prev.revenue)?Math.round((cur.revenue-prev.revenue)/prev.revenue*100):null;
   var cntGrowth=(prev.synced&&prev.count)?Math.round((cur.count-prev.count)/prev.count*100):null;
   return{cur:cur,prev:prev,revGrowth:revGrowth,cntGrowth:cntGrowth};
@@ -4714,8 +4733,10 @@ function renderOverview(){
   var dvPrevUT=UpsellTeamStore.getMonth(dvPrevMonthKey);
   // 27 Agu (Daily View "Opsi 2"): kalau raw bulan pembanding nggak ada (belum di-sync/ke-evict),
   // fallback ke DailyViewCompareStore (server pre-aggregated, kecil, nggak butuh raw sync manual) --
-  // sama pola My Journey Option C. Chart+tabel Tim doang yang kepenuhin dari sini (scope disepakati);
-  // "MTD per-Agen" TETAP raw-dependent seperti sebelumnya, di luar scope ini.
+  // sama pola My Journey Option C. 29 Agu: scope diperluas -- getDailySummary sekarang JUGA breakdown
+  // per-agen (bukan cuma per-bucket tim), jadi "MTD per-Agen" di bawah IKUT kepenuhin dari cache ini
+  // (lihat computeAgentMtdCompare param prevCache). Cache LAMA (sebelum extension ini) nggak punya
+  // byAgent -- otomatis fallback ke "—" sampe di-re-sync manual, bukan silently salah.
   var dvPrevCache=dvPrevUT?null:DailyViewCompareStore.getMonth(dvPrevMonthKey);
   if(!dvPrevUT&&!dvPrevCache&&!dailyViewCompareAutoSyncInFlight[dvPrevMonthKey]){
     var dvcTsKey='dailyview_compare_autosync_ts_'+dvPrevMonthKey;
@@ -4962,8 +4983,11 @@ function renderOverview(){
       return'<tr><td>'+ty+'</td><td style="text-align:right">'+dvAddonAgg[ty].count+'</td><td style="text-align:right">'+fmtRpFull(dvAddonAgg[ty].revenue)+'</td></tr>';
     }).join('');
     // 27 Agu: disclosure jujur kapan bulan pembanding kepenuhin dari cache server (bukan raw baru).
+    // 29 Agu: sub-note byAgent -- cache LAMA (ke-sync sebelum extension MTD per-Agen) nggak punya
+    // breakdown per-agen, jadi perlu re-sync manual sekali biar "MTD per-Agen" ikut kepenuhin.
+    var dvPrevCacheHasByAgent=!!(dvPrevCache&&dvPrevCache.renewal&&dvPrevCache.renewal.byAgent);
     var dvCompareSourceNoteHtml=(!dvPrevUT&&dvPrevCache)
-      ?'<div style="font-size:10px;color:var(--tx3);margin-bottom:8px">ℹ '+dvPrevMonthKey+' 26 (pembanding) dari ringkasan server (bukan raw baru) — angka Tim/chart di atas akurat, "MTD per-Agen" di bawah tetap butuh raw-sync manual buat bulan ini.</div>'
+      ?'<div style="font-size:10px;color:var(--tx3);margin-bottom:8px">ℹ '+dvPrevMonthKey+' 26 (pembanding) dari ringkasan server (bukan raw baru) — angka Tim/chart di atas akurat'+(dvPrevCacheHasByAgent?', "MTD per-Agen" di bawah juga ikut kepenuhin dari sini.':'; "MTD per-Agen" di bawah masih kosong ("—") — cache ini ke-sync sebelum breakdown per-agen ada, klik "🔄 Sync '+dvPrevMonthKey+'" di atas buat re-sync.')+'</div>'
       :(!dvPrevUT&&!dvPrevCache)?'<div style="font-size:10px;color:var(--tx3);margin-bottom:8px">⏳ Menyinkronkan ringkasan '+dvPrevMonthKey+' 26 (pembanding)…</div>':'';
     dailyViewSection='<div class="ov-section"><div class="ov-section-title">📅 Daily View ('+currentMonthKey+' 26 vs '+dvPrevMonthKey+' 26) <span style="font-size:9px;color:var(--tx3);font-weight:400">dikunci s.d. kemarin (H-1)</span></div>'
       +dvCompareSourceNoteHtml
@@ -5063,8 +5087,8 @@ function renderOverview(){
     function mtdRowsHtml(fieldArr,withAttach,potentialKey){
       var totals={prevRev:0,curRev:0,prevCnt:0,curCnt:0,liveRev:0,liveCnt:0,potential:0};
       var rows=AGENTS.map(function(ag){
-        var c=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,dvPrevMonthKey,mtdDayCap);
-        var live=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,dvPrevMonthKey,null);
+        var c=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,dvPrevMonthKey,mtdDayCap,dvPrevCache);
+        var live=computeAgentMtdCompare(fieldArr,ag,currentMonthKey,dvPrevMonthKey,null,dvPrevCache); // live cuma pakai .cur, prevCache di sini nggak relevan tapi harmless
         var attachCell='';
         if(withAttach){
           var ar=computePersonalAttachRate(currentMonthKey,ag);
