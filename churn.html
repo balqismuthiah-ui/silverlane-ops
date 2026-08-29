@@ -1779,7 +1779,12 @@ function myJourneySeriesForChart(agentName,granularity,periodSel,year){
   if(granularity==='year'){
     var renewal=[],upsell=[];
     MONTH_KEYS.forEach(function(m){
-      var fin=UpsellTeamStore.getMonth(m);
+      // 29 Agu FIX: fungsi ini kelewatan pas fix "UpsellTeamStore 2026-ONLY" diterapin ke
+      // computeMyJourneyTeamTotal/Personal/PaketBreakdown (27 Agu, lihat catatan di situ) -- bare key
+      // ('Aug') SELALU balikin data 2026 (bulan berjalan, selalu ke-sync) walau chart yang di-render
+      // itu tahun lain. Row-nya kefilter abis di bawah (year beda), hasilnya dip 0 palsu TEPAT di
+      // bulan yang namanya sama kayak bulan berjalan sekarang -- persis simtom yang dilaporkan.
+      var fin=year==='2026'?UpsellTeamStore.getMonth(m):null;
       var rSum=0,uSum=0;
       if(fin){
         (fin.renewalsRaw||[]).forEach(function(r){if(isMatch(r.creatorName)&&localDateStr(r.paidDate).slice(0,4)===String(year))rSum+=r.subtotal;});
@@ -1812,7 +1817,11 @@ function myJourneySeriesForChart(agentName,granularity,periodSel,year){
   var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
   var renewalByDay={},upsellByDay={};
   relevantMonths.forEach(function(m){
-    var fin=UpsellTeamStore.getMonth(m);
+    // 29 Agu: sama guard kayak branch 'year' di atas -- day-level chart nggak punya fallback
+    // MyJourneySummaryStore (server nggak nyediain granularitas harian), jadi tahun selain 2026 emang
+    // apa adanya kosong (0 jujur), TAPI JANGAN sampe kesenggol data 2026 yang kebetulan nama bulannya
+    // sama (row-nya bakal ke-skip krn tanggal beda, tapi lebih bersih dieksplisitkan daripada implisit).
+    var fin=year==='2026'?UpsellTeamStore.getMonth(m):null;
     if(!fin)return;
     (fin.renewalsRaw||[]).forEach(function(r){
       if(!isMatch(r.creatorName))return;
