@@ -2204,7 +2204,10 @@ function computeAgentMtdCompare(fieldArr,agentName,curPeriod,prevPeriod,dayCap,p
   // (byAgent, server pre-aggregated -- sama cache & endpoint yang dipakai Daily View chart+tabel Tim,
   // lihat getDailySummary GAS). CUR nggak pernah lewat sini -- bulan berjalan selalu raw/reliable.
   // Cache LAMA (ke-sync sebelum extension ini) nggak punya byAgent -- section.byAgent falsy -> synced
-  // false, angka dikosongin apa adanya (bukan nebak 0), UI nunjukin "—" sampe di-re-sync manual.
+  // false. Sel Revenue/Deal MTD tetap nampilin "Rp 0"/"0" (mtdRowsHtml baca .revenue/.count apa adanya,
+  // nggak ngecek .synced) -- yang genuinely nunjukin "—" cuma kolom Growth% (revGrowth/cntGrowth null
+  // kalau !prev.synced). QA-verified (Ryry, 29 Agu): bukan bug, tapi komentar lama di sini SALAH nyebut
+  // semua kolom nunjukin "—" -- diluruskan di sini. Klik "🔄 Sync [Bulan]" buat re-populate byAgent.
   function aggFromCache(section,capDay){
     if(!section||!section.byAgent)return{revenue:0,count:0,arpu:0,synced:false};
     var revArr=section.byAgent.revenue[agentName],cntArr=section.byAgent.count[agentName];
