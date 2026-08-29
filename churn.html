@@ -6198,6 +6198,13 @@ function blastFilteredRows(){
     if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))_blastLatestByOutlet[r.outletId]=r;
   });
   recs=recs.filter(function(r){return !r.outletId||_blastLatestByOutlet[r.outletId]===r;});
+  // 29 Agu (operator): exclude outlet yang UDAH renewal sejak siklus historis ini dibuka -- Expired
+  // Date Latest (r.expiryDate) udah lewat dari Expired Date Historical, tapi karena renewal-nya nggak
+  // lewat CRM/billing yang biasa (jadi nggak ada record siklus BARU yang bisa menang di dedupe di
+  // atas), siklus LAMA ini tetep nongol & kena blast walau outletnya udah aktif sampai tahun depan.
+  // Sinyal "udah extended" ini SAMA PERSIS yang dipake badge "↻ Extended" di My Worksheet (line ~5660)
+  // -- di sini dipake buat EXCLUDE, bukan cuma ditampilin. Blanket exclude (operator: nggak perlu toggle).
+  recs=recs.filter(function(r){return!(r.expiryDate&&r.expiredDateHistorical&&r.expiryDate!==r.expiredDateHistorical);});
   recs=applyBlastFullGate(recs,isSup);
   // Filter agen cuma relevan buat leader (agen biasa udah ke-scope ke case-nya sendiri di atas).
   // CLM-05 UX (operator 13 Jul): DIBALIK dari EXCLUDE (AC-A4-1) jadi INCLUDE. Alasan: exclude bikin
@@ -8173,6 +8180,13 @@ function openCsvModal(){
     if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))_blastLatestByOutlet[r.outletId]=r;
   });
   recs=recs.filter(function(r){return !r.outletId||_blastLatestByOutlet[r.outletId]===r;});
+  // 29 Agu (operator): exclude outlet yang UDAH renewal sejak siklus historis ini dibuka -- Expired
+  // Date Latest (r.expiryDate) udah lewat dari Expired Date Historical, tapi karena renewal-nya nggak
+  // lewat CRM/billing yang biasa (jadi nggak ada record siklus BARU yang bisa menang di dedupe di
+  // atas), siklus LAMA ini tetep nongol & kena blast walau outletnya udah aktif sampai tahun depan.
+  // Sinyal "udah extended" ini SAMA PERSIS yang dipake badge "↻ Extended" di My Worksheet (line ~5660)
+  // -- di sini dipake buat EXCLUDE, bukan cuma ditampilin. Blanket exclude (operator: nggak perlu toggle).
+  recs=recs.filter(function(r){return!(r.expiryDate&&r.expiredDateHistorical&&r.expiryDate!==r.expiredDateHistorical);});
   recs=applyBlastFullGate(recs,isSup);
   // CLM-05 (operator 14 Jul): tabel Blast & CSV SAMA granularitas = per-nomor-alternatif. Seleksi
   // (csvSelectedIds) = key per-nomor (id_nomor); CSV = TEPAT nomor yg dipilih. Nomor internal/GC & dummy
