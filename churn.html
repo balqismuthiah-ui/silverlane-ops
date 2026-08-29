@@ -1528,7 +1528,16 @@ function computeMyJourneyPersonal(agentName,granularity,periodSel,year,terminMap
   recsByOutletId=recsByOutletId||myJourneyRecsByOutletId();
   var agents=AgentsConfig.getAll();
   var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
-  var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
+  // 27 Agu (fix, Option C Step 3): UpsellTeamStore itu 2026-ONLY, key-nya bare bulan ('Aug') TANPA
+  // tahun -- dulu aman krn cuma ada 1 tahun. Sekarang year bisa '2025', dan checking presence via
+  // UpsellTeamStore.getMonth('Aug') TETAP balikin truthy (nyerempet data Aug 2026 yang emang selalu
+  // ke-sync, current month) walau yang diminta itu Aug 2025 -- row-row-nya kefilter abis (year beda di
+  // myJourneyRowInPeriod), TAPI syncedMonths udah kadung nganggep "udah sinkron", jadi NGGAK PERNAH
+  // fallback ke MyJourneySummaryStore. Empiris: month-view Aug 2025 balik nol total, year-view 2025
+  // ada dip aneh pas Aug. Fix: UpsellTeamStore CUMA valid buat year 2026 (satu-satunya tahun yang
+  // punya raw-sync UI) -- tahun lain SELALU 100% dari MyJourneySummaryStore, nggak pernah dianggap
+  // "synced" via store 2026-only ini.
+  var syncedMonths=year==='2026'?relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);}):[];
   var renewalRows=[],upsellRows=[];
   syncedMonths.forEach(function(m){
     var fin=UpsellTeamStore.getMonth(m);
@@ -1665,7 +1674,16 @@ function myJourneyComputeAndCacheSummary(month,year){
 function computeMyJourneyTeamTotal(granularity,periodSel,year){
   var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
   var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
-  var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
+  // 27 Agu (fix, Option C Step 3): UpsellTeamStore itu 2026-ONLY, key-nya bare bulan ('Aug') TANPA
+  // tahun -- dulu aman krn cuma ada 1 tahun. Sekarang year bisa '2025', dan checking presence via
+  // UpsellTeamStore.getMonth('Aug') TETAP balikin truthy (nyerempet data Aug 2026 yang emang selalu
+  // ke-sync, current month) walau yang diminta itu Aug 2025 -- row-row-nya kefilter abis (year beda di
+  // myJourneyRowInPeriod), TAPI syncedMonths udah kadung nganggep "udah sinkron", jadi NGGAK PERNAH
+  // fallback ke MyJourneySummaryStore. Empiris: month-view Aug 2025 balik nol total, year-view 2025
+  // ada dip aneh pas Aug. Fix: UpsellTeamStore CUMA valid buat year 2026 (satu-satunya tahun yang
+  // punya raw-sync UI) -- tahun lain SELALU 100% dari MyJourneySummaryStore, nggak pernah dianggap
+  // "synced" via store 2026-only ini.
+  var syncedMonths=year==='2026'?relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);}):[];
   var totalRevenueRenewal=0,totalRevenueUpsell=0;
   syncedMonths.forEach(function(m){
     var fin=UpsellTeamStore.getMonth(m);
@@ -1702,7 +1720,16 @@ function computeMyJourneyTeamPaketBreakdown(granularity,periodSel,year,recsByOut
   recsByOutletId=recsByOutletId||myJourneyRecsByOutletId();
   var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';});
   var relevantMonths=myJourneyMonthsForPeriod(granularity,periodSel);
-  var syncedMonths=relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);});
+  // 27 Agu (fix, Option C Step 3): UpsellTeamStore itu 2026-ONLY, key-nya bare bulan ('Aug') TANPA
+  // tahun -- dulu aman krn cuma ada 1 tahun. Sekarang year bisa '2025', dan checking presence via
+  // UpsellTeamStore.getMonth('Aug') TETAP balikin truthy (nyerempet data Aug 2026 yang emang selalu
+  // ke-sync, current month) walau yang diminta itu Aug 2025 -- row-row-nya kefilter abis (year beda di
+  // myJourneyRowInPeriod), TAPI syncedMonths udah kadung nganggep "udah sinkron", jadi NGGAK PERNAH
+  // fallback ke MyJourneySummaryStore. Empiris: month-view Aug 2025 balik nol total, year-view 2025
+  // ada dip aneh pas Aug. Fix: UpsellTeamStore CUMA valid buat year 2026 (satu-satunya tahun yang
+  // punya raw-sync UI) -- tahun lain SELALU 100% dari MyJourneySummaryStore, nggak pernah dianggap
+  // "synced" via store 2026-only ini.
+  var syncedMonths=year==='2026'?relevantMonths.filter(function(m){return!!UpsellTeamStore.getMonth(m);}):[];
   var paketMap={};MRR_PAKET_TIERS.forEach(function(t){paketMap[t]={bucket:t,count:0,revenue:0};});
   var excluded=0;
   syncedMonths.forEach(function(m){
