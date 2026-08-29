@@ -1664,6 +1664,13 @@ function myJourneyComputeAndCacheSummary(month,year){
       paket:p.paket.breakdown.map(function(b){return{bucket:b.bucket,count:b.count,revenue:b.revenue};})
     };
   });
+  // 29 Agu FIX: caller (mis. syncUpsellTeamOnly) manggil ini UNCONDITIONAL abis UpsellTeamStore.setMonth,
+  // TERMASUK pas persist itu genuinely gagal (localStorage penuh -- toast "TIDAK disimpan"). Kalau gagal,
+  // UpsellTeamStore.getMonth(month) balik falsy lagi, SEMUA agen ke-skip di atas, perAgent jadi {} --
+  // dan overwrite ini nimpa cache yang sebelumnya udah benar (mis. dari server-side getMyJourneySummary/
+  // Option C) jadi kosong. "Nggak ada satupun agen ke-compute" = nggak ada info baru yang genuinely
+  // sukses, JANGAN sentuh cache lama sama sekali (biarin apa pun yang udah ada, bukan nebak 0).
+  if(!Object.keys(perAgent).length)return;
   MyJourneySummaryStore.setMonth(year+'-'+month,{perAgent:perAgent});
 }
 // Total tim (buat "kontribusi % ke tim" di agent view -- SATU-SATUNYA bentuk pembanding yang boleh
