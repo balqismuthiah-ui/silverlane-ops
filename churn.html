@@ -711,12 +711,17 @@ function checkpointDateStr(expiryDate,offsetDays){
   d.setDate(d.getDate()+offsetDays);
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
-// Checkpoint mana aja yg jatuh pada tanggal tertentu (default hari ini) buat 1 expiryDate
-function checkpointsDueOn(expiryDate,dateStr){
+// Checkpoint mana aja yg jatuh pada tanggal tertentu (default hari ini) buat 1 expiryDate.
+// 29 Agu: isSup opsional -- kalau false (agen) DAN checkpoint itu di-gate tertutup (BlastCheckpointGate),
+// checkpoint itu nggak pernah dianggap "due" sama sekali buat agen (leader tetap lihat semua, bypass).
+function checkpointsDueOn(expiryDate,dateStr,isSup){
   dateStr=dateStr||localDateStr(new Date().toISOString());
-  return BLAST_CHECKPOINTS.filter(function(cp){return checkpointDateStr(expiryDate,cp.offsetDays)===dateStr;});
+  return BLAST_CHECKPOINTS.filter(function(cp){
+    if(!isSup&&!BlastCheckpointGate.isReleased(cp.key))return false;
+    return checkpointDateStr(expiryDate,cp.offsetDays)===dateStr;
+  });
 }
-function checkpointsDueToday(expiryDate){return checkpointsDueOn(expiryDate);}
+function checkpointsDueToday(expiryDate,isSup){return checkpointsDueOn(expiryDate,null,isSup);}
 // CLM-05 #25: cocokkan 1 event kirim BROADCASTLOG (sent_at) ke checkpoint H-3/H+2/H+8 milik SATU record.
 // Window 3 hari (< jarak minimum antar-checkpoint yg 5 hari) supaya nggak pernah salah checkpoint dalam 1 record,
 // dan dipakai juga buat disambiguasi kalau 1 nomor HP nempel ke banyak case (pilih record dgn diff hari terkecil).
@@ -2972,6 +2977,31 @@ var BlastHwczGate={
     if(!Auth.getToken())return;
     var self=this;
     _gasGet('blastHwczGate').then(function(j){
+      if(!j||j.ok===false)return;
+      localStorage.setItem(self.KEY,JSON.stringify(j.gate||{}));
+      if(currentTab==='blast')renderTab('blast');
+    }).catch(function(){});
+  }
+};
+// 29 Agu (request operator, urgent): leader bisa "hide" 1+ program cadence blast (H-3/H+2/H+8) dari
+// AGEN doang -- leader sendiri (isSup) SELALU lihat semua, sama pola bypass kayak applyBlastFullGate.
+// Beda dari BlastTerminGate (2 nilai) dan BlastHwczGate (dinamis) -- checkpoint ENUM TETAP cuma 3
+// (BLAST_CHECKPOINTS), jadi whitelist eksplisit di GAS aman (pola sama BlastTerminGate).
+var BlastCheckpointGate={
+  KEY:'klopos_blast_checkpoint_gate_v1',
+  DEFAULT_CLOSED:[], // semua checkpoint default TERBUKA -- leader nutup manual per-program kalau perlu (mis. H+8)
+  getAll:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{};}catch(e){return{};}},
+  isReleased:function(cp){
+    var d=this.getAll();
+    if(Object.prototype.hasOwnProperty.call(d,cp))return!!d[cp];
+    return this.DEFAULT_CLOSED.indexOf(cp)<0;
+  },
+  setReleased:function(cp,val){var d=this.getAll();d[cp]=!!val;localStorage.setItem(this.KEY,JSON.stringify(d));},
+  push:function(){_gasPost({action:'setBlastCheckpointGate',gate:this.getAll()}).catch(function(){});},
+  syncFromServer:function(){
+    if(!Auth.getToken())return;
+    var self=this;
+    _gasGet('blastCheckpointGate').then(function(j){
       if(!j||j.ok===false)return;
       localStorage.setItem(self.KEY,JSON.stringify(j.gate||{}));
       if(currentTab==='blast')renderTab('blast');
@@ -6249,7 +6279,7 @@ function blastFilteredRows(){
   if(tarikCp&&tarikCp!=='all'){
     var _todayCp=localDateStr(new Date().toISOString());
     recs=recs.filter(function(r){
-      var due=checkpointsDueOn(r.expiryDate,_todayCp);
+      var due=checkpointsDueOn(r.expiryDate,_todayCp,isSup);
       if(tarikCp==='today')return due.length>0;
       return due.some(function(cp){return cp.key===tarikCp;});
     });
@@ -6281,6 +6311,7 @@ function blastPageSlice(n){
 }
 function blastTableRowsHtml(rows){
   var todayStr=localDateStr(new Date().toISOString());
+  var isSup=Auth.isSuperior();
   var prevOutlet=null;
   return rows.map(function(row){
     // CLM-05 (operator 14 Jul): baris PER-NOMOR. Nomor internal/GC & dummy NGGAK bisa diblast -> checkbox
@@ -6292,7 +6323,7 @@ function blastTableRowsHtml(rows){
     var rowCls=row.isDummy?'row-dummy':(row.isGcBlast?'row-gc':''); // CLM-13: user-GC nggak di-highlight blokir
     var srcBadge=row.phoneSource?'<span class="badge badge-gray" title="Sumber nomor dari sheet">'+row.phoneSource+'</span>':'<span style="color:var(--tx3)">—</span>';
     var blastMark=blocked?'<span style="font-size:11px;color:var(--rd,#dc2626)" title="Nomor internal/dummy — di-skip">✕ skip</span>':'<span style="font-size:11px;color:var(--grn,#16a34a)">✓ blast</span>';
-    var dueToday=checkpointsDueOn(row.expiryDate,todayStr);
+    var dueToday=checkpointsDueOn(row.expiryDate,todayStr,isSup);
     var cadenceBadge=dueToday.length
       ?dueToday.map(function(cp){
           var bl=row.record.blastLog&&row.record.blastLog[cp.key];
@@ -6412,6 +6443,15 @@ function renderBlast(){
             +'<input type="checkbox" class="hwcz-gate-chk" data-hwcz="'+o.value+'"'+(on?' checked':'')+'>'+o.label+'</label>';
         }).join('')
       +'</div>'
+      +'<div style="font-size:11px;font-weight:600;color:var(--tx3);margin-bottom:4px">Program (Cadence Blast)</div>'
+      +'<div class="pay-info" style="margin-bottom:8px">Sembunyiin program tertentu dari agen (mis. H+8) — leader tetap lihat & bisa CSV-in semua program kapan pun, ini cuma nyembunyiin dari sisi agen (nggak ngaruh ke Blast Coverage/BROADCASTLOG di Overview).</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
+      +BLAST_CHECKPOINTS.map(function(cp){
+          var on=BlastCheckpointGate.isReleased(cp.key);
+          return'<label style="font-size:11px;display:flex;align-items:center;gap:4px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:4px 8px">'
+            +'<input type="checkbox" class="checkpoint-gate-chk" data-cp="'+cp.key+'"'+(on?' checked':'')+'>'+cp.label+'</label>';
+        }).join('')
+      +'</div>'
       +'<div style="font-size:11px;font-weight:600;color:var(--tx3);margin-bottom:4px">Pengecualian: Termin=Bulanan tetap boleh di bulan ini <span style="font-weight:400">(tetap wajib Hot)</span></div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:8px">'
       +MONTH_KEYS.map(function(m){
@@ -6450,7 +6490,10 @@ function renderBlast(){
     +'<select id="tarik-cp-sel" title="Jadwal blast: saring tabel ke case yang checkpoint-nya jatuh HARI INI" style="padding:7px 8px;border:1px solid var(--bdr);border-radius:var(--rs);background:var(--sur2);color:var(--tx);font-size:12px">'
     +'<option value="all"'+(tarikCp==='all'?' selected':'')+'>🗓️ Semua tanggal</option>'
     +'<option value="today"'+(tarikCp==='today'?' selected':'')+'>🎯 Jatuh hari ini (semua)</option>'
-    +BLAST_CHECKPOINTS.map(function(cp){return'<option value="'+cp.key+'"'+(tarikCp===cp.key?' selected':'')+'>'+cp.label+' jatuh hari ini</option>';}).join('')
+    // 29 Agu: opsi checkpoint yg di-gate tertutup DIILANGIN dari dropdown buat agen (leader tetap lihat
+    // semua) -- selaras sama checkpointsDueOn yg juga udah nggak pernah nganggep checkpoint itu "due"
+    // buat agen, biar nggak ada opsi yg keliatan tapi selalu balikin tabel kosong.
+    +BLAST_CHECKPOINTS.filter(function(cp){return isSup||BlastCheckpointGate.isReleased(cp.key);}).map(function(cp){return'<option value="'+cp.key+'"'+(tarikCp===cp.key?' selected':'')+'>'+cp.label+' jatuh hari ini</option>';}).join('')
     +'</select>'
     +'<button class="btn btn-sec" id="sel-all-blast-btn">Pilih Semua</button>'
     +'<button class="btn btn-sec" id="desel-all-blast-btn">Batal</button>'
@@ -9946,6 +9989,12 @@ tabContent.addEventListener('change',function(e){
     toast((tgt.checked?'Potensi '+tgt.dataset.hwcz+' dibuka':'Potensi '+tgt.dataset.hwcz+' ditutup')+' ke semua agen (Blast WABA)');
     renderBlast();
   }
+  if(tgt.classList.contains('checkpoint-gate-chk')){
+    BlastCheckpointGate.setReleased(tgt.dataset.cp,tgt.checked);
+    BlastCheckpointGate.push();
+    toast((tgt.checked?'Program '+tgt.dataset.cp+' ditampilin':'Program '+tgt.dataset.cp+' disembunyiin')+' ke semua agen (Blast WABA)');
+    renderBlast();
+  }
   if(tgt.classList.contains('bulanan-monthgate-chk')){
     BlastBulananMonthGate.setReleased(tgt.dataset.month,tgt.checked);
     BlastBulananMonthGate.push();
@@ -10170,6 +10219,7 @@ function startApp(){
   setTimeout(function(){BlastTerminGate.syncFromServer();},jms(2650));
   setTimeout(function(){BlastHwczGate.syncFromServer();},jms(2700));
   setTimeout(function(){BlastBulananMonthGate.syncFromServer();},jms(2750));
+  setTimeout(function(){BlastCheckpointGate.syncFromServer();},jms(2800));
   // CLM-13 v56: tarik daftar batch blast (metadata, leader) on-load.
   setTimeout(function(){if(Auth.isSuperior())syncBlastBatchesFromServer();},jms(2800));
   // (operator 16 Jul): auto-sync klaim upsell on-load (silent) -- tombol manual cuma di tab leader, jadi
