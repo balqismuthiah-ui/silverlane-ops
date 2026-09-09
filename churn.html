@@ -4039,7 +4039,14 @@ function wbFlush(){
 // WB_AUTOPAID_IMMEDIATE_CAP item pertama yg coba kirim LIVE (di-stagger, kasih slot ke operasi lain
 // yg jalan susulan spt syncAssignOnly), sisanya langsung masuk antrean lokal & ditarik pelan-pelan
 // lewat wbFlush (yg udah ada jeda+circuit-breaker di atas).
-var WB_AUTOPAID_IMMEDIATE_CAP=15,WB_AUTOPAID_STAGGER_MS=400;
+// 9 Sep (fix, pasca cutover getResponsesV2/writeResponseToSheetV2): CAP=15/STAGGER=400ms (tuning
+// lama, 10 Agu) masih numpuk kontensi di withWriteLock_ -- sheet RESPONSES sekarang 53 kolom (naik
+// dari struktur lama), tiap write genuinely lebih berat, dan Apps Script Executions log kebukti 15
+// doPost numpuk concurrent dalam <15 detik pas batch ini nembak, korelasi langsung sama error rate
+// 10-30% yang kelihat di GAS Health dashboard. Turunin CAP + lebarin jarak stagger biar tiap write
+// (kemungkinan besar) udah kelar SEBELUM yang berikutnya nembak, ketimbang numpuk nunggu lock yang
+// sama bareng-bareng.
+var WB_AUTOPAID_IMMEDIATE_CAP=5,WB_AUTOPAID_STAGGER_MS=2500;
 function writeBackAutoPaidBatch(list){
   list.forEach(function(r,i){
     if(i<WB_AUTOPAID_IMMEDIATE_CAP){
