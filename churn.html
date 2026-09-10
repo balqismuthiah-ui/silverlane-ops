@@ -255,7 +255,7 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
       <input type="email" id="auth-email" placeholder="you@majoo.id" autocomplete="email">
       <div class="auth-hint">Kami akan mengirim kode 6 digit yang berlaku 60 detik.</div>
       <button class="btn-pri" id="auth-send-otp-btn">Email me a code</button>
-      <div class="auth-footer-note">Hanya email @majoo.id yang diterima.</div>
+      <div class="auth-footer-note">Email @majoo.id atau @majoo.com yang diterima.</div>
     </div>
     <div id="auth-step-otp" style="display:none">
       <div class="auth-otp-hint">Kode OTP 6-digit sudah dikirim ke <strong id="auth-otp-email-lbl"></strong>, berlaku 10 menit.</div>
@@ -425,7 +425,7 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
       <input type="text" id="agent-init-inp" placeholder="Contoh: ED" maxlength="4">
       <label>Nama Lengkap / Tampilan</label>
       <input type="text" id="agent-dn-inp" placeholder="Contoh: Elly (Eliyawati)">
-      <label>Email @majoo.id (CLM-07: login OTP pakai email ini)</label>
+      <label>Email @majoo.id / @majoo.com (CLM-07: login OTP pakai email ini)</label>
       <input type="email" id="agent-email-inp" placeholder="nama@majoo.id">
       <label>Role</label>
       <select id="agent-role-sel">
@@ -2790,6 +2790,14 @@ var Store={
 };
 
 // ── AGENTS CONFIG STORE (CLM-06: sumber tunggal identitas — login, assignment, Overview, target, template) ──
+// 10 Sep: domain email allowed client-side -- SAMA PERSIS ALLOWED_EMAIL_DOMAINS di Code.gs (leader
+// tetap @majoo.id, 9 agen migrasi ke @majoo.com). JANGAN biarin nyimpang dari daftar server, atau
+// salah satu sisi (form login/tambah agen/edit email) bisa nolak input yang sisi lain terima.
+var ALLOWED_EMAIL_DOMAINS=['@majoo.id','@majoo.com'];
+function isAllowedEmailDomain(email){
+  email=String(email||'').trim().toLowerCase();
+  return ALLOWED_EMAIL_DOMAINS.some(function(d){return email.length>d.length&&email.slice(-d.length)===d;});
+}
 var AgentsConfig={
   KEY:'klopos_agents_v1',
   // Default fallback ini kepake pas AgentsConfig localStorage KOSONG (browser/origin baru -- kejadian nyata
@@ -6967,7 +6975,7 @@ function saveAgent(){
   var email=document.getElementById('agent-email-inp').value.trim().toLowerCase();
   var role=document.getElementById('agent-role-sel').value==='leader'?'leader':'agent';
   if(!name||!initials){toast('Nama dan inisial wajib diisi');return;}
-  if(!email||email.indexOf('@majoo.id')<0){toast('Email @majoo.id wajib diisi (dipakai login OTP, CLM-07)');return;}
+  if(!email||!isAllowedEmailDomain(email)){toast('Email @majoo.id atau @majoo.com wajib diisi (dipakai login OTP, CLM-07)');return;}
   var others=AgentsConfig.getAll().filter(function(a){return a.id!==agentEditId;});
   if(others.some(function(a){return(a.email||'').toLowerCase()===email;})){toast('Email ini udah dipakai agen lain');return;}
   // Catatan: AgentsConfig.add() match-by-name ke entry EXISTING preserve role lama (nggak keubah lewat
@@ -9881,7 +9889,7 @@ tabContent.addEventListener('focusout',function(e){
     var val=t.value.trim();
     if(t.dataset.field==='email'){
       val=val.toLowerCase();
-      if(val&&val.indexOf('@majoo.id')<0){toast('Email harus @majoo.id');t.value=a.email||'';return;}
+      if(val&&!isAllowedEmailDomain(val)){toast('Email harus @majoo.id atau @majoo.com');t.value=a.email||'';return;}
       if(val&&all.some(function(x){return x.id!==a.id&&(x.email||'').toLowerCase()===val;})){toast('Email ini udah dipakai agen lain');t.value=a.email||'';return;}
     }
     a[t.dataset.field]=val;
@@ -10331,7 +10339,7 @@ function initAuth(){
   document.getElementById('auth-send-otp-btn').addEventListener('click',function(){
     var email=document.getElementById('auth-email').value.trim().toLowerCase();
     if(!email){showAuthError('Masukkan email');return;}
-    if(email.indexOf('@majoo.id')<0){showAuthError('Harus email @majoo.id');return;}
+    if(!isAllowedEmailDomain(email)){showAuthError('Harus email @majoo.id atau @majoo.com');return;}
     var btn=document.getElementById('auth-send-otp-btn');
     btn.disabled=true;btn.textContent='Mengirim...';
     sendOtpRequest(email,function(ok){
