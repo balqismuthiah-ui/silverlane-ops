@@ -2819,7 +2819,10 @@ var AgentsConfig={
     {id:'a9',name:'Sekar',email:'sekar@majoo.id',initials:'SK',displayName:'Sekar',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''},
     {id:'a10',name:'Muthia',email:'balqis.muthiah@majoo.id',initials:'BM',displayName:'Muthia',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''},
     {id:'a11',name:'Ryan',email:'ryanza.rudiananda@majoo.id',initials:'RR',displayName:'Ryan',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a12',name:'Zharifah',email:'zharifah.bayti@majoo.com',initials:'ZB',displayName:'Zharifah',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''}
+    // displayName 'Zharifah Bayti' (bukan 'Zharifah' doang) -- sheet KLOPOS nulis nama lengkap di
+    // kolom assignment, _matchAgent() exact-match ke name/displayName/initials, kalau displayName
+    // cuma 'Zharifah' match-nya gagal & raw string numpuk apa adanya (ketemu 10 Sep, dump 2 browser).
+    {id:'a12',name:'Zharifah',email:'zharifah.bayti@majoo.com',initials:'ZB',displayName:'Zharifah Bayti',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''}
   ],
   _cache:null,
   getAll:function(){
