@@ -2796,18 +2796,22 @@ var AgentsConfig={
   // pas migrasi domain, tiap origin punya localStorage sendiri). Dulu nggak punya field email sama sekali
   // -> begitu ke-sync ke server, server nolak (invalid_payload, name-tanpa-email) -- ketauan pas dry-run
   // domain baru. Email di bawah WAJIB match persis roster BOOTSTRAP_ALLOWLIST_ONCE di GAS.
+  // 10 Sep: 9 agen migrasi domain ke @majoo.com, leader (Sekar/Muthia/Ryan) TETAP @majoo.id --
+  // konfirmasi eksplisit operator. Zharifah agen baru, sebelumnya cuma hidup di allowlist server,
+  // sekarang ditambahin ke fallback ini juga biar browser/device baru nggak kehilangan dia.
   DEFS:[
-    {id:'a1',name:'Erizka',email:'erizka.dewanty@majoo.id',initials:'ED',displayName:'Erizka',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a2',name:'Elly',email:'eliyawati.eli@majoo.id',initials:'EL',displayName:'Elly (Eliyawati)',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a3',name:'Finne',email:'finne.fadhilla@majoo.id',initials:'FF',displayName:'Finne',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a4',name:'Fauziyah',email:'fauziyah.nisa@majoo.id',initials:'FC',displayName:'Fauziyah',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a5',name:'Novianty',email:'novianty@majoo.id',initials:'NV',displayName:'Novianty',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a6',name:'Sarah',email:'sarah.elizabeth@majoo.id',initials:'SE',displayName:'Sarah',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a7',name:'Sunarti',email:'sunarti@majoo.id',initials:'SN',displayName:'Sunarti',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a8',name:'Shevtya',email:'shevtya.rahma@majoo.id',initials:'SR',displayName:'Shevtya',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a1',name:'Erizka',email:'erizka.dewanty@majoo.com',initials:'ED',displayName:'Erizka',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a2',name:'Elly',email:'eliyawati.eli@majoo.com',initials:'EL',displayName:'Elly (Eliyawati)',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a3',name:'Finne',email:'finne.fadhilla@majoo.com',initials:'FF',displayName:'Finne',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a4',name:'Fauziyah',email:'fauziyah.nisa8086@majoo.com',initials:'FC',displayName:'Fauziyah',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a5',name:'Novianty',email:'novianty.novianty@majoo.com',initials:'NV',displayName:'Novianty',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a6',name:'Sarah',email:'sarah.elizabeth@majoo.com',initials:'SE',displayName:'Sarah',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a7',name:'Sunarti',email:'sunarti.sunarti@majoo.com',initials:'SN',displayName:'Sunarti',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a8',name:'Shevtya',email:'shevtya.rahma@majoo.com',initials:'SR',displayName:'Shevtya',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
     {id:'a9',name:'Sekar',email:'sekar@majoo.id',initials:'SK',displayName:'Sekar',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''},
     {id:'a10',name:'Muthia',email:'balqis.muthiah@majoo.id',initials:'BM',displayName:'Muthia',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''},
-    {id:'a11',name:'Ryan',email:'ryanza.rudiananda@majoo.id',initials:'RR',displayName:'Ryan',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''}
+    {id:'a11',name:'Ryan',email:'ryanza.rudiananda@majoo.id',initials:'RR',displayName:'Ryan',role:'leader',status:'active',nip:'',joinDate:'',resignDate:''},
+    {id:'a12',name:'Zharifah',email:'zharifah.bayti@majoo.com',initials:'ZB',displayName:'Zharifah',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''}
   ],
   _cache:null,
   getAll:function(){
