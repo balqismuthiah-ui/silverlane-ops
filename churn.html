@@ -4291,12 +4291,18 @@ function funnelCardHtml(label,val,color,nowB,prevB,key,prevMonthKey){
 // Kategori+Detail respons (Response Update taksonomi, RESP_CATS) -> hitungan, key = outcome||category - detail.
 // Dipake bareng card "Detail Renewal"/"Detail Tidak Renewal" (renderOverview) DAN breakdown Churn
 // Reason di tab Churn Trend (renderChurnTrend) -- satu sumber, jangan reimplement loop yg sama 2x.
-function buildCatDetailMap(recs){
+// 13 Sep: param opsional `useEff` -- true = pakai klasifikasi GABUNGAN (r.effCategory/effDetail,
+// nyerap hasil TC visit, basis SAMA kayak sheet RESPONSES "Status Gabungan (Summary+TC)"), default
+// false = raw Dashboard (r.response.category/detail, perilaku lama, JANGAN diubah diam2 -- konsumen
+// lain fungsi ini -- Detail Tidak Renewal/Konversi Renewal -- udah pernah di-QA sama basis raw ini).
+function buildCatDetailMap(recs,useEff){
   var map={};
   recs.forEach(function(r){
-    if(r.response&&r.response.category&&r.response.detail){
-      var oc=respOutcome(r.response);
-      var k=oc+'||'+r.response.category+' - '+r.response.detail;
+    var cat=useEff?r.effCategory:(r.response&&r.response.category);
+    var det=useEff?r.effDetail:(r.response&&r.response.detail);
+    if(cat&&det){
+      var oc=respOutcome({category:cat,detail:det});
+      var k=oc+'||'+cat+' - '+det;
       map[k]=(map[k]||0)+1;
     }
   });
@@ -7498,14 +7504,29 @@ function renderChurnTrend(){
   // 31 Jul (follow-up operator, klarifikasi kedua+ketiga): "Churn Reason" -- PERSIS taksonomi "Detail
   // Tidak Renewal" yang udah ada di card Konversi Renewal (buildCatDetailMap, outcome 'churn' = RESPON
   // NEGATIF), reuse fungsi shared BARU (nol reimplement loop) -- BUKAN pengganti breakdown 5-kategori
-  // di atas (beda tujuan: itu buat "user asli vs exclude", ini buat "kenapa nolak/churn"). Populasi
-  // SAMA persis "Detail Tidak Renewal": myRecs scoped cohort-bulan, TANPA filter HWCZ (bukan Hot doang).
+  // di atas (beda tujuan: itu buat "user asli vs exclude", ini buat "kenapa nolak/churn").
   // Ditampilin MATRIX Jan s.d. bulan berjalan (bukan cuma 2-bulan MoM) -- operator minta run-rate,
   // biar trend alasan churn keliatan lintas bulan bukan cuma delta sebulan.
+  //
+  // 13 Sep fix (operator): basis bulan DIGANTI dari cohortMonths ke bulan Expired Date
+  // (expiredDateHistorical) -- BUKAN lagi "scoped cohort-bulan" kayak Detail Tidak Renewal di atas.
+  // Alasan: cohortMonths itu jejak bulan SYNC-ASSIGNMENT terakhir yang nangkep outlet ini (basis
+  // moving-leads, dipertahankan apa adanya buat card Remaining/Moving/Total Hot di atas -- itu emang
+  // tujuannya), BUKAN bulan Expired Date asli -- jadi biasa beda dari sheet RESPONSES (COUNTIFS di
+  // sheet pakai kolom "Bulan-Tahun Expired (mmm-yyyy)", fixed dari Expired Date, bukan cohortMonths).
+  // Ganti ke expiredDateHistorical biar match definisi sheet. Catatan: masih BUKAN tahun-aware (sama
+  // kayak cohortMonths lama) -- Sep-2025 & Sep-2026 ketuker jadi "Sep" yang sama, cukup buat scope
+  // 1-tahun-berjalan yang dipakai di sini.
+  function expiredMonthAbbr_(r){
+    var iso=r.expiredDateHistorical;
+    if(!iso||iso.length<7)return'';
+    var mi=parseInt(iso.slice(5,7),10)-1;
+    return(mi>=0&&mi<=11)?MONTH_KEYS[mi]:'';
+  }
   var churnMonths=MONTH_KEYS.slice(0,todayDate.getMonth()+1); // Jan..bulan berjalan, inklusif
   var churnMonthMaps=churnMonths.map(function(mk){
-    var recsForMonth=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(mk)>=0;});
-    return buildCatDetailMap(recsForMonth);
+    var recsForMonth=myRecs.filter(function(r){return expiredMonthAbbr_(r)===mk;});
+    return buildCatDetailMap(recsForMonth,true); // true = pakai klasifikasi Gabungan (Dashboard+TC), samain basis sama sheet
   });
   var churnKeys={};
   churnMonthMaps.forEach(function(map){
@@ -9662,6 +9683,15 @@ function syncResponsesOnly(){
       if(staff)resp.updatedBy=staff;
       if(link)resp.evidenceLink=link;
       rec.response=resp;n++;
+      // 13 Sep: klasifikasi GABUNGAN (Dashboard+TC precedence, sama basis sama sheet RESPONSES kolom
+      // "Status Gabungan (Summary+TC)") -- field TERPISAH dari resp.category/detail di atas (yang itu
+      // TETAP raw Dashboard-only, dipakai form edit respons -- JANGAN dicampur, override balik ke
+      // sheet bisa ke-timpa alasan TC kalau kesenggol). effCategory/effDetail cuma dipakai laporan
+      // (Churn Trend dkk) yang butuh ikutan hasil TC visit, bukan buat nulis balik.
+      var effSum=String(row['EFF SUMMARY']||'').trim();
+      var effKet=String(row['EFF KETERANGAN']||'').trim();
+      if(effSum)rec.effCategory=effSum;
+      if(effKet)rec.effDetail=effKet;
       // 4 Agu: NPS TERPISAH dari resp.evidenceLink -- object sendiri, jangan digabung.
       var npsEvid=String(row['NPS Evidence']||'').trim();
       if(npsEvid){
