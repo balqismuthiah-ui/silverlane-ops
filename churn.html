@@ -3770,6 +3770,24 @@ var DB_FRESHNESS_KEY='klopos_db_freshness_v1';
 function getKnownDbFreshness(){var v=localStorage.getItem(DB_FRESHNESS_KEY);return v?parseInt(v,10):0;}
 function setKnownDbFreshness(ts){localStorage.setItem(DB_FRESHNESS_KEY,String(ts));}
 
+// 15 Sep: perluasan pola freshness-gated di atas ke 4 data yang sebelumnya manual-button-only
+// (Response penuh/Blast/Invoice Tracker/Visit TC) -- masing² sheet sumbernya beda spreadsheet dari
+// KLOPOS (Data Join), jadi butuh marker freshness sendiri² (bukan numpang DB_FRESHNESS_KEY).
+// Lihat checkFreshnessAndAutoSync() -- 4 marker ini dicek dari 1 fetch ?action=freshness yang sama
+// (server dijawab sekaligus, bukan nambah round-trip baru per jenis).
+var RESP_FRESHNESS_KEY='klopos_resp_freshness_v1';
+function getKnownRespFreshness(){var v=localStorage.getItem(RESP_FRESHNESS_KEY);return v?parseInt(v,10):0;}
+function setKnownRespFreshness(ts){localStorage.setItem(RESP_FRESHNESS_KEY,String(ts));}
+var BLAST_FRESHNESS_KEY='klopos_blast_freshness_v1';
+function getKnownBlastFreshness(){var v=localStorage.getItem(BLAST_FRESHNESS_KEY);return v?parseInt(v,10):0;}
+function setKnownBlastFreshness(ts){localStorage.setItem(BLAST_FRESHNESS_KEY,String(ts));}
+var INVOICE_FRESHNESS_KEY='klopos_invoice_freshness_v1';
+function getKnownInvoiceFreshness(){var v=localStorage.getItem(INVOICE_FRESHNESS_KEY);return v?parseInt(v,10):0;}
+function setKnownInvoiceFreshness(ts){localStorage.setItem(INVOICE_FRESHNESS_KEY,String(ts));}
+var VISITTC_FRESHNESS_KEY='klopos_visittc_freshness_v1';
+function getKnownVisitTCFreshness(){var v=localStorage.getItem(VISITTC_FRESHNESS_KEY);return v?parseInt(v,10):0;}
+function setKnownVisitTCFreshness(ts){localStorage.setItem(VISITTC_FRESHNESS_KEY,String(ts));}
+
 // CLM-08: auto-poll editan respons agen lain (delta, BUKAN full ?action=responses ~22k baris --
 // concern kuota Muthia/Ubay). Marker "since" dianchor ke jam SERVER (serverNow dari GAS), bukan jam
 // klien, biar nggak ada gap/overlap gara-gara clock-skew antar device.
@@ -8720,13 +8738,37 @@ function checkFreshnessAndAutoSync(){
       if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       var serverFresh=json.lastRefresh||0;
       var known=getKnownDbFreshness();
-      if(serverFresh<=known)return; // DB belum berubah sejak sync terakhir -- skip diam2
-      var ALL_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      toast('🔄 Data DB baru — auto-sync semua bulan berjalan di latar belakang…',4000);
-      syncMonthList(ALL_MONTHS,{
-        silent:true,
-        doneMsg:'✅ Auto-sync selesai — data terbaru sudah tersedia.',
-        onComplete:function(){setKnownDbFreshness(serverFresh);}
+      if(serverFresh>known){
+        var ALL_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        toast('🔄 Data DB baru — auto-sync semua bulan berjalan di latar belakang…',4000);
+        syncMonthList(ALL_MONTHS,{
+          silent:true,
+          doneMsg:'✅ Auto-sync selesai — data terbaru sudah tersedia.',
+          onComplete:function(){setKnownDbFreshness(serverFresh);}
+        });
+      }
+      // 15 Sep: perluasan sama ke Response penuh/Blast/Invoice Tracker/Visit TC -- 4 sheet ini hidup
+      // di spreadsheet TERPISAH dari KLOPOS (Data Join), makanya getFreshness() server dibalikin
+      // sekaligus 4 timestamp tambahan di respons yang SAMA (nol round-trip baru). Tiap jenis dicek
+      // independen -- kalau cuma Blast yang berubah, cuma Blast yang auto-sync, bukan borong semua.
+      // Staggered 800ms antar-jenis (preseden GATE 3 jitter startApp()) biar >1 jenis stale bareng
+      // nggak numpuk jadi burst request GAS bareng full-sync KLOPOS di atas.
+      var extras=[
+        {server:json.lastRefreshResponses,known:getKnownRespFreshness,set:setKnownRespFreshness,
+          fn:function(done){syncResponsesOnly({silent:true,onComplete:done});}},
+        {server:json.lastRefreshBlast,known:getKnownBlastFreshness,set:setKnownBlastFreshness,
+          fn:function(done){syncBroadcastLogOnly({silent:true,onComplete:done});}},
+        {server:json.lastRefreshInvoice,known:getKnownInvoiceFreshness,set:setKnownInvoiceFreshness,
+          fn:function(done){syncInvoiceTrackerOnly({silent:true,onComplete:done});}},
+        {server:json.lastRefreshVisitTC,known:getKnownVisitTCFreshness,set:setKnownVisitTCFreshness,
+          fn:function(done){syncVisitTCOnly({silent:true,onComplete:done});}}
+      ];
+      var extraDelay=0;
+      extras.forEach(function(ex){
+        var srv=ex.server||0,kn=ex.known();
+        if(srv<=kn)return; // belum berubah sejak sync terakhir -- skip diam2
+        extraDelay+=800;
+        setTimeout(function(){ex.fn(function(){ex.set(srv);});},extraDelay);
       });
     })
     .catch(function(){/* freshness check gagal -- diam2, bukan jalur kritis, jangan ganggu UX */});
@@ -9379,28 +9421,39 @@ function autoSyncFinancialsStores(){
 // TrackerStore. TANPA filter bulan (beda dari sync lain) -- Invoice Tracker perlu search/filter
 // lintas periode, jadi tarik SEMUA baris riil sekaligus (~3.6rb, udah di-bound GAS-side ke non-blank
 // INV_Code doang, bukan 33rb baris mentah).
-function syncInvoiceTrackerOnly(){
+function syncInvoiceTrackerOnly(syncOpts){
+  syncOpts=syncOpts||{};
+  var silent=!!syncOpts.silent;
   var btn=document.getElementById('sync-invoicetracker-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  toast('Mengambil data Invoice Tracker…',4000);
+  if(!silent){
+    if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+    toast('Mengambil data Invoice Tracker…',4000);
+  }
 
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
   var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
   var url=GAS_URL+'?action=invoicetracker&token='+encodeURIComponent(Auth.getToken()||'');
 
+  var ok=false;
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
       if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
       InvoiceTrackerStore.set(json.data||[],json.reassignments||[]);
       renderTab(currentTab);
-      toast('Invoice Tracker tersimpan: '+(json.total||0)+' invoice',5000);
+      if(!silent)toast('Invoice Tracker tersimpan: '+(json.total||0)+' invoice',5000);
+      else toast('🔄 Invoice Tracker ter-update otomatis di latar belakang ('+(json.total||0)+' invoice).',4000);
+      ok=true;
     }).catch(function(err){
-      toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Invoice Tracker: '+err.message,5000);
+      if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Invoice Tracker: '+err.message,5000);
+      else console.log('[auto-sync invoice tracker] gagal, diam2 (freshness marker TIDAK di-update, bakal dicoba lagi): '+err.message);
     }).then(function(){
-      var b=document.getElementById('sync-invoicetracker-btn');
-      if(b){b.disabled=false;b.textContent='📥 Sync Invoice Tracker';}
+      if(!silent){
+        var b=document.getElementById('sync-invoicetracker-btn');
+        if(b){b.disabled=false;b.textContent='📥 Sync Invoice Tracker';}
+      }
+      if(ok&&typeof syncOpts.onComplete==='function')syncOpts.onComplete();
     });
 }
 
@@ -9411,16 +9464,21 @@ function syncInvoiceTrackerOnly(){
 // match by ID OUTLET POLOS. outletIdx dibangun pakai "expiryDate terbaru menang" kalau 1 outlet punya
 // >1 record historis -- SAMA PERSIS pola dedup Blast WABA (22 Agu) -- biar visit nempel ke siklus yg
 // LAGI berjalan, bukan ke case lama yang kebetulan diproses duluan di forEach.
-function syncVisitTCOnly(){
+function syncVisitTCOnly(syncOpts){
+  syncOpts=syncOpts||{};
+  var silent=!!syncOpts.silent;
   var btn=document.getElementById('sync-visittc-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  toast('Mengambil data Visit TC…',4000);
+  if(!silent){
+    if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+    toast('Mengambil data Visit TC…',4000);
+  }
 
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
   var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
   var url=GAS_URL+'?action=visittc&token='+encodeURIComponent(Auth.getToken()||'');
 
+  var ok=false;
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
@@ -9500,19 +9558,30 @@ function syncVisitTCOnly(){
         writeBackAutoMixedBatch(autoChanged);
       }
       renderTab(currentTab);
-      toast('Visit TC tersimpan: '+matched+' outlet ('+notFound+' tdk match)'+(autoChanged.length?', '+autoChanged.length+' respons auto-update':''),6000);
+      if(!silent)toast('Visit TC tersimpan: '+matched+' outlet ('+notFound+' tdk match)'+(autoChanged.length?', '+autoChanged.length+' respons auto-update':''),6000);
+      else toast('🔄 Visit TC ter-update otomatis di latar belakang ('+matched+' outlet'+(autoChanged.length?', '+autoChanged.length+' respons auto-update':'')+').',4000);
+      ok=true;
     }).catch(function(err){
-      toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Visit TC: '+err.message,5000);
+      if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Visit TC: '+err.message,5000);
+      else console.log('[auto-sync visit tc] gagal, diam2 (freshness marker TIDAK di-update, bakal dicoba lagi): '+err.message);
     }).then(function(){
-      var b=document.getElementById('sync-visittc-btn');
-      if(b){b.disabled=false;b.textContent='📥 Sync Visit TC';}
+      if(!silent){
+        var b=document.getElementById('sync-visittc-btn');
+        if(b){b.disabled=false;b.textContent='📥 Sync Visit TC';}
+      }
+      if(ok&&typeof syncOpts.onComplete==='function')syncOpts.onComplete();
     });
 }
 
-function syncBroadcastLogOnly(){
+function syncBroadcastLogOnly(syncOpts){
+  syncOpts=syncOpts||{};
+  var silent=!!syncOpts.silent;
   var btn=document.getElementById('sync-blastlog-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  toast('Mengambil log broadcast WABA…',4000);
+  if(!silent){
+    if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+    toast('Mengambil log broadcast WABA…',4000);
+  }
+  var ok=false;
   _gasGet('broadcastlog',90000).then(function(json){
     var rows=json.data||[];
     var d=Store.get();
@@ -9542,12 +9611,18 @@ function syncBroadcastLogOnly(){
       });
     });
     Store.set(d);renderTab(currentTab);
-    toast(nUpdated+' checkpoint ter-update dari '+rows.length+' nomor ('+nUnmatched+' tak match/di luar window cadence)',6000);
+    if(!silent)toast(nUpdated+' checkpoint ter-update dari '+rows.length+' nomor ('+nUnmatched+' tak match/di luar window cadence)',6000);
+    else if(nUpdated)toast('🔄 Blast Log ter-update otomatis di latar belakang ('+nUpdated+' checkpoint).',4000);
+    ok=true;
   }).catch(function(err){
-    toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync blast log: '+err.message,5000);
+    if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync blast log: '+err.message,5000);
+    else console.log('[auto-sync blast log] gagal, diam2 (freshness marker TIDAK di-update, bakal dicoba lagi): '+err.message);
   }).then(function(){
-    var b=document.getElementById('sync-blastlog-btn');
-    if(b){b.disabled=false;b.textContent='📥 Sync Blast Log';}
+    if(!silent){
+      var b=document.getElementById('sync-blastlog-btn');
+      if(b){b.disabled=false;b.textContent='📥 Sync Blast Log';}
+    }
+    if(ok&&typeof syncOpts.onComplete==='function')syncOpts.onComplete();
   });
 }
 
@@ -9648,10 +9723,15 @@ function pollResponsesDelta(){
     .catch(function(){/* poll gagal -- diam2, bukan jalur kritis, coba lagi poll berikutnya */});
 }
 
-function syncResponsesOnly(){
+function syncResponsesOnly(opts){
+  opts=opts||{};
+  var silent=!!opts.silent;
   var btn=document.getElementById('sync-resp-btn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  toast('Mengambil histori respons… harap tunggu maks 2 menit',5000);
+  if(!silent){
+    if(btn){btn.disabled=true;btn.textContent='⏳ Memuat...';}
+    toast('Mengambil histori respons… harap tunggu maks 2 menit',5000);
+  }
+  var ok=false;
   _gasGet('responses',150000).then(function(json){
     var rows=json.data||[];
     var d=Store.get();
@@ -9707,12 +9787,18 @@ function syncResponsesOnly(){
     Store.set(d);renderMaster();
     var pctUnmatched=rows.length?Math.round(unmatched/rows.length*100):0;
     console.log('[sync respons] '+n+' updated · '+unmatched+' unmatched ('+pctUnmatched+'% — di luar tracking, ~expiry geser/arsip) dari '+rows.length+' baris server');
-    toast(n+' respons diimport dari '+rows.length+' baris'+(unmatched?' · '+unmatched+' di luar periode tracking':''));
+    if(!silent)toast(n+' respons diimport dari '+rows.length+' baris'+(unmatched?' · '+unmatched+' di luar periode tracking':''));
+    else if(n)toast('🔄 Respons ter-update otomatis di latar belakang ('+n+' record).',4000);
+    ok=true;
   }).catch(function(err){
-    toast(err.name==='AbortError'?'Timeout 150s — GAS butuh ~2 menit, coba buka URL GAS?action=responses di tab baru dulu lalu klik lagi':'Gagal: '+err.message,6000);
+    if(!silent)toast(err.name==='AbortError'?'Timeout 150s — GAS butuh ~2 menit, coba buka URL GAS?action=responses di tab baru dulu lalu klik lagi':'Gagal: '+err.message,6000);
+    else console.log('[auto-sync respons] gagal, diam2 (freshness marker TIDAK di-update, bakal dicoba lagi): '+err.message);
   }).then(function(){
-    var b=document.getElementById('sync-resp-btn');
-    if(b){b.disabled=false;b.textContent='📥 Sync Respons';}
+    if(!silent){
+      var b=document.getElementById('sync-resp-btn');
+      if(b){b.disabled=false;b.textContent='📥 Sync Respons';}
+    }
+    if(ok&&typeof opts.onComplete==='function')opts.onComplete();
   });
 }
 
