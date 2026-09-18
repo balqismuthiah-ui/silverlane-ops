@@ -7897,6 +7897,10 @@ function openResp(id){
       var opts=RESP_DETAILS[cat];
       if(Array.isArray(opts)){
         sel.innerHTML='<option value="">—</option>'+opts.map(function(o){return'<option value="'+o+'">'+o+'</option>';}).join('');
+        // 18 Sep: cuma 1 opsi valid (mis. NO RESPONSE) -- auto-select, jangan paksa user klik lagi.
+        // Kejadian nyata Detail kekirim kosong 2x (Zharifah 10 Sep, Muthia 17 Sep) gara-gara lupa
+        // klik ulang satu-satunya pilihan yang ada setelah dropdown ini di-rebuild ke "—".
+        if(opts.length===1)sel.value=opts[0];
       }
     }else{sel.innerHTML='<option value="">—</option>';}
   });
