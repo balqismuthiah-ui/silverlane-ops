@@ -9324,9 +9324,16 @@ function blastHwczOpts(){
 // Outlet_ID->case->agen dihitung LIVE saat compute_metric (computeFinancialsMetric), bukan di sini.
 // QA round 3 lanjutan (operator, 13 Jul): param `silent` buat jalur AUTO-SYNC on-load (lihat
 // autoSyncFinancialsStores) -- tanpa toast/spam UI, error diem2 (non-kritis, tombol manual tetep ada).
-function syncFinancialsOnly(monthParam,silent){
+// 21 Sep (fix): jalur silent SEBELUM ini nol retry -- kena infra GAS/Sheets lagi nggak stabil (pola
+// sama kayak "Service Spreadsheets timed out" yang bikin runDailySync_ server-side gagal 100%),
+// gagal diam2, user baru sadar Financials basi pas ngecek manual. Retry 2x (8dtk, 20dtk) KHUSUS
+// jalur silent sebelum bener2 nyerah diam2 -- jalur manual (tombol) SENGAJA nggak diubah, user udah
+// liat toast+bisa klik ulang sendiri.
+var FINANCIALS_SILENT_RETRY_DELAYS_=[8000,20000];
+function syncFinancialsOnly(monthParam,silent,_attempt){
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
   if(!mon){if(!silent)toast('Pilih bulan dulu di "Sync Bulan" sebelum sync financials');return;}
+  var attempt=_attempt||0;
   var btn=document.getElementById('sync-financials-btn');
   if(btn&&!silent){btn.disabled=true;btn.textContent='⏳ Memuat...';}
   if(!silent)toast('Mengambil data financials ('+mon+')…',4000);
@@ -9344,6 +9351,10 @@ function syncFinancialsOnly(monthParam,silent){
       renderTab(currentTab);
       if(!silent)toast('Financials '+mon+' tersimpan: '+(json.total||0)+' outlet renewal',5000);
     }).catch(function(err){
+      if(silent&&err.message!=='unauthorized'&&attempt<FINANCIALS_SILENT_RETRY_DELAYS_.length){
+        setTimeout(function(){syncFinancialsOnly(mon,true,attempt+1);},FINANCIALS_SILENT_RETRY_DELAYS_[attempt]);
+        return;
+      }
       if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync financials: '+err.message,5000);
     }).then(function(){
       var b=document.getElementById('sync-financials-btn');
