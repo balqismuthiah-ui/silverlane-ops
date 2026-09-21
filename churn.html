@@ -9330,7 +9330,9 @@ function blastHwczOpts(){
 // jalur silent sebelum bener2 nyerah diam2 -- jalur manual (tombol) SENGAJA nggak diubah, user udah
 // liat toast+bisa klik ulang sendiri.
 var FINANCIALS_SILENT_RETRY_DELAYS_=[8000,20000];
-function syncFinancialsOnly(monthParam,silent,_attempt){
+// 21 Sep: `onDone(ok)` opsional -- dipanggil abis beneran kelar (sukses ATAU semua retry abis gagal),
+// dipake autoSyncFinancialsStores buat bedain throttle 30-menit "sukses" vs "gagal" (lihat di sana).
+function syncFinancialsOnly(monthParam,silent,_attempt,onDone){
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
   if(!mon){if(!silent)toast('Pilih bulan dulu di "Sync Bulan" sebelum sync financials');return;}
   var attempt=_attempt||0;
@@ -9350,12 +9352,14 @@ function syncFinancialsOnly(monthParam,silent,_attempt){
       FinancialsStore.setMonth(mon,{mrr:json.mrr||0,data:json.data||[]});
       renderTab(currentTab);
       if(!silent)toast('Financials '+mon+' tersimpan: '+(json.total||0)+' outlet renewal',5000);
+      if(onDone)onDone(true);
     }).catch(function(err){
       if(silent&&err.message!=='unauthorized'&&attempt<FINANCIALS_SILENT_RETRY_DELAYS_.length){
-        setTimeout(function(){syncFinancialsOnly(mon,true,attempt+1);},FINANCIALS_SILENT_RETRY_DELAYS_[attempt]);
+        setTimeout(function(){syncFinancialsOnly(mon,true,attempt+1,onDone);},FINANCIALS_SILENT_RETRY_DELAYS_[attempt]);
         return;
       }
       if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync financials: '+err.message,5000);
+      if(onDone)onDone(false);
     }).then(function(){
       var b=document.getElementById('sync-financials-btn');
       if(b&&!silent){b.disabled=false;b.textContent='📥 Sync Financials';}
@@ -9428,7 +9432,14 @@ function autoSyncFinancialsStores(){
     localStorage.setItem(FIN_UT_AUTOSYNC_TS_KEY,String(Date.now()));
   }catch(e){}
   var mon=MONTH_KEYS[new Date().getMonth()];
-  syncFinancialsOnly(mon,true);
+  // 21 Sep (fix): timestamp throttle di atas ke-set SEBELUM tau hasil sync-nya -- kalau GAGAL (infra
+  // lagi nggak stabil), browser nunggu FULL 30 menit lagi sebelum nyoba ulang otomatis, padahal data-
+  // nya nggak pernah beneran ke-update. Kalau gagal, mundurin timestamp jadi seolah "5 menit lagi
+  // sebelum expire 30 menit" biar retry berikutnya jauh lebih cepet -- sukses tetep dapet full 30
+  // menit (data emang nggak butuh lebih fresh dari itu, sesuai desain asli).
+  syncFinancialsOnly(mon,true,0,function(ok){
+    if(!ok){try{localStorage.setItem(FIN_UT_AUTOSYNC_TS_KEY,String(Date.now()-25*60*1000));}catch(e){}}
+  });
   setTimeout(function(){syncUpsellTeamOnly(mon,true);},2500);
 }
 
