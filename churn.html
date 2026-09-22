@@ -4375,8 +4375,10 @@ function renderOverview(){
     return respOutcome(r.response)==='other';
   }).length;
 
-  // Team & per-agent targets (Jun 2026: 7 active agents; Sunarti & Shevtya join Jul)
-  var N_AGENTS=7;
+  // Team & per-agent targets -- 22 Sep (fix): N_AGENTS dulu hardcode (sempat 7, stale begitu roster
+  // berubah, nggak ngikut penambahan/pengurangan agent). AGENTS udah dinamis dari AgentsConfig
+  // (refreshUserLists), reuse langsung biar per-agent split selalu ngikut roster aktif SEKARANG.
+  var N_AGENTS=AGENTS.length||1; // ||1 jaga-jaga div-by-zero kalau roster somehow kosong pas render
   // CLM-11 Fase C: 3 angka di bawah (renewal revenue/conversion/upsell revenue) SEKARANG configurable
   // lewat Targets store (Sekar CRUD, "Kelola Target Configurable") -- bukan konstanta JS lagi. Fallback
   // ke angka lama persis (nol regresi kalau localStorage belum ke-seed ulang / periode blm dikonfig
