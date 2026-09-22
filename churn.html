@@ -9370,9 +9370,14 @@ function syncFinancialsOnly(monthParam,silent,_attempt,onDone){
 // -> UpsellTeamStore. Key bulan = 3-huruf (currentMonthKey), SAMA pola kayak syncFinancialsOnly
 // (BUKAN full "Jan-26" kayak grossnet lama -- tab RENEWAL/UPSELL cuma tahun 2026, nggak butuh
 // exact-match multi-tahun).
-function syncUpsellTeamOnly(monthParam,silent){
+// 22 Sep (fix): sama persis bug syncFinancialsOnly sebelum di-fix 21 Sep -- jalur silent nol retry,
+// gagal diem2 (kartu "Upselling"/MTD Upsell di Overview jadi basi tanpa sinyal apapun ke user).
+// Retry+onDone callback pola SAMA PERSIS kayak syncFinancialsOnly.
+var UPSELLTEAM_SILENT_RETRY_DELAYS_=[8000,20000];
+function syncUpsellTeamOnly(monthParam,silent,_attempt,onDone){
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
   if(!mon){if(!silent)toast('Pilih bulan dulu di "Sync Bulan" sebelum sync Upsell Tim');return;}
+  var attempt=_attempt||0;
   var btn=document.getElementById('sync-upsellteam-btn');
   if(btn&&!silent){btn.disabled=true;btn.textContent='⏳ Memuat...';}
   if(!silent)toast('Mengambil data Upsell Tim ('+mon+')…',4000);
@@ -9397,8 +9402,14 @@ function syncUpsellTeamOnly(monthParam,silent){
       myJourneyComputeAndCacheSummary(mon,'2026');
       renderTab(currentTab);
       if(!silent)toast('Upsell Tim '+mon+' tersimpan: '+(json.upsell?json.upsell.length:0)+' baris agregat',5000);
+      if(onDone)onDone(true);
     }).catch(function(err){
+      if(silent&&err.message!=='unauthorized'&&attempt<UPSELLTEAM_SILENT_RETRY_DELAYS_.length){
+        setTimeout(function(){syncUpsellTeamOnly(mon,true,attempt+1,onDone);},UPSELLTEAM_SILENT_RETRY_DELAYS_[attempt]);
+        return;
+      }
       if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Upsell Tim: '+err.message,5000);
+      if(onDone)onDone(false);
     }).then(function(){
       var b=document.getElementById('sync-upsellteam-btn');
       if(b&&!silent){b.disabled=false;b.textContent='📥 Sync Upsell Tim';}
@@ -9437,10 +9448,15 @@ function autoSyncFinancialsStores(){
   // nya nggak pernah beneran ke-update. Kalau gagal, mundurin timestamp jadi seolah "5 menit lagi
   // sebelum expire 30 menit" biar retry berikutnya jauh lebih cepet -- sukses tetep dapet full 30
   // menit (data emang nggak butuh lebih fresh dari itu, sesuai desain asli).
-  syncFinancialsOnly(mon,true,0,function(ok){
+  // 22 Sep (fix): dulu cuma syncFinancialsOnly yang di-track -- syncUpsellTeamOnly (kartu Upselling/
+  // MTD Upsell Overview) diem2 gagal terus tetep dapet full 30 menit throttle walau nggak pernah
+  // sukses. Sekarang KEDUANYA di-track lewat callback yang sama -- gagal salah satu aja langsung
+  // mundurin timestamp.
+  function onAutoSyncOutcome_(ok){
     if(!ok){try{localStorage.setItem(FIN_UT_AUTOSYNC_TS_KEY,String(Date.now()-25*60*1000));}catch(e){}}
-  });
-  setTimeout(function(){syncUpsellTeamOnly(mon,true);},2500);
+  }
+  syncFinancialsOnly(mon,true,0,onAutoSyncOutcome_);
+  setTimeout(function(){syncUpsellTeamOnly(mon,true,0,onAutoSyncOutcome_);},2500);
 }
 
 // CLM-10 §1: sync-down Invoice Tracker (Data Invoice CX, GAS ?action=invoicetracker) -> Invoice
