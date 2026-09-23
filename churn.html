@@ -9339,10 +9339,13 @@ function blastHwczOpts(){
 // autoSyncFinancialsStores) -- tanpa toast/spam UI, error diem2 (non-kritis, tombol manual tetep ada).
 // 21 Sep (fix): jalur silent SEBELUM ini nol retry -- kena infra GAS/Sheets lagi nggak stabil (pola
 // sama kayak "Service Spreadsheets timed out" yang bikin runDailySync_ server-side gagal 100%),
-// gagal diam2, user baru sadar Financials basi pas ngecek manual. Retry 2x (8dtk, 20dtk) KHUSUS
-// jalur silent sebelum bener2 nyerah diam2 -- jalur manual (tombol) SENGAJA nggak diubah, user udah
-// liat toast+bisa klik ulang sendiri.
+// gagal diam2, user baru sadar Financials basi pas ngecek manual. Retry 2x (8dtk, 20dtk).
+// 23 Sep (fix): jalur MANUAL (tombol) SEBELUMNYA nol retry juga -- ketauan kena HTTP 404 (kemungkinan
+// isu infra GAS Drive-serving intermiten yang udah beberapa kali kambuh sesi ini), user harus klik
+// ulang manual tiap kali. Sekarang manual JUGA retry (2x, 3dtk/8dtk -- lebih cepet dari silent krn
+// user aktif nunggu), dikasih toast progress biar keliatan lagi nyoba ulang, bukan diem kayak silent.
 var FINANCIALS_SILENT_RETRY_DELAYS_=[8000,20000];
+var FINANCIALS_MANUAL_RETRY_DELAYS_=[3000,8000];
 // 21 Sep: `onDone(ok)` opsional -- dipanggil abis beneran kelar (sukses ATAU semua retry abis gagal),
 // dipake autoSyncFinancialsStores buat bedain throttle 30-menit "sukses" vs "gagal" (lihat di sana).
 function syncFinancialsOnly(monthParam,silent,_attempt,onDone){
@@ -9351,7 +9354,7 @@ function syncFinancialsOnly(monthParam,silent,_attempt,onDone){
   var attempt=_attempt||0;
   var btn=document.getElementById('sync-financials-btn');
   if(btn&&!silent){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  if(!silent)toast('Mengambil data financials ('+mon+')…',4000);
+  if(!silent)toast(attempt?('Coba lagi ('+(attempt+1)+')…'):('Mengambil data financials ('+mon+')…'),4000);
 
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
@@ -9363,6 +9366,8 @@ function syncFinancialsOnly(monthParam,silent,_attempt,onDone){
   // request dianggap baru.
   var url=GAS_URL+'?action=financials&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now();
 
+  function resetBtn(){var b=document.getElementById('sync-financials-btn');if(b&&!silent){b.disabled=false;b.textContent='📥 Sync Financials';}}
+
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
@@ -9371,16 +9376,16 @@ function syncFinancialsOnly(monthParam,silent,_attempt,onDone){
       renderTab(currentTab);
       if(!silent)toast('Financials '+mon+' tersimpan: '+(json.total||0)+' outlet renewal',5000);
       if(onDone)onDone(true);
+      resetBtn();
     }).catch(function(err){
-      if(silent&&err.message!=='unauthorized'&&attempt<FINANCIALS_SILENT_RETRY_DELAYS_.length){
-        setTimeout(function(){syncFinancialsOnly(mon,true,attempt+1,onDone);},FINANCIALS_SILENT_RETRY_DELAYS_[attempt]);
-        return;
+      var delays=silent?FINANCIALS_SILENT_RETRY_DELAYS_:FINANCIALS_MANUAL_RETRY_DELAYS_;
+      if(err.message!=='unauthorized'&&attempt<delays.length){
+        setTimeout(function(){syncFinancialsOnly(mon,silent,attempt+1,onDone);},delays[attempt]);
+        return; // JANGAN resetBtn() -- masih ada retry pending, tombol tetep disabled/⏳ sampe beneran kelar
       }
       if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync financials: '+err.message,5000);
       if(onDone)onDone(false);
-    }).then(function(){
-      var b=document.getElementById('sync-financials-btn');
-      if(b&&!silent){b.disabled=false;b.textContent='📥 Sync Financials';}
+      resetBtn();
     });
 }
 
@@ -9391,14 +9396,17 @@ function syncFinancialsOnly(monthParam,silent,_attempt,onDone){
 // 22 Sep (fix): sama persis bug syncFinancialsOnly sebelum di-fix 21 Sep -- jalur silent nol retry,
 // gagal diem2 (kartu "Upselling"/MTD Upsell di Overview jadi basi tanpa sinyal apapun ke user).
 // Retry+onDone callback pola SAMA PERSIS kayak syncFinancialsOnly.
+// 23 Sep (fix): jalur MANUAL sekarang JUGA retry (pola sama persis syncFinancialsOnly -- lihat
+// komentar di sana buat alasan lengkapnya, ketemu HTTP 404 abis cache-bust maksa request beneran fresh).
 var UPSELLTEAM_SILENT_RETRY_DELAYS_=[8000,20000];
+var UPSELLTEAM_MANUAL_RETRY_DELAYS_=[3000,8000];
 function syncUpsellTeamOnly(monthParam,silent,_attempt,onDone){
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
   if(!mon){if(!silent)toast('Pilih bulan dulu di "Sync Bulan" sebelum sync Upsell Tim');return;}
   var attempt=_attempt||0;
   var btn=document.getElementById('sync-upsellteam-btn');
   if(btn&&!silent){btn.disabled=true;btn.textContent='⏳ Memuat...';}
-  if(!silent)toast('Mengambil data Upsell Tim ('+mon+')…',4000);
+  if(!silent)toast(attempt?('Coba lagi ('+(attempt+1)+')…'):('Mengambil data Upsell Tim ('+mon+')…'),4000);
 
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
@@ -9422,17 +9430,21 @@ function syncUpsellTeamOnly(monthParam,silent,_attempt,onDone){
       renderTab(currentTab);
       if(!silent)toast('Upsell Tim '+mon+' tersimpan: '+(json.upsell?json.upsell.length:0)+' baris agregat',5000);
       if(onDone)onDone(true);
+      resetUpsellTeamBtn_(silent);
     }).catch(function(err){
-      if(silent&&err.message!=='unauthorized'&&attempt<UPSELLTEAM_SILENT_RETRY_DELAYS_.length){
-        setTimeout(function(){syncUpsellTeamOnly(mon,true,attempt+1,onDone);},UPSELLTEAM_SILENT_RETRY_DELAYS_[attempt]);
-        return;
+      var delays=silent?UPSELLTEAM_SILENT_RETRY_DELAYS_:UPSELLTEAM_MANUAL_RETRY_DELAYS_;
+      if(err.message!=='unauthorized'&&attempt<delays.length){
+        setTimeout(function(){syncUpsellTeamOnly(mon,silent,attempt+1,onDone);},delays[attempt]);
+        return; // JANGAN reset tombol -- masih ada retry pending
       }
       if(!silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync Upsell Tim: '+err.message,5000);
       if(onDone)onDone(false);
-    }).then(function(){
-      var b=document.getElementById('sync-upsellteam-btn');
-      if(b&&!silent){b.disabled=false;b.textContent='📥 Sync Upsell Tim';}
+      resetUpsellTeamBtn_(silent);
     });
+}
+function resetUpsellTeamBtn_(silent){
+  var b=document.getElementById('sync-upsellteam-btn');
+  if(b&&!silent){b.disabled=false;b.textContent='📥 Sync Upsell Tim';}
 }
 
 // QA round 3 lanjutan (operator, 13 Jul): AUTO-SYNC financials+upsellteam bulan berjalan on-load --
