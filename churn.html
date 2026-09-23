@@ -2645,7 +2645,7 @@ function confirmUnauthorizedThenLogout(){
     var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
     var timer=ctrl?setTimeout(function(){ctrl.abort();},15000):null; // WAJIB timeout -- jangan ikut hang kayak doGet yg lagi flaky (123-369dtk per GATE-3 canary)
     var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
-    fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(token),opts)
+    fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(token)+'&_cb='+Date.now(),opts) // 23 Sep: cache-bust, sama bug class 4 Agu
       .then(function(r){
         if(timer)clearTimeout(timer);
         if(!r.ok)throw new Error('HTTP '+r.status); // infra-failure, BUKAN konfirmasi unauthorized -- tangkep di .catch di bawah
@@ -3167,7 +3167,7 @@ var MyJourneySummaryStore={
 // (nggak ada UI raw-sync buat tahun itu sama sekali); 2026 tetap BOLEH sync-raw manual (drill-down
 // harian bulan aktif), summary ini cuma fallback tambahan buat bulan yang belum di-raw-sync.
 function syncMyJourneySummaryFromServer(year,silent){
-  var url=GAS_URL+'?action=myjourney_summary&year='+encodeURIComponent(year)+'&token='+encodeURIComponent(Auth.getToken()||'');
+  var url=GAS_URL+'?action=myjourney_summary&year='+encodeURIComponent(year)+'&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now(); // 23 Sep: cache-bust, sama bug class 4 Agu
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   // 27 Agu (fix): 60dtk KEPENDEKAN -- endpoint ini baca SELURUH KLOPOS (12 bulan, ~37rb+ baris) buat
   // terminMap/paket join (buildTerminAndPaketMaps_), genuinely berat, kebukti timeout beneran kejadian
@@ -3202,7 +3202,7 @@ var DailyViewCompareStore={
   getMonth:function(month){return this.getAll()[month]||null;}
 };
 function syncDailyViewCompareFromServer(month,silent){
-  var url=GAS_URL+'?action=daily_summary&month='+encodeURIComponent(month)+'&token='+encodeURIComponent(Auth.getToken()||'');
+  var url=GAS_URL+'?action=daily_summary&month='+encodeURIComponent(month)+'&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now(); // 23 Sep: cache-bust, sama bug class 4 Agu
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},60000):null; // ringan (1 bulan, nol join KLOPOS) -- 60dtk cukup, beda dari myjourney_summary
   var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
@@ -8743,7 +8743,12 @@ function syncThreeMonths(){
 // duluan sebelum ini dipanggil -- sync jalan di background, diam2 kalau DB belum berubah (hemat ~30 detik).
 function checkFreshnessAndAutoSync(){
   if(!Auth.isLoggedIn())return;
-  fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(Auth.getToken()||''))
+  // 23 Sep (fix): cache-bust -- fungsi ini nentuin JADI/NGGAKNYA auto-sync jalan (compare
+  // json.lastRefresh* vs known-freshness lokal). Kalau fetch INI SENDIRI ke-cache browser, dia bisa
+  // nganggep data MASIH FRESH dari hasil lama terus SKIP auto-sync buat Responses/Blast/Invoice/
+  // VisitTC/KLOPOS sama sekali. Financials/Upsell Tim PUNYA jalur auto-sync sendiri di luar sini
+  // (autoSyncFinancialsStores) -- itu udah dibenerin terpisah di syncFinancialsOnly/syncUpsellTeamOnly.
+  fetch(GAS_URL+'?action=freshness&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now())
     .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
       if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
@@ -9022,7 +9027,8 @@ function _gasGet(action,timeoutMs){
   var timer=ctrl?setTimeout(function(){ctrl.abort();},timeoutMs||90000):null;
   var opts={method:'GET'};
   if(ctrl)opts.signal=ctrl.signal;
-  return fetch(GAS_URL+'?action='+action+'&token='+encodeURIComponent(Auth.getToken()||''),opts).then(function(r){
+  // 23 Sep (fix): cache-bust -- helper generik dipake banyak caller, sama bug class 4 Agu (action=data).
+  return fetch(GAS_URL+'?action='+action+'&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now(),opts).then(function(r){
     if(timer)clearTimeout(timer);
     if(!r.ok)throw new Error('HTTP '+r.status);
     return r.json();
@@ -9069,7 +9075,7 @@ function syncAssignOnly(monthParam){
   // 1 bulan = 1 request GAS RINGAN (getAssignments baca 1 tab "Assign <Bulan>26" doang). Dipakai baik
   // mode scoped (mon eksplisit) maupun sekuensial per-bulan di mode unscoped di bawah.
   function fetchOneMonth(m){
-    var url=GAS_URL+'?action=assignments'+(m?'&month='+encodeURIComponent(m):'')+'&token='+encodeURIComponent(Auth.getToken()||'');
+    var url=GAS_URL+'?action=assignments'+(m?'&month='+encodeURIComponent(m):'')+'&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now(); // 23 Sep: cache-bust, sama bug class 4 Agu
     return new Promise(function(resolve,reject){
       function attempt(n){
         var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
@@ -9350,7 +9356,12 @@ function syncFinancialsOnly(monthParam,silent,_attempt,onDone){
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
   var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
-  var url=GAS_URL+'?action=financials&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||'');
+  // 23 Sep (fix): cache-bust -- BUG YANG SAMA PERSIS kayak action=data 4 Agu (lihat komentar
+  // syncDataFromServer) ketemu di sini juga: klik sync ulang PERSIS abis diagnostic nunjukin data
+  // live udah beda, angka di dashboard SAMA SEKALI nggak berubah -- ciri response ke-cache browser
+  // (URL identik tiap kali: action+month+token doang), bukan gagal fetch. Timestamp unik maksa
+  // request dianggap baru.
+  var url=GAS_URL+'?action=financials&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now();
 
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
@@ -9392,7 +9403,8 @@ function syncUpsellTeamOnly(monthParam,silent,_attempt,onDone){
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
   var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
-  var url=GAS_URL+'?action=upsellteam&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||'');
+  // 23 Sep (fix): cache-bust, sama alasan persis syncFinancialsOnly di atas -- lihat komentar di situ.
+  var url=GAS_URL+'?action=upsellteam&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now();
 
   fetch(url,opts)
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
@@ -9482,7 +9494,7 @@ function syncInvoiceTrackerOnly(syncOpts){
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
   var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
-  var url=GAS_URL+'?action=invoicetracker&token='+encodeURIComponent(Auth.getToken()||'');
+  var url=GAS_URL+'?action=invoicetracker&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now(); // 23 Sep: cache-bust, sama bug class 4 Agu
 
   var ok=false;
   fetch(url,opts)
@@ -9525,7 +9537,7 @@ function syncVisitTCOnly(syncOpts){
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
   var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
   var opts={method:'GET'};if(ctrl)opts.signal=ctrl.signal;
-  var url=GAS_URL+'?action=visittc&token='+encodeURIComponent(Auth.getToken()||'');
+  var url=GAS_URL+'?action=visittc&token='+encodeURIComponent(Auth.getToken()||'')+'&_cb='+Date.now(); // 23 Sep: cache-bust, sama bug class 4 Agu
 
   var ok=false;
   fetch(url,opts)
