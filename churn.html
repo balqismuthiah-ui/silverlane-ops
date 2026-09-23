@@ -3248,8 +3248,23 @@ function cumulativeFromDaily(dailyArr){
 // terbaru kalau ada agen baru/nonaktif (CLM-06), bukan roster beku dari waktu sync.
 var InvoiceTrackerStore={
   KEY:'klopos_invoicetracker_v1',
-  get:function(){try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{data:[],reassignments:[],syncedAt:null};}catch(e){return{data:[],reassignments:[],syncedAt:null};}},
-  set:function(data,reassignments){localStorage.setItem(this.KEY,JSON.stringify({data:data,reassignments:reassignments||[],syncedAt:new Date().toISOString()}));},
+  // 23 Sep (fix): sebelum ini localStorage.setItem() di set()/upsertReassignment() NOL try/catch --
+  // kalau kena QuotaExceededError, exception nyebrang ke syncInvoiceTrackerOnly's .then() dan ke-
+  // tangkep .catch() SEBAGAI GAGAL FETCH (padahal fetch-nya sukses) -- data nggak pernah kesimpen,
+  // BAHKAN nggak sempet masuk in-memory sama sekali (beda dari FinancialsStore/UpsellTeamStore yang
+  // minimal "gagal-tapi-diketahui" krn storageSetMonthWithEviction). Ini penjelasan Invoice Tracker
+  // "tetep blank" biarpun sync sukses. _mem sekarang jadi in-memory fallback yang SELALU keisi duluan.
+  _mem:null,
+  get:function(){
+    if(this._mem)return this._mem;
+    try{return JSON.parse(localStorage.getItem(this.KEY)||'null')||{data:[],reassignments:[],syncedAt:null};}catch(e){return{data:[],reassignments:[],syncedAt:null};}
+  },
+  _persist:function(payload){
+    this._mem=payload;
+    try{localStorage.setItem(this.KEY,JSON.stringify(payload));}
+    catch(e){toast('⚠ Storage lokal penuh — data Invoice Tracker TIDAK disimpan permanen (tetap tampil sesi ini). Refresh halaman bakal balik basi sampai storage-nya lega.',7000);}
+  },
+  set:function(data,reassignments){this._persist({data:data,reassignments:reassignments||[],syncedAt:new Date().toISOString()});},
   // CLM-10 §1b: optimistic local upsert-by-invCode abis submit tag/un-tag -- badge kepake instan,
   // sinkron beneran (dari sheet) nyusul lewat sync Invoice Tracker berikutnya (pola sama gcWatchlistData).
   // 30 Jul: hapus entry lokal cuma kalau KETIGA field (reassignedAgent/isTcDeal/tcName) kosong --
@@ -3264,7 +3279,7 @@ var InvoiceTrackerStore={
     }else if(i>=0){
       d.reassignments.splice(i,1); // ketiga field kosong = hapus entry lokal juga (sama pola GAS deleteRow)
     }
-    localStorage.setItem(this.KEY,JSON.stringify(d));
+    this._persist(d);
   }
 };
 
