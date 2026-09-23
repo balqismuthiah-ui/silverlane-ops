@@ -5056,15 +5056,16 @@ function renderOverview(){
     // dayOfMonthLocked (bukan dayOfMonth) biar konsisten pembilang/penyebutnya.
     function dvArpuFor(ut,rosterMap,cutoffDay){
       var acc={};
-      Object.keys(DAILY_VIEW_BUCKETS).forEach(function(k){acc[k]={revenue:0,outlets:{}};});
+      Object.keys(DAILY_VIEW_BUCKETS).forEach(function(k){acc[k]={revenue:0,outlets:{},qty:0};});
       function ingest(rows){
         (rows||[]).forEach(function(r){
           if(!r.paidDate)return;
           var day=parseInt(r.paidDate.slice(8,10),10);
           if(!day||day<1||(cutoffDay&&day>cutoffDay))return;
           var b=dailyViewTeamBucketOf(r.creatorName,r.region,rosterMap);
-          acc.NASIONAL.revenue+=r.subtotal;if(r.outletId)acc.NASIONAL.outlets[r.outletId]=true;
-          acc[b].revenue+=r.subtotal;if(r.outletId)acc[b].outlets[r.outletId]=true;
+          var qty=r.qty||0; // upsellRaw doang yg punya qty -- renewalsRaw kontribusi 0 ke ini
+          acc.NASIONAL.revenue+=r.subtotal;if(r.outletId)acc.NASIONAL.outlets[r.outletId]=true;acc.NASIONAL.qty+=qty;
+          acc[b].revenue+=r.subtotal;if(r.outletId)acc[b].outlets[r.outletId]=true;acc[b].qty+=qty;
         });
       }
       if(ut){
@@ -5073,7 +5074,11 @@ function renderOverview(){
       }
       var out={};
       Object.keys(acc).forEach(function(k){
-        var denom=Object.keys(acc[k].outlets).length;
+        // 23 Sep (fix, request operator): upsellRaw nggak punya outletId (tab sumbernya emang nggak
+        // ada Outlet_ID -- lihat memory) -- SEBELUM ini ARPU Upsell selalu Rp0 (denom=0). Fallback ke
+        // total qty (revenue/qty = harga rata2 per unit) -- BEDA konsep dari ARPU per-outlet Renewal,
+        // tapi jauh lebih berguna drpd angka 0 yg nyesatin (kesannya nol revenue).
+        var denom=Object.keys(acc[k].outlets).length||acc[k].qty;
         out[k]=denom?Math.round(acc[k].revenue/denom):0;
       });
       return out;
