@@ -4079,18 +4079,38 @@ function writeBackGcWatchlist(payload){
 // WB_FLUSH_MAX_CONSEC_FAIL gagal beruntun -- sisa antrean disimpen, dicoba lagi di panggilan berikutnya
 // (sync/startApp selanjutnya), bukan digebrak terus di pass yang sama.
 var WB_FLUSH_GAP_MS=400,WB_FLUSH_MAX_CONSEC_FAIL=5;
+// 23 Sep (fix, insiden antrean Muthia 5951 item nggak pernah keliatan ngosong): SEBELUMNYA
+// localStorage cuma ke-update SEKALI di akhir loop (abis SEMUA q.length item diproses ATAU 5 gagal
+// beruntun). Dengan antrean sebesar ini (~6rb item) x durasi per-item yang sekarang lambat (GAS lagi
+// berat, belasan detik/item bahkan pas SUKSES), 1 pass penuh bisa makan JAM-AN -- dan circuit-breaker
+// jarang kepicu krn sukses/gagalnya SELANG-SELING (bukan 5 gagal beruntun beneran), jadi loop-nya
+// jalan terus di background TANPA PERNAH nyampe titik akhir yang nulis balik localStorage. Akibatnya
+// localStorage nggak PERNAH keupdate walau write-back-nya SENDIRI kebukti sukses beneran (diverifikasi
+// manual lewat _gasPost langsung -- respons sukses asli dari server, cuma nggak pernah ke-persist).
+// Fix: persist progress INCREMENTAL abis TIAP item sukses, bukan nunggu akhir loop. Match by `.key`
+// (BUKAN reference-equality/indexOf(item) -- wbQueueGet() re-read localStorage tiap kali, objeknya
+// SELALU instance baru walau isinya sama, jadi indexOf bakal SELALU -1, ketauan pas desain fix ini).
 function wbFlush(){
   var q=wbQueueGet();if(!q.length)return;
-  var remaining=[];var i=0;var consecFail=0;
+  var i=0;var consecFail=0;
   (function next(){
     if(i>=q.length||consecFail>=WB_FLUSH_MAX_CONSEC_FAIL){
-      remaining=remaining.concat(q.slice(i));
-      wbQueueSet(remaining);
-      if(remaining.length<q.length&&remaining.length===0)toast('✓ Antrean write-back terkirim');
+      var remaining=wbQueueGet();
+      if(remaining.length===0)toast('✓ Antrean write-back terkirim');
       return;
     }
-    var item=q[i++];
-    _gasPost(item).then(function(){consecFail=0;setTimeout(next,WB_FLUSH_GAP_MS);}).catch(function(){consecFail++;remaining.push(item);setTimeout(next,WB_FLUSH_GAP_MS);});
+    var item=q[i];
+    _gasPost(item).then(function(){
+      i++;consecFail=0;
+      var cur=wbQueueGet();
+      var idx=cur.findIndex(function(x){return x.key===item.key;});
+      if(idx>=0)cur.splice(idx,1);
+      wbQueueSet(cur);
+      setTimeout(next,WB_FLUSH_GAP_MS);
+    }).catch(function(){
+      i++;consecFail++;
+      setTimeout(next,WB_FLUSH_GAP_MS);
+    });
   })();
 }
 // Auto-paid bisa nge-generate ratusan/ribuan perubahan sekaligus pas first-run full-sync (semua
