@@ -10490,7 +10490,16 @@ function startApp(){
   // ada write sukses yg bakal nge-retrigger dia, jadi antrean bisa diem TERUS nunggu reload manual.
   // Nudge periodik jaga-jaga biar antrean tetep dicoba lagi pelan-pelan begitu GAS pulih. wbFlush sendiri
   // udah no-op kalau antrean kosong, dan udah ada jeda+circuit-breaker internal -- aman dipanggil berkala.
-  setInterval(wbFlush,5*60*1000);
+  // 23 Sep (fix, insiden antrean Muthia 5958 item ga pernah ngosong): SEBELUMNYA setInterval fixed
+  // 5 menit -- browser2 yang keload bareng (jam masuk kerja) driftnya nyaris nol, jadi wbFlush semua
+  // orang nembak BARENGAN tiap 5 menit, numpuk di withWriteLock_ (SATU lock global buat SEMUA write
+  // action SEMUA user) -> cascading busy_lock_timeout, antrean lokal nggak pernah kekuras (kebukti
+  // langsung di GAS Executions: banyak doPost start-time SAMA PERSIS). Ganti jadi self-reschedule
+  // setTimeout + jitter tiap siklus (bukan interval tetap), biar timing tiap browser pelan2 nyebar,
+  // bukan numpuk terus di lock yang sama tiap 5 menit.
+  (function scheduleWbFlush_(){
+    setTimeout(function(){wbFlush();scheduleWbFlush_();},5*60*1000+Math.floor(Math.random()*90000));
+  })();
   if(!window._respVisibilityWired){
     window._respVisibilityWired=true;
     document.addEventListener('visibilitychange',function(){
