@@ -4439,7 +4439,13 @@ function renderOverview(){
   var agentSection='';
   if(isSup){
     var agentRows=AGENTS.map(function(ag){
-      var aRecs=recs.filter(function(r){return r.assignedAgent===ag;});
+      // 23 Sep (fix, request operator): scope ke cohort bulan berjalan (currentMonthKey) -- SEBELUMNYA
+      // aRecs itu ALL-TIME (nggak ada filter bulan sama sekali), padahal target "Renewal: Target
+      // RpXXXjt" di bawah itu target BULANAN dan section ini sendiri di-judulin "Cohort Sep 26" --
+      // ngebandingin count all-time ke target bulanan nyesatin, dan jumlahnya beda-beda antar browser
+      // tergantung breadth histori yang kebetulan ke-sync ke situ, BUKAN soal data beneran beda.
+      // Maps/Apps (Review) di bawah SENGAJA TETAP all-time -- itu emang metrik kumulatif dari awal.
+      var aRecs=recs.filter(function(r){return r.assignedAgent===ag&&(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
       var aTotal=aRecs.length;
       var aRenew=aRecs.filter(function(r){return respOutcome(r.response)==='renewal';}).length;
       var aTidak=aRecs.filter(function(r){return respOutcome(r.response)==='churn';}).length;
@@ -4448,10 +4454,8 @@ function renderOverview(){
       var aBlasted=aRecs.filter(recordEverBlasted).length; // CLM-05 AC-H2 fix: dari blastLog (CLARA)
       var pct=aTotal?Math.round((aRenew/aTotal)*100):0; // respons-based (sub-line)
       // CLM-12: konversi moving-leads per agen. Penyebut = Hot SEMUA (via convBaseFilter, sekarang
-      // Hot-all) — SELARAS card team. aRecs belum di-scope bulan (recs=d.records full), moving
-      // relatif-bulan jadi scope di sini.
-      var aMovRecs=aRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
-      var aConv=computeMovingConversion(convBaseFilter(aMovRecs,'Hot'),currentMonthKey);
+      // Hot-all) — SELARAS card team. aRecs udah di-scope bulan di atas, jadi langsung reuse.
+      var aConv=computeMovingConversion(convBaseFilter(aRecs,'Hot'),currentMonthKey);
       var mpct=aConv.actual;
       var convClr=mpct>=convTargetImp?'var(--grn)':(mpct>=convTarget?'var(--yel)':'var(--red)');
       var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',ag);},0);
