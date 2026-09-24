@@ -6267,7 +6267,10 @@ function ratingNpsAllRows(){
     if(r.nps&&r.nps.evidence){
       out.push({
         recId:r.id,key:r.id,type:'nps',platformKey:'nps',platformLabel:'⭐ NPS',
-        outletName:r.outletName||r.id,agentName:r.assignedAgent||'',
+        // 24 Sep (malam, feedback #2): agentName prefer "NPS Agent Credit" (atribusi klaim, koreksi-
+        // able leader) -- fallback assignedAgent (case-assigned) kalau belum pernah ke-set, SAMA POLA
+        // Rating (u.agentCredit||r.assignedAgent).
+        outletName:r.outletName||r.id,agentName:(r.nps.agentCredit||r.assignedAgent||''),
         status:ratingNpsStatusNorm_(r.nps.status),rejectReason:r.nps.rejectReason||'',
         claimMonth:r.nps.claimMonth||'',evidence:r.nps.evidence||'',approvedBy:r.nps.approvedBy||''
       });
@@ -6367,11 +6370,12 @@ function openRnEditModal(type,key){
   var monthOpts=IDN_MONTHS_CLIENT.map(function(m,i){return'<option value="'+i+'"'+(i===parsed.monthIdx?' selected':'')+'>'+m+'</option>';}).join('');
   var yearOpts='';
   for(var y=nowYear-1;y<=nowYear+1;y++){yearOpts+='<option value="'+y+'"'+(y===parsed.year?' selected':'')+'>'+y+'</option>';}
-  // Koreksi Agen -- LEADER-ONLY, cuma buat klaim Rating (Agent Credit field UPSELL_CLAIM). NPS nggak
-  // punya field analog (agent NPS = assignedAgent case-nya sendiri, bukan atribusi klaim terpisah).
+  // Koreksi Agen -- LEADER-ONLY. Rating pakai "Agent Credit" (UPSELL_CLAIM), NPS pakai "NPS Agent
+  // Credit" (RESPONSES, field baru 24 Sep malam) -- dua-duanya sekarang punya field atribusi klaim
+  // terpisah dari assignedAgent (case-assigned), jadi UI-nya sama utk kedua tipe.
   var isSup=Auth.isSuperior();
   var agentField='';
-  if(type==='rating'&&isSup){
+  if(isSup){
     var agentOpts=AgentsConfig.getAll().filter(function(a){return a.role==='agent';})
       .map(function(a){return'<option value="'+a.name+'"'+(x.agentName===a.name?' selected':'')+'>'+a.name+'</option>';}).join('');
     agentField='<label style="margin-top:12px;display:block">Agen (koreksi atribusi klaim)</label>'
@@ -6405,7 +6409,11 @@ function saveRnEdit(){
     var d=Store.get();
     if(type==='nps'){
       var r=d.records.find(function(x){return x.id===key;});
-      if(r&&r.nps){r.nps.claimMonth=newMonth;if(res.statusReset)r.nps.status='Pending';}
+      if(r&&r.nps){
+        r.nps.claimMonth=newMonth;
+        if(res.statusReset)r.nps.status='Pending';
+        if(res.agentChanged)r.nps.agentCredit=res.agentCredit;
+      }
     }else{
       var sep=key.lastIndexOf('_'),recId=key.substring(0,sep),platform=key.substring(sep+1);
       var r2=d.records.find(function(x){return x.id===recId;});
@@ -10062,7 +10070,8 @@ function mergeNpsFromRemote(local,remoteRow){
     submittedBy:String(remoteRow['NPS Submitted By']||'').trim(),
     submittedAt:remoteSubmittedAt,
     claimMonth:String(remoteRow['NPS Claim Month']||'').trim(), // 24 Sep (Phase 1 Step 5): independen dari Expired Date, bisa dikoreksi manual (updateNpsClaimMonth)
-    approvedBy:String(remoteRow['NPS Approved By']||'').trim() // 24 Sep (feedback #5): siapa leader yang approve/reject
+    approvedBy:String(remoteRow['NPS Approved By']||'').trim(), // 24 Sep (feedback #5): siapa leader yang approve/reject
+    agentCredit:String(remoteRow['NPS Agent Credit']||'').trim() // 24 Sep (malam, feedback #2): atribusi agen klaim NPS, koreksi via updateNpsClaimMonth
   };
 }
 
@@ -10161,7 +10170,8 @@ function syncResponsesOnly(opts){
           submittedBy:String(row['NPS Submitted By']||'').trim(),
           submittedAt:String(row['NPS Submitted At']||'').trim(),
           claimMonth:String(row['NPS Claim Month']||'').trim(), // 24 Sep (Phase 1 Step 5)
-          approvedBy:String(row['NPS Approved By']||'').trim() // 24 Sep (feedback #5)
+          approvedBy:String(row['NPS Approved By']||'').trim(), // 24 Sep (feedback #5)
+          agentCredit:String(row['NPS Agent Credit']||'').trim() // 24 Sep (malam, feedback #2)
         };
       }
     });
