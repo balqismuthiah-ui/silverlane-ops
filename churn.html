@@ -372,6 +372,18 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
   </div>
 </div>
 
+<!-- 24 Sep (feedback #2b/#2c): Rating & NPS -- Edit Klaim Modal (dropdown Bulan/Tahun, ganti prompt() free-text; + koreksi Agen leader-only utk klaim Rating) -->
+<div class="modal-overlay" id="rnedit-modal">
+  <div class="modal">
+    <div class="modal-hd"><h3>Edit Klaim</h3><button class="modal-close" data-close="rnedit-modal">✕</button></div>
+    <div class="modal-bd" id="rnedit-body"></div>
+    <div class="modal-ft">
+      <button class="btn btn-sec" data-close="rnedit-modal">Batal</button>
+      <button class="btn btn-pri" id="rnedit-save-btn">Simpan</button>
+    </div>
+  </div>
+</div>
+
 <!-- Template Edit Modal -->
 <div class="modal-overlay" id="tpl-modal">
   <div class="modal wide">
@@ -3778,7 +3790,7 @@ var invBulanFilter=[],invStartDate='',invEndDate='';
 // 30 Jul: filter Deal TC (opsi 'yes'/'no') -- bonus dari brief flag Deal TC, pola sama filter lain di tab ini.
 var invTcFilter=[];
 // 24 Sep (Phase 1 Step 5): Rating & NPS state -- pola sama Invoice Tracker.
-var ratingNpsStatusFilter=[],ratingNpsMonthFilter=[],ratingNpsAgentFilter=[],ratingNpsSearch='',ratingNpsPage=0;
+var ratingNpsStatusFilter=[],ratingNpsMonthFilter=[],ratingNpsAgentFilter=[],ratingNpsTypeFilter=[],ratingNpsSearch='',ratingNpsPage=0;
 // CLM-11 Fase G (Batch B): tab Invoice Summary — matrix agen×hari per status pembayaran.
 // invsumCat/invsumAgent = multi-select collapsible (reuse renderMultiSelect + G6). invsumMonth = 1
 // bulan (native select, default bulan berjalan). invsumMatrix = status aktif (pill). invsumUnit =
@@ -4575,31 +4587,29 @@ function renderOverview(){
     }).join('');
   }
 
-  // ── Review validation backlog (leader only) ───────────────────────────
+  // ── Ringkasan Rating & NPS (leader only) ──────────────────────────────
+  // 24 Sep (feedback #1): tabel "📋 Pending Validasi Review" DIHAPUS -- udah pindah ke tab ⭐ Rating &
+  // NPS sendiri (leader validasi dari sana sekarang, bukan Overview). Diganti list ringkas (BUKAN
+  // kartu/tabel besar, operator eksplisit minta "list doang", = Step 6 plan lama): funnel
+  // submission→approved→reject Rating & NPS (dari sumber sama persis tab baru, ratingNpsAllRows,
+  // biar angka KONSISTEN 1:1 sama yg keliatan pas leader klik masuk), + renewal PAID bulan berjalan.
   var backlogSection='';
   if(isSup){
-    var pendingReviews=allRecs.filter(upsellIsPending);
-    if(pendingReviews.length>0){
-      var prRows=pendingReviews.map(function(r){
-        var claimCol=UPSELL_PLATFORMS.filter(function(p){return r.upsell&&r.upsell[p.key];}).map(function(p){
-          var line=r.upsell[p.key];
-          return p.icon+' '+line.count+upsellLineBadge(line);
-        }).join(' &nbsp; ');
-        var evidCol=UPSELL_PLATFORMS.filter(function(p){return r.upsell&&r.upsell[p.key];}).map(function(p){
-          var line=r.upsell[p.key];
-          return line.evidence?'<a href="'+line.evidence+'" target="_blank" style="color:var(--pri);font-size:11px">'+p.icon+' Lihat ↗</a>':'';
-        }).join(' ');
-        return'<tr><td><strong>'+r.outletName+'</strong></td>'
-          +'<td>'+r.assignedAgent+'</td>'
-          +'<td>'+claimCol+'</td>'
-          +'<td>'+(evidCol||'<span style="color:var(--tx3)">—</span>')+'</td>'
-          +'<td><button class="action-btn ab-edit" data-act="resp" data-id="'+r.id+'">✓ Validasi</button></td></tr>';
-      }).join('');
-      backlogSection='<div class="ov-section"><div class="ov-section-title">📋 Pending Validasi Review <span class="badge badge-yel">'+pendingReviews.length+'</span></div>'
-        +'<div class="card" style="padding:0"><div class="tbl-wrap"><table>'
-        +'<thead><tr><th>Outlet</th><th>Agen</th><th>Klaim</th><th>Bukti</th><th>Aksi</th></tr></thead>'
-        +'<tbody>'+prRows+'</tbody></table></div></div></div>';
-    }
+    var rnAll=ratingNpsAllRows();
+    var rnRating=rnAll.filter(function(x){return x.type==='rating';});
+    var rnNps=rnAll.filter(function(x){return x.type==='nps';});
+    function rnCnt_(arr,st){return arr.filter(function(x){return x.status===st;}).length;}
+    var ratingSub=rnRating.length,ratingAppr=rnCnt_(rnRating,'Approved'),ratingRej=rnCnt_(rnRating,'Rejected');
+    var npsSub=rnNps.length,npsAppr=rnCnt_(rnNps,'Approved'),npsRej=rnCnt_(rnNps,'Rejected');
+    var renewalPaidMonth=computeFunnelBreakdown(allRecs,currentMonthKey).renewal;
+    backlogSection='<div class="ov-section"><div class="ov-section-title">📋 Ringkasan Rating & NPS</div>'
+      +'<div class="card" style="padding:12px 16px;font-size:12px;line-height:2">'
+      +'<div>⭐ Rating: <strong>'+ratingSub+'</strong> submission → <strong style="color:var(--grn)">'+ratingAppr+'</strong> approved → <strong style="color:var(--red)">'+ratingRej+'</strong> reject</div>'
+      +'<div>🎯 Rating vs Target: <strong>'+(mapsAch+appsAch)+'</strong>/'+(REVIEW_TARGET_MAPS+REVIEW_TARGET_APPS)+'</div>'
+      +'<div>🌟 NPS: <strong>'+npsSub+'</strong> submission → <strong style="color:var(--grn)">'+npsAppr+'</strong> approved → <strong style="color:var(--red)">'+npsRej+'</strong> reject</div>'
+      +'<div>💰 Renewal Paid (bulan ini): <strong>'+renewalPaidMonth+'</strong></div>'
+      +'<div style="margin-top:6px"><a href="javascript:void(0)" onclick="renderTab(\'ratingnps\')" style="color:var(--pri)">Lihat detail Rating &amp; NPS →</a></div>'
+      +'</div></div>';
   }
 
   // ── Per-agent target section (agents only) ───────────────────────────
@@ -6250,7 +6260,7 @@ function ratingNpsAllRows(){
           recId:r.id,key:r.id+'_'+p.key,type:'rating',platformKey:p.key,platformLabel:p.icon+' '+p.label,
           outletName:r.outletName||r.id,agentName:(u.agentCredit||r.assignedAgent||''),
           status:ratingNpsStatusNorm_(u.status),rejectReason:u.rejectReason||'',
-          claimMonth:u.claimMonth||'',evidence:u.evidence||''
+          claimMonth:u.claimMonth||'',evidence:u.evidence||'',approvedBy:u.lastEditBy||''
         });
       });
     }
@@ -6259,7 +6269,7 @@ function ratingNpsAllRows(){
         recId:r.id,key:r.id,type:'nps',platformKey:'nps',platformLabel:'⭐ NPS',
         outletName:r.outletName||r.id,agentName:r.assignedAgent||'',
         status:ratingNpsStatusNorm_(r.nps.status),rejectReason:r.nps.rejectReason||'',
-        claimMonth:r.nps.claimMonth||'',evidence:r.nps.evidence||''
+        claimMonth:r.nps.claimMonth||'',evidence:r.nps.evidence||'',approvedBy:r.nps.approvedBy||''
       });
     }
   });
@@ -6276,24 +6286,38 @@ function ratingNpsFilteredRows(all,me,isSup){
   var pool=ratingNpsBasePool(all,me,isSup);
   if(ratingNpsStatusFilter.length)pool=pool.filter(function(x){return ratingNpsStatusFilter.indexOf(x.status)>=0;});
   if(ratingNpsMonthFilter.length)pool=pool.filter(function(x){return ratingNpsMonthFilter.indexOf(x.claimMonth)>=0;});
+  // 24 Sep (feedback round 2): filter Tipe -- pakai platformKey (maps/playstore/hardware/nps) biar
+  // 1:1 sama data, BUKAN label (yang ada emoji, ribet buat cocokin).
+  if(ratingNpsTypeFilter.length)pool=pool.filter(function(x){return ratingNpsTypeFilter.indexOf(x.platformKey)>=0;});
   if(!ratingNpsSearch)return pool;
   var s=ratingNpsSearch.toLowerCase();
-  return pool.filter(function(x){return x.outletName.toLowerCase().indexOf(s)>=0||x.agentName.toLowerCase().indexOf(s)>=0;});
+  // 24 Sep (feedback round 2): search juga match Join Code (recId) -- sebelumnya cuma outlet/agen.
+  return pool.filter(function(x){return x.outletName.toLowerCase().indexOf(s)>=0||x.agentName.toLowerCase().indexOf(s)>=0||x.recId.toLowerCase().indexOf(s)>=0;});
 }
 var ratingNpsCountText='';
+// 24 Sep (feedback #5): kolom "Approved By" -- Rating (lastEditBy dari reviewUpsellClaimV2) BISA
+// kosong buat baris bridge-sync lama (leader "ok"-in di Report, bukan lewat dashboard) -- tampilin
+// "(dari Report)" biar jelas itu keputusan lama, bukan bug/data ilang.
+function ratingNpsApprovedByDisplay_(x){
+  if(x.status!=='Approved'&&x.status!=='Rejected')return'<span style="color:var(--tx3)">—</span>';
+  if(x.approvedBy)return x.approvedBy;
+  return x.type==='rating'?'<span style="color:var(--tx3);font-style:italic">(dari Report)</span>':'<span style="color:var(--tx3)">—</span>';
+}
 function ratingNpsRowsHtml(all,me,isSup){
   var recs=ratingNpsFilteredRows(all,me,isSup);
   ratingNpsCountText='Menampilkan '+recs.length+' dari '+ratingNpsBasePool(all,me,isSup).length+' klaim';
   var cnt=document.getElementById('ratingnps-count');
   if(cnt)cnt.textContent=ratingNpsCountText;
   // Aksi (Approve/Reject) leader-only -- NOL dirender buat agent (bukan disabled/CSS-hide, preseden CLM-06).
-  var colspan=isSup?7:6;
+  var colspan=isSup?8:7;
   if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada klaim</td></tr>';
   var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
   ratingNpsPage=Math.min(ratingNpsPage,totalPages-1);
   var paged=recs.slice(ratingNpsPage*PAGE_SIZE,(ratingNpsPage+1)*PAGE_SIZE);
   return paged.map(function(x){
-    // Bulan Klaim: leader bisa koreksi klaim SIAPA AJA, agent cuma klaim MILIK SENDIRI (brief operator).
+    // Bulan Klaim (+ koreksi Agen buat leader): leader bisa koreksi klaim SIAPA AJA, agent cuma
+    // klaim MILIK SENDIRI (brief operator). Tombol buka modal "Edit Klaim" (dropdown Bulan/Tahun,
+    // + dropdown Agen kalau leader+tipe rating -- feedback #2b/#2c, bukan prompt() free-text lagi.
     var canEditMonth=isSup||x.agentName===Auth.getActive();
     var monthCell=(x.claimMonth||'<span style="color:var(--tx3)">—</span>')
       +(canEditMonth?' <button class="action-btn ab-edit" data-act="edit-claim-month" data-key="'+x.key+'" data-type="'+x.type+'" style="font-size:10px;padding:2px 6px">✏️</button>':'');
@@ -6312,11 +6336,94 @@ function ratingNpsRowsHtml(all,me,isSup){
       +'<td>'+x.platformLabel+'</td>'
       +(isSup?'<td>'+(x.agentName||'<span style="color:var(--tx3)">—</span>')+'</td>':'')
       +'<td>'+ratingNpsStatusBadge_(x.status)+'</td>'
+      +'<td style="font-size:11px">'+ratingNpsApprovedByDisplay_(x)+'</td>'
       +'<td>'+monthCell+'</td>'
       +'<td>'+evidCell+'</td>'
       +(isSup?'<td>'+aksiCell+'</td>':'')
       +'</tr>';
   }).join('')+pagerRow(colspan,ratingNpsPage,totalPages,recs.length,'ratingnps-prev-btn','ratingnps-next-btn');
+}
+// 24 Sep (feedback #2c): dropdown Bulan+Tahun -- ganti prompt() free-text (potensi typo, mis. "Sept"
+// vs "September" bikin klaim nggak match filter Bulan Klaim manapun). Format target SAMA PERSIS
+// server (formatReportMonthValue_, gas_claim_month_shared.gs): "Bulan Tahun" Indonesia penuh.
+var IDN_MONTHS_CLIENT=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+function rnParseClaimMonth_(s){
+  s=String(s||'').trim();
+  var parts=s.split(' ');
+  var year=parseInt(parts[parts.length-1],10);
+  var monthName=parts.slice(0,-1).join(' ');
+  var idx=IDN_MONTHS_CLIENT.indexOf(monthName);
+  var now=new Date();
+  return{monthIdx:idx>=0?idx:now.getMonth(),year:isNaN(year)?now.getFullYear():year};
+}
+var rnEditTarget=null;
+function openRnEditModal(type,key){
+  var all=ratingNpsAllRows();
+  var x=all.find(function(r){return r.key===key;});
+  if(!x)return;
+  rnEditTarget={type:type,key:key};
+  var parsed=rnParseClaimMonth_(x.claimMonth);
+  var nowYear=new Date().getFullYear();
+  var monthOpts=IDN_MONTHS_CLIENT.map(function(m,i){return'<option value="'+i+'"'+(i===parsed.monthIdx?' selected':'')+'>'+m+'</option>';}).join('');
+  var yearOpts='';
+  for(var y=nowYear-1;y<=nowYear+1;y++){yearOpts+='<option value="'+y+'"'+(y===parsed.year?' selected':'')+'>'+y+'</option>';}
+  // Koreksi Agen -- LEADER-ONLY, cuma buat klaim Rating (Agent Credit field UPSELL_CLAIM). NPS nggak
+  // punya field analog (agent NPS = assignedAgent case-nya sendiri, bukan atribusi klaim terpisah).
+  var isSup=Auth.isSuperior();
+  var agentField='';
+  if(type==='rating'&&isSup){
+    var agentOpts=AgentsConfig.getAll().filter(function(a){return a.role==='agent';})
+      .map(function(a){return'<option value="'+a.name+'"'+(x.agentName===a.name?' selected':'')+'>'+a.name+'</option>';}).join('');
+    agentField='<label style="margin-top:12px;display:block">Agen (koreksi atribusi klaim)</label>'
+      +'<select id="rnedit-agent"><option value="">— Nggak diubah —</option>'+agentOpts+'</select>'
+      +'<p style="margin-top:4px;font-size:11px;color:var(--tx3)">Ganti agen TIDAK reset status approve/reject -- evidence-nya tetep valid, cuma siapa yang dapet kredit yang berubah.</p>';
+  }
+  document.getElementById('rnedit-body').innerHTML=
+    '<p style="margin-bottom:12px">Outlet: <strong>'+x.outletName+'</strong> &nbsp;·&nbsp; '+x.platformLabel+'</p>'
+    +'<label>Bulan Klaim</label>'
+    +'<div style="display:flex;gap:8px;margin-top:4px">'
+    +'<select id="rnedit-month" style="flex:2">'+monthOpts+'</select>'
+    +'<select id="rnedit-year" style="flex:1">'+yearOpts+'</select>'
+    +'</div>'
+    +'<p style="margin-top:4px;font-size:11px;color:var(--tx3)">Ganti bulan otomatis reset status ke Pending kalau sebelumnya udah final (perlu direview ulang).</p>'
+    +agentField;
+  openModal('rnedit-modal');
+}
+function saveRnEdit(){
+  if(!rnEditTarget)return;
+  var type=rnEditTarget.type,key=rnEditTarget.key;
+  var monthIdx=parseInt(document.getElementById('rnedit-month').value,10);
+  var year=document.getElementById('rnedit-year').value;
+  var newMonth=IDN_MONTHS_CLIENT[monthIdx]+' '+year;
+  var agentEl=document.getElementById('rnedit-agent');
+  var newAgent=agentEl?agentEl.value:'';
+  var payload={action:type==='nps'?'updateNpsClaimMonth':'updateUpsellClaimMonth',key:key,claimMonth:newMonth};
+  if(newAgent)payload.agentCredit=newAgent;
+  var btn=document.getElementById('rnedit-save-btn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Menyimpan...';}
+  _gasPost(payload).then(function(res){
+    var d=Store.get();
+    if(type==='nps'){
+      var r=d.records.find(function(x){return x.id===key;});
+      if(r&&r.nps){r.nps.claimMonth=newMonth;if(res.statusReset)r.nps.status='Pending';}
+    }else{
+      var sep=key.lastIndexOf('_'),recId=key.substring(0,sep),platform=key.substring(sep+1);
+      var r2=d.records.find(function(x){return x.id===recId;});
+      if(r2&&r2.upsell&&r2.upsell[platform]){
+        r2.upsell[platform].claimMonth=newMonth;
+        if(res.statusReset)r2.upsell[platform].status='pending';
+        if(res.agentChanged)r2.upsell[platform].agentCredit=res.agentCredit;
+      }
+    }
+    Store.set(d);
+    closeModal('rnedit-modal');
+    toast(res.statusReset?'Klaim diupdate — status di-reset jadi Pending (perlu direview ulang)':'Klaim diupdate');
+    refreshRatingNpsBody();
+  }).catch(function(err){
+    toast('Gagal update klaim: '+err.message,5000);
+  }).then(function(){
+    if(btn){btn.disabled=false;btn.textContent='Simpan';}
+  });
 }
 function refreshRatingNpsBody(){
   ratingNpsPage=0;
@@ -6340,20 +6447,24 @@ function renderRatingNps(){
   var monthOpts=Object.keys(monthSet).sort().map(function(m){return{value:m,label:m};});
   var monthFilterHtml=renderMultiSelect('ratingNpsMonthFilter','Bulan Klaim',monthOpts,ratingNpsMonthFilter);
   var agentFilterHtml=isSup?renderMultiSelect('ratingNpsAgentFilter','Agen',AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}),ratingNpsAgentFilter):'';
+  // 24 Sep (feedback round 2): filter Tipe -- 3 platform UPSELL_PLATFORMS + NPS sintetis.
+  var typeOpts=UPSELL_PLATFORMS.map(function(p){return{value:p.key,label:p.icon+' '+p.label};}).concat([{value:'nps',label:'⭐ NPS'}]);
+  var typeFilterHtml=renderMultiSelect('ratingNpsTypeFilter','Tipe',typeOpts,ratingNpsTypeFilter);
 
   var rowsHtml=ratingNpsRowsHtml(all,me,isSup);
 
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">⭐ Rating &amp; NPS '+(isSup?'— Semua Agen':'— Saya ('+me+')')+'</div></div>'
     +'<div class="frow" style="margin-top:12px">'
-    +'<input class="fsearch" type="search" id="ratingnps-search" placeholder="🔍 Cari Outlet / Agen..." value="'+ratingNpsSearch+'">'
+    +'<input class="fsearch" type="search" id="ratingnps-search" placeholder="🔍 Cari Outlet / Agen / Join Code..." value="'+ratingNpsSearch+'">'
     +statusFilterHtml
+    +typeFilterHtml
     +monthFilterHtml
     +(agentFilterHtml||'')
     +'<span id="ratingnps-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+ratingNpsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr><th>Outlet</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
+    +'<thead><tr><th>Outlet</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Approved By</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
     +'<tbody id="ratingnps-tbody">'+rowsHtml+'</tbody></table></div></div>';
 }
 
@@ -9950,7 +10061,8 @@ function mergeNpsFromRemote(local,remoteRow){
     rejectReason:String(remoteRow['NPS Reject Reason']||'').trim(),
     submittedBy:String(remoteRow['NPS Submitted By']||'').trim(),
     submittedAt:remoteSubmittedAt,
-    claimMonth:String(remoteRow['NPS Claim Month']||'').trim() // 24 Sep (Phase 1 Step 5): independen dari Expired Date, bisa dikoreksi manual (updateNpsClaimMonth)
+    claimMonth:String(remoteRow['NPS Claim Month']||'').trim(), // 24 Sep (Phase 1 Step 5): independen dari Expired Date, bisa dikoreksi manual (updateNpsClaimMonth)
+    approvedBy:String(remoteRow['NPS Approved By']||'').trim() // 24 Sep (feedback #5): siapa leader yang approve/reject
   };
 }
 
@@ -10048,7 +10160,8 @@ function syncResponsesOnly(opts){
           rejectReason:String(row['NPS Reject Reason']||'').trim(),
           submittedBy:String(row['NPS Submitted By']||'').trim(),
           submittedAt:String(row['NPS Submitted At']||'').trim(),
-          claimMonth:String(row['NPS Claim Month']||'').trim() // 24 Sep (Phase 1 Step 5)
+          claimMonth:String(row['NPS Claim Month']||'').trim(), // 24 Sep (Phase 1 Step 5)
+          approvedBy:String(row['NPS Approved By']||'').trim() // 24 Sep (feedback #5)
         };
       }
     });
@@ -10142,38 +10255,25 @@ tabContent.addEventListener('click',function(e){
         var rnD=Store.get();
         if(rnType==='nps'){
           var rnR=rnD.records.find(function(x){return x.id===rnKey;});
-          if(rnR&&rnR.nps){rnR.nps.status=rnDecision==='rejected'?'Rejected':'Approved';rnR.nps.rejectReason=rnDecision==='rejected'?rnRejectReason:'';}
+          if(rnR&&rnR.nps){rnR.nps.status=rnDecision==='rejected'?'Rejected':'Approved';rnR.nps.rejectReason=rnDecision==='rejected'?rnRejectReason:'';rnR.nps.approvedBy=(Auth.getSession()||{}).email||'';}
         }else{
           var rnSep=rnKey.lastIndexOf('_'),rnRecId=rnKey.substring(0,rnSep),rnPlatform=rnKey.substring(rnSep+1);
           var rnR2=rnD.records.find(function(x){return x.id===rnRecId;});
-          if(rnR2&&rnR2.upsell&&rnR2.upsell[rnPlatform]){rnR2.upsell[rnPlatform].status=rnDecision==='rejected'?'Rejected':'Approved';rnR2.upsell[rnPlatform].rejectReason=rnDecision==='rejected'?rnRejectReason:'';}
+          // ⚠️ UPSELL_CLAIM Status LOWERCASE ('approved'/'rejected') -- konvensi beda dari NPS
+          // (capitalized). Optimistic update HARUS ikut lowercase juga, atau achievement counter
+          // (upsellApprovedCount dkk) undercount sementara sampai resync berikutnya.
+          if(rnR2&&rnR2.upsell&&rnR2.upsell[rnPlatform]){rnR2.upsell[rnPlatform].status=rnDecision;rnR2.upsell[rnPlatform].rejectReason=rnDecision==='rejected'?rnRejectReason:'';rnR2.upsell[rnPlatform].lastEditBy=(Auth.getSession()||{}).email||'';}
         }
         Store.set(rnD);
         toast('Klaim di-'+(rnDecision==='rejected'?'reject':'approve'));
         refreshRatingNpsBody();
       }).catch(function(err){toast('Gagal review klaim: '+err.message,5000);});
     }
-    // Bulan Klaim -- agent (milik sendiri) ATAU leader (siapa aja). Ganti bulan otomatis reset Status
-    // ke Pending kalau sebelumnya udah final (server-side guard, updateNpsClaimMonth/updateUpsellClaimMonth).
+    // Bulan Klaim (+ koreksi Agen leader-only) -- 24 Sep (feedback #2b/#2c): buka modal dropdown
+    // (rnedit-modal/openRnEditModal), bukan prompt() free-text lagi. Agent (milik sendiri) ATAU
+    // leader (siapa aja) bisa koreksi bulan; ganti agen cuma buat leader+tipe rating.
     else if(act==='edit-claim-month'){
-      var rnType2=btn.dataset.type,rnKey2=btn.dataset.key;
-      var rnNewMonth=(prompt('Bulan klaim baru (mis. "Oktober 2026"):','')||'').trim();
-      if(!rnNewMonth)return;
-      var rnAction2=rnType2==='nps'?'updateNpsClaimMonth':'updateUpsellClaimMonth';
-      _gasPost({action:rnAction2,key:rnKey2,claimMonth:rnNewMonth}).then(function(res){
-        var rnD2=Store.get();
-        if(rnType2==='nps'){
-          var rnR3=rnD2.records.find(function(x){return x.id===rnKey2;});
-          if(rnR3&&rnR3.nps){rnR3.nps.claimMonth=rnNewMonth;if(res.statusReset)rnR3.nps.status='Pending';}
-        }else{
-          var rnSep2=rnKey2.lastIndexOf('_'),rnRecId2=rnKey2.substring(0,rnSep2),rnPlatform2=rnKey2.substring(rnSep2+1);
-          var rnR4=rnD2.records.find(function(x){return x.id===rnRecId2;});
-          if(rnR4&&rnR4.upsell&&rnR4.upsell[rnPlatform2]){rnR4.upsell[rnPlatform2].claimMonth=rnNewMonth;if(res.statusReset)rnR4.upsell[rnPlatform2].status='Pending';}
-        }
-        Store.set(rnD2);
-        toast(res.statusReset?'Bulan klaim diupdate — status di-reset jadi Pending (perlu direview ulang)':'Bulan klaim diupdate');
-        refreshRatingNpsBody();
-      }).catch(function(err){toast('Gagal update bulan klaim: '+err.message,5000);});
+      openRnEditModal(btn.dataset.type,btn.dataset.key);
     }
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab(currentTab);}}
     else if(act==='toggle-wl'){
@@ -10361,7 +10461,7 @@ var MSEL_REFRESH={
   wsMonthFilter:refreshWsBody,wsTerminFilter:refreshWsBody,wsHwczFilter:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
   invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,invTcFilter:refreshInvoiceBody,
-  ratingNpsStatusFilter:refreshRatingNpsBody,ratingNpsMonthFilter:refreshRatingNpsBody,ratingNpsAgentFilter:refreshRatingNpsBody,
+  ratingNpsStatusFilter:refreshRatingNpsBody,ratingNpsMonthFilter:refreshRatingNpsBody,ratingNpsAgentFilter:refreshRatingNpsBody,ratingNpsTypeFilter:refreshRatingNpsBody,
   blastAgentFilter:function(){blastPage=0;refreshBlastBody();},
   blastTerminFilter:function(){blastPage=0;refreshBlastBody();},
   blastExpMonthFilter:function(){blastPage=0;refreshBlastBody();},
@@ -10561,6 +10661,7 @@ document.querySelectorAll('.modal-overlay').forEach(function(ov){
 document.getElementById('resp-save-btn').addEventListener('click',saveResp);
 document.getElementById('gc-save-btn').addEventListener('click',saveGC);
 document.getElementById('invreassign-save-btn').addEventListener('click',saveInvReassign);
+document.getElementById('rnedit-save-btn').addEventListener('click',saveRnEdit);
 document.getElementById('tpl-save-btn').addEventListener('click',saveTpl);
 document.getElementById('agent-save-btn').addEventListener('click',saveAgent);
 document.getElementById('target-save-btn').addEventListener('click',saveTarget);
