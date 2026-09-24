@@ -302,6 +302,7 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
     <button class="ntab" data-tab="watchlist">🚫 Watchlist GC</button>
     <button class="ntab" data-tab="klopos">📅 KLOPOS Daily</button>
     <button class="ntab" data-tab="churntrend">📈 Churn Trend</button>
+    <button class="ntab" data-tab="ratingnps">⭐ Rating & NPS</button>
     <button class="ntab" data-tab="invoice">🧾 Invoice Tracker</button>
     <button class="ntab" data-tab="invsummary">📆 Invoice Summary</button>
     <button class="ntab" data-tab="targetsmanage">🎯 Kelola Target</button>
@@ -3776,6 +3777,8 @@ var invDay=''; // 'hari H' buat metrik #1 (dibuat) & #4 (terbayar) -- kosong = p
 var invBulanFilter=[],invStartDate='',invEndDate='';
 // 30 Jul: filter Deal TC (opsi 'yes'/'no') -- bonus dari brief flag Deal TC, pola sama filter lain di tab ini.
 var invTcFilter=[];
+// 24 Sep (Phase 1 Step 5): Rating & NPS state -- pola sama Invoice Tracker.
+var ratingNpsStatusFilter=[],ratingNpsMonthFilter=[],ratingNpsAgentFilter=[],ratingNpsSearch='',ratingNpsPage=0;
 // CLM-11 Fase G (Batch B): tab Invoice Summary — matrix agen×hari per status pembayaran.
 // invsumCat/invsumAgent = multi-select collapsible (reuse renderMultiSelect + G6). invsumMonth = 1
 // bulan (native select, default bulan berjalan). invsumMatrix = status aktif (pill). invsumUnit =
@@ -6218,6 +6221,142 @@ function renderInvoiceSummary(){
     +(matrixBlocks||'<div class="ov-section"><div class="card empty">Pilih minimal 1 status di filter</div></div>');
 }
 
+// ── TAB: RATING & NPS (Phase 1, 24 Sep) ─────────────────────────────────────
+// Unified list gabungan Rating (UPSELL_CLAIM, via rec.upsell.{maps,playstore,hardware}) + NPS
+// (RESPONSES NPS-columns, via rec.nps) -- SATU tabel, bukan 2 tab terpisah (brief operator: "leader
+// dan agent bisa sama2 liat progressnya"). Template terdekat: Invoice Tracker.
+// Status dinormalisasi (Approved/Rejected/Pending) apapun casing sumbernya -- UPSELL_CLAIM kadang
+// 'pending' lowercase (default client mergeUpsellFromRemote), NPS 'Pending' title-case dari GAS.
+function ratingNpsStatusNorm_(raw){
+  var s=String(raw||'').trim().toLowerCase();
+  if(s==='approved')return'Approved';
+  if(s==='rejected')return'Rejected';
+  return'Pending';
+}
+function ratingNpsStatusBadge_(norm){
+  var map={Approved:'grn',Rejected:'red',Pending:'yel'};
+  return'<span class="badge badge-'+(map[norm]||'gray')+'">'+norm+'</span>';
+}
+// Bangun list gabungan dari Store.get().records -- 1x per render, dipakai filter+tabel bareng.
+function ratingNpsAllRows(){
+  var d=Store.get();
+  var out=[];
+  d.records.forEach(function(r){
+    if(r.upsell){
+      UPSELL_PLATFORMS.forEach(function(p){
+        var u=r.upsell[p.key];
+        if(!u||!u.evidence)return; // belum pernah disubmit -- bukan klaim, skip
+        out.push({
+          recId:r.id,key:r.id+'_'+p.key,type:'rating',platformKey:p.key,platformLabel:p.icon+' '+p.label,
+          outletName:r.outletName||r.id,agentName:(u.agentCredit||r.assignedAgent||''),
+          status:ratingNpsStatusNorm_(u.status),rejectReason:u.rejectReason||'',
+          claimMonth:u.claimMonth||'',evidence:u.evidence||''
+        });
+      });
+    }
+    if(r.nps&&r.nps.evidence){
+      out.push({
+        recId:r.id,key:r.id,type:'nps',platformKey:'nps',platformLabel:'⭐ NPS',
+        outletName:r.outletName||r.id,agentName:r.assignedAgent||'',
+        status:ratingNpsStatusNorm_(r.nps.status),rejectReason:r.nps.rejectReason||'',
+        claimMonth:r.nps.claimMonth||'',evidence:r.nps.evidence||''
+      });
+    }
+  });
+  return out;
+}
+function ratingNpsBasePool(all,me,isSup){
+  if(isSup){
+    if(!ratingNpsAgentFilter.length)return all;
+    return all.filter(function(x){return ratingNpsAgentFilter.indexOf(x.agentName)>=0;});
+  }
+  return all.filter(function(x){return x.agentName===me;});
+}
+function ratingNpsFilteredRows(all,me,isSup){
+  var pool=ratingNpsBasePool(all,me,isSup);
+  if(ratingNpsStatusFilter.length)pool=pool.filter(function(x){return ratingNpsStatusFilter.indexOf(x.status)>=0;});
+  if(ratingNpsMonthFilter.length)pool=pool.filter(function(x){return ratingNpsMonthFilter.indexOf(x.claimMonth)>=0;});
+  if(!ratingNpsSearch)return pool;
+  var s=ratingNpsSearch.toLowerCase();
+  return pool.filter(function(x){return x.outletName.toLowerCase().indexOf(s)>=0||x.agentName.toLowerCase().indexOf(s)>=0;});
+}
+var ratingNpsCountText='';
+function ratingNpsRowsHtml(all,me,isSup){
+  var recs=ratingNpsFilteredRows(all,me,isSup);
+  ratingNpsCountText='Menampilkan '+recs.length+' dari '+ratingNpsBasePool(all,me,isSup).length+' klaim';
+  var cnt=document.getElementById('ratingnps-count');
+  if(cnt)cnt.textContent=ratingNpsCountText;
+  // Aksi (Approve/Reject) leader-only -- NOL dirender buat agent (bukan disabled/CSS-hide, preseden CLM-06).
+  var colspan=isSup?7:6;
+  if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada klaim</td></tr>';
+  var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
+  ratingNpsPage=Math.min(ratingNpsPage,totalPages-1);
+  var paged=recs.slice(ratingNpsPage*PAGE_SIZE,(ratingNpsPage+1)*PAGE_SIZE);
+  return paged.map(function(x){
+    // Bulan Klaim: leader bisa koreksi klaim SIAPA AJA, agent cuma klaim MILIK SENDIRI (brief operator).
+    var canEditMonth=isSup||x.agentName===Auth.getActive();
+    var monthCell=(x.claimMonth||'<span style="color:var(--tx3)">—</span>')
+      +(canEditMonth?' <button class="action-btn ab-edit" data-act="edit-claim-month" data-key="'+x.key+'" data-type="'+x.type+'" style="font-size:10px;padding:2px 6px">✏️</button>':'');
+    var evidCell=x.evidence?'<a href="'+x.evidence+'" target="_blank" rel="noopener">🔗 Lihat</a>':'<span style="color:var(--tx3)">—</span>';
+    var aksiCell='';
+    if(isSup){
+      if(x.status==='Pending'){
+        aksiCell='<button class="action-btn ab-ok" data-act="review-claim" data-decision="approved" data-key="'+x.key+'" data-type="'+x.type+'">✓ Approve</button> '
+          +'<button class="action-btn ab-del" data-act="review-claim" data-decision="rejected" data-key="'+x.key+'" data-type="'+x.type+'">✕ Reject</button>';
+      }else{
+        aksiCell='<span style="font-size:11px;color:var(--tx3)">'+(x.rejectReason?('Alasan: '+x.rejectReason):'—')+'</span>';
+      }
+    }
+    return'<tr>'
+      +'<td>'+x.outletName+'</td>'
+      +'<td>'+x.platformLabel+'</td>'
+      +(isSup?'<td>'+(x.agentName||'<span style="color:var(--tx3)">—</span>')+'</td>':'')
+      +'<td>'+ratingNpsStatusBadge_(x.status)+'</td>'
+      +'<td>'+monthCell+'</td>'
+      +'<td>'+evidCell+'</td>'
+      +(isSup?'<td>'+aksiCell+'</td>':'')
+      +'</tr>';
+  }).join('')+pagerRow(colspan,ratingNpsPage,totalPages,recs.length,'ratingnps-prev-btn','ratingnps-next-btn');
+}
+function refreshRatingNpsBody(){
+  ratingNpsPage=0;
+  var me=Auth.getActive(),isSup=Auth.isSuperior();
+  var tb=document.getElementById('ratingnps-tbody');
+  if(tb)tb.innerHTML=ratingNpsRowsHtml(ratingNpsAllRows(),me,isSup);
+}
+function renderRatingNps(){
+  var me=Auth.getActive();
+  var isSup=Auth.isSuperior();
+  var all=ratingNpsAllRows();
+
+  if(!all.length){
+    document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="card empty">Belum ada klaim Rating/NPS — sync Upsell &amp; Respons dulu di tab Master &amp; Assign</div></div>';
+    return;
+  }
+
+  var statusOpts=['Pending','Approved','Rejected'].map(function(s){return{value:s,label:s};});
+  var statusFilterHtml=renderMultiSelect('ratingNpsStatusFilter','Status',statusOpts,ratingNpsStatusFilter);
+  var monthSet={};all.forEach(function(x){if(x.claimMonth)monthSet[x.claimMonth]=true;});
+  var monthOpts=Object.keys(monthSet).sort().map(function(m){return{value:m,label:m};});
+  var monthFilterHtml=renderMultiSelect('ratingNpsMonthFilter','Bulan Klaim',monthOpts,ratingNpsMonthFilter);
+  var agentFilterHtml=isSup?renderMultiSelect('ratingNpsAgentFilter','Agen',AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}),ratingNpsAgentFilter):'';
+
+  var rowsHtml=ratingNpsRowsHtml(all,me,isSup);
+
+  document.getElementById('tab-content').innerHTML=
+    '<div class="ov-section"><div class="ov-section-title">⭐ Rating &amp; NPS '+(isSup?'— Semua Agen':'— Saya ('+me+')')+'</div></div>'
+    +'<div class="frow" style="margin-top:12px">'
+    +'<input class="fsearch" type="search" id="ratingnps-search" placeholder="🔍 Cari Outlet / Agen..." value="'+ratingNpsSearch+'">'
+    +statusFilterHtml
+    +monthFilterHtml
+    +(agentFilterHtml||'')
+    +'<span id="ratingnps-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+ratingNpsCountText+'</span>'
+    +'</div>'
+    +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
+    +'<thead><tr><th>Outlet</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
+    +'<tbody id="ratingnps-tbody">'+rowsHtml+'</tbody></table></div></div>';
+}
+
 // ── TAB: RESPONSE ──────────────────────────────────────────────────────────
 function renderResponseResults(){
   var el=document.getElementById('resp-results');
@@ -7707,6 +7846,7 @@ function renderTab(tab){
     case 'churntrend':renderChurnTrend();break;
     case 'invoice':renderInvoiceTracker();break;
     case 'invsummary':renderInvoiceSummary();break;
+    case 'ratingnps':renderRatingNps();break;
     case 'targetsmanage':renderTargetsManage();break;
     case 'myjourney':renderMyJourney();break;
     case 'konfigakun':renderKonfigurasiAkun();break;
@@ -9243,6 +9383,7 @@ function mergeUpsellFromRemote(local,remote){
     evidence:remote['Evidence']||'',
     status:remote['Status']||'pending',
     agentCredit:remote['Agent Credit']||'',
+    claimMonth:remote['Claim Month']||'', // 24 Sep (Phase 1 Step 5): independen dari Expired Date, bisa dikoreksi manual (updateUpsellClaimMonth)
     submittedBy:remote['Submitted By']||'',
     submittedAt:remote['Submitted At']||'',
     rejectReason:remote['Reject Reason']||null,
@@ -9808,7 +9949,8 @@ function mergeNpsFromRemote(local,remoteRow){
     status:String(remoteRow['NPS Status']||'').trim()||'Pending',
     rejectReason:String(remoteRow['NPS Reject Reason']||'').trim(),
     submittedBy:String(remoteRow['NPS Submitted By']||'').trim(),
-    submittedAt:remoteSubmittedAt
+    submittedAt:remoteSubmittedAt,
+    claimMonth:String(remoteRow['NPS Claim Month']||'').trim() // 24 Sep (Phase 1 Step 5): independen dari Expired Date, bisa dikoreksi manual (updateNpsClaimMonth)
   };
 }
 
@@ -9905,7 +10047,8 @@ function syncResponsesOnly(opts){
           status:String(row['NPS Status']||'').trim()||'Pending',
           rejectReason:String(row['NPS Reject Reason']||'').trim(),
           submittedBy:String(row['NPS Submitted By']||'').trim(),
-          submittedAt:String(row['NPS Submitted At']||'').trim()
+          submittedAt:String(row['NPS Submitted At']||'').trim(),
+          claimMonth:String(row['NPS Claim Month']||'').trim() // 24 Sep (Phase 1 Step 5)
         };
       }
     });
@@ -9985,6 +10128,53 @@ tabContent.addEventListener('click',function(e){
     }
     else if(act==='daily-view-metric'){dailyViewMetricSel=btn.dataset.metric;renderTab('overview');}
     else if(act==='reassign-invoice')openInvReassignModal(id);
+    // 24 Sep (Phase 1 Step 5): leader-only approve/reject dari list Rating & NPS -- key format
+    // "{recId}_{platform}" buat Rating, "{recId}" polos buat NPS (SAMA persis key server-side).
+    else if(act==='review-claim'){
+      var rnDecision=btn.dataset.decision,rnType=btn.dataset.type,rnKey=btn.dataset.key;
+      var rnRejectReason='';
+      if(rnDecision==='rejected'){
+        rnRejectReason=(prompt('Alasan reject:','')||'').trim();
+        if(!rnRejectReason){toast('Alasan reject wajib diisi');return;}
+      }
+      var rnAction=rnType==='nps'?'reviewNpsEvidence':'reviewUpsellClaim';
+      _gasPost({action:rnAction,key:rnKey,decision:rnDecision,rejectReason:rnRejectReason}).then(function(){
+        var rnD=Store.get();
+        if(rnType==='nps'){
+          var rnR=rnD.records.find(function(x){return x.id===rnKey;});
+          if(rnR&&rnR.nps){rnR.nps.status=rnDecision==='rejected'?'Rejected':'Approved';rnR.nps.rejectReason=rnDecision==='rejected'?rnRejectReason:'';}
+        }else{
+          var rnSep=rnKey.lastIndexOf('_'),rnRecId=rnKey.substring(0,rnSep),rnPlatform=rnKey.substring(rnSep+1);
+          var rnR2=rnD.records.find(function(x){return x.id===rnRecId;});
+          if(rnR2&&rnR2.upsell&&rnR2.upsell[rnPlatform]){rnR2.upsell[rnPlatform].status=rnDecision==='rejected'?'Rejected':'Approved';rnR2.upsell[rnPlatform].rejectReason=rnDecision==='rejected'?rnRejectReason:'';}
+        }
+        Store.set(rnD);
+        toast('Klaim di-'+(rnDecision==='rejected'?'reject':'approve'));
+        refreshRatingNpsBody();
+      }).catch(function(err){toast('Gagal review klaim: '+err.message,5000);});
+    }
+    // Bulan Klaim -- agent (milik sendiri) ATAU leader (siapa aja). Ganti bulan otomatis reset Status
+    // ke Pending kalau sebelumnya udah final (server-side guard, updateNpsClaimMonth/updateUpsellClaimMonth).
+    else if(act==='edit-claim-month'){
+      var rnType2=btn.dataset.type,rnKey2=btn.dataset.key;
+      var rnNewMonth=(prompt('Bulan klaim baru (mis. "Oktober 2026"):','')||'').trim();
+      if(!rnNewMonth)return;
+      var rnAction2=rnType2==='nps'?'updateNpsClaimMonth':'updateUpsellClaimMonth';
+      _gasPost({action:rnAction2,key:rnKey2,claimMonth:rnNewMonth}).then(function(res){
+        var rnD2=Store.get();
+        if(rnType2==='nps'){
+          var rnR3=rnD2.records.find(function(x){return x.id===rnKey2;});
+          if(rnR3&&rnR3.nps){rnR3.nps.claimMonth=rnNewMonth;if(res.statusReset)rnR3.nps.status='Pending';}
+        }else{
+          var rnSep2=rnKey2.lastIndexOf('_'),rnRecId2=rnKey2.substring(0,rnSep2),rnPlatform2=rnKey2.substring(rnSep2+1);
+          var rnR4=rnD2.records.find(function(x){return x.id===rnRecId2;});
+          if(rnR4&&rnR4.upsell&&rnR4.upsell[rnPlatform2]){rnR4.upsell[rnPlatform2].claimMonth=rnNewMonth;if(res.statusReset)rnR4.upsell[rnPlatform2].status='Pending';}
+        }
+        Store.set(rnD2);
+        toast(res.statusReset?'Bulan klaim diupdate — status di-reset jadi Pending (perlu direview ulang)':'Bulan klaim diupdate');
+        refreshRatingNpsBody();
+      }).catch(function(err){toast('Gagal update bulan klaim: '+err.message,5000);});
+    }
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab(currentTab);}}
     else if(act==='toggle-wl'){
       // CLM-09: sheet-backed -- resolveOnly write, nutup/buka kolom "Resolved At" (L), nggak
@@ -10118,6 +10308,10 @@ tabContent.addEventListener('click',function(e){
     invPage=tgt.id==='inv-prev-btn'?Math.max(0,invPage-1):invPage+1;
     var tbi=document.getElementById('inv-tbody');if(tbi)tbi.innerHTML=invRows(invEnrichedRows(),Auth.getActive(),Auth.isSuperior());
   }
+  else if(tgt.id==='ratingnps-prev-btn'||tgt.id==='ratingnps-next-btn'){
+    ratingNpsPage=tgt.id==='ratingnps-prev-btn'?Math.max(0,ratingNpsPage-1):ratingNpsPage+1;
+    var tbrn=document.getElementById('ratingnps-tbody');if(tbrn)tbrn.innerHTML=ratingNpsRowsHtml(ratingNpsAllRows(),Auth.getActive(),Auth.isSuperior());
+  }
   else if(tgt.id==='ws-prev-btn'||tgt.id==='ws-next-btn'){
     wsPage=tgt.id==='ws-prev-btn'?Math.max(0,wsPage-1):wsPage+1;
     var dwp=Store.get(),mewp=Auth.getActive(),isSupwp=Auth.isSuperior();
@@ -10167,6 +10361,7 @@ var MSEL_REFRESH={
   wsMonthFilter:refreshWsBody,wsTerminFilter:refreshWsBody,wsHwczFilter:refreshWsBody,
   respCatFilter:refreshRespResults,respAgentFilter:refreshRespResults,respUpsellFilter:refreshRespResults,
   invStatusFilter:refreshInvoiceBody,invAgentFilter:refreshInvoiceBody,invCreatorFilter:refreshInvoiceBody,invBulanFilter:refreshInvoiceBody,invTcFilter:refreshInvoiceBody,
+  ratingNpsStatusFilter:refreshRatingNpsBody,ratingNpsMonthFilter:refreshRatingNpsBody,ratingNpsAgentFilter:refreshRatingNpsBody,
   blastAgentFilter:function(){blastPage=0;refreshBlastBody();},
   blastTerminFilter:function(){blastPage=0;refreshBlastBody();},
   blastExpMonthFilter:function(){blastPage=0;refreshBlastBody();},
@@ -10314,6 +10509,7 @@ tabContent.addEventListener('input',function(e){
   if(tgt.id==='blast-search'){blastSearch=tgt.value;blastPage=0;refreshBlastBody();}
   if(tgt.id==='m-search'){mSearch=tgt.value;refreshMasterBody();}
   if(tgt.id==='inv-search'){invSearch=tgt.value;refreshInvoiceBody();}
+  if(tgt.id==='ratingnps-search'){ratingNpsSearch=tgt.value;refreshRatingNpsBody();}
   if(tgt.id==='inv-day'){invDay=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='inv-start-date'){invStartDate=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='inv-end-date'){invEndDate=tgt.value;refreshInvoiceBody();}
