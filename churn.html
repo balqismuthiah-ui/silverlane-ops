@@ -2413,6 +2413,26 @@ function npsApprovedCount(r,agentName){
   if(agentName&&credit!==agentName)return 0;
   return 1;
 }
+// 25 Sep: varian di-scope claimMonth ("Bulan Tahun" Indonesia, mis. "September 2026") -- dipake
+// Ringkasan per Agen (operator minta ganti dari all-time ke bulan-berjalan-doang) + tabel pivot
+// Agen x Bulan baru. claimMonth field INDEPENDEN dari cohortMonths (lihat catatan Ringkasan Performa
+// Bulanan) -- SENGAJA tetep 2 fungsi terpisah (bukan tambah parameter opsional ke versi all-time)
+// biar caller lama (computeTargetActual dkk, masih all-time by design) nggak ke-affect sama sekali.
+function upsellApprovedCountInMonth(r,platform,agentName,monthStr){
+  var line=r.upsell&&r.upsell[platform];
+  if(!line||line.status!=='approved')return 0;
+  if(agentName&&line.agentCredit!==agentName)return 0;
+  if((line.claimMonth||'')!==monthStr)return 0;
+  return line.count||0;
+}
+function npsApprovedCountInMonth(r,agentName,monthStr){
+  if(!r.nps||!r.nps.evidence)return 0;
+  if(ratingNpsStatusNorm_(r.nps.status)!=='Approved')return 0;
+  var credit=r.nps.agentCredit||r.assignedAgent||'';
+  if(agentName&&credit!==agentName)return 0;
+  if((r.nps.claimMonth||'')!==monthStr)return 0;
+  return 1;
+}
 function upsellIsPending(r){
   var u=r.upsell||{};
   // CLM-08 (4b): generik lewat UPSELL_PLATFORMS -- dulu hardcode maps/playstore doang, ketinggalan
@@ -4498,6 +4518,12 @@ function renderOverview(){
   // belum pernah ada angka NPS sebelumnya buat dijadiin default masuk akal, "belum dikonfig" sampai
   // leader isi lewat Kelola Target.
   var REVIEW_TARGET_NPS=findTeamTarget('review_nps',null,null).regular;
+  // 25 Sep (request operator): "Ringkasan per Agen" Review(M/A)/NPS diganti dari all-time jadi
+  // bulan-berjalan-doang -- konsisten sama REVIEW_TARGET_* yang emang udah period-scoped
+  // (findTeamTarget filter period===currentMonthKey), sebelumnya achieved-nya all-time (mismatch
+  // sama target yang bulanan). claimMonth format "Bulan Tahun" Indonesia (lihat Ringkasan Performa
+  // Bulanan), tahun hardcode 2026 sama alasan yang sama.
+  var CURRENT_CLAIM_MONTH_STR=IDN_MONTHS_CLIENT[MONTH_KEYS.indexOf(currentMonthKey)]+' 2026';
   var PER_AGENT_RENEWAL=Math.round(RENEWAL_TARGET/N_AGENTS);
   var PER_AGENT_REVIEW_MAPS=Math.round(REVIEW_TARGET_MAPS/N_AGENTS);
   var PER_AGENT_REVIEW_APPS=Math.round(REVIEW_TARGET_APPS/N_AGENTS);
@@ -4528,10 +4554,11 @@ function renderOverview(){
       var aConv=computeMovingConversion(convBaseFilter(aRecs,'Hot'),currentMonthKey);
       var mpct=aConv.actual;
       var convClr=mpct>=convTargetImp?'var(--grn)':(mpct>=convTarget?'var(--yel)':'var(--red)');
-      var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',ag);},0);
-      var aApps=recs.reduce(function(s,r){return s+upsellApprovedCount(r,'playstore',ag);},0);
-      // 25 Sep: NPS per-agen, sama semangat Maps/Apps (all-time, kredit ke nps.agentCredit).
-      var aNps=recs.reduce(function(s,r){return s+npsApprovedCount(r,ag);},0);
+      // 25 Sep (request operator): di-scope ke bulan berjalan (CURRENT_CLAIM_MONTH_STR) -- SEBELUMNYA
+      // all-time, mismatch sama REVIEW_TARGET_* yang udah period-scoped ke currentMonthKey.
+      var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCountInMonth(r,'maps',ag,CURRENT_CLAIM_MONTH_STR);},0);
+      var aApps=recs.reduce(function(s,r){return s+upsellApprovedCountInMonth(r,'playstore',ag,CURRENT_CLAIM_MONTH_STR);},0);
+      var aNps=recs.reduce(function(s,r){return s+npsApprovedCountInMonth(r,ag,CURRENT_CLAIM_MONTH_STR);},0);
       var npsCell=PER_AGENT_REVIEW_NPS?(aNps+'/'+PER_AGENT_REVIEW_NPS):('⭐'+aNps);
       return'<tr><td><strong>'+ag+'</strong></td><td>'+aTotal+'</td><td>'+aBlasted+'</td>'
         +'<td><span class="badge badge-grn">'+aRenew+'</span>'
@@ -4548,7 +4575,7 @@ function renderOverview(){
     }).join('');
     agentSection='<div class="ov-section"><div class="ov-section-title">👥 Ringkasan per Agen</div>'
       +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
-      +'<thead><tr><th>Agen</th><th>Total</th><th>Blasted</th><th>Renewal</th><th>Tdk Renewal</th><th>Follow Up</th><th>No Resp</th><th>Review (M/A)</th><th>NPS</th><th>Konversi (Moving)</th></tr></thead>'
+      +'<thead><tr><th>Agen</th><th>Total</th><th>Blasted</th><th>Renewal</th><th>Tdk Renewal</th><th>Follow Up</th><th>No Resp</th><th>Review (M/A) — '+currentMonthKey+'</th><th>NPS — '+currentMonthKey+'</th><th>Konversi (Moving)</th></tr></thead>'
       +'<tbody>'+agentRows+'</tbody></table></div></div></div>';
   }
 
@@ -5473,6 +5500,7 @@ function renderOverview(){
 
   // CLM-04: Ringkasan Monthly — dari taksonomi Summary asli (cohortMonths), bukan angka revenue hardcoded
   var monthlySummarySection='';
+  var agentMonthPivotSection=''; // 25 Sep: pivot Agen x Bulan (Rating+NPS), lihat bawah
   if(isSup){
     var monthsPresent=new Set();
     recs.forEach(function(r){(r.cohortMonths||r.bulan||'').split(',').forEach(function(b){if(b)monthsPresent.add(b);});});
@@ -5511,6 +5539,30 @@ function renderOverview(){
         +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
         +'<thead><tr><th>Bulan</th><th>Total</th><th>Renewal</th><th>Tidak Renewal</th><th>Follow Up</th><th>Belum Dikategorikan</th><th>Rating Review</th><th>NPS</th></tr></thead>'
         +'<tbody>'+monthRows+'</tbody></table></div></div></div>';
+
+      // 25 Sep (request operator): pivot Agen (baris) x Bulan (kolom), cell = jumlah total approved
+      // (Rating ⭐ + NPS 🌟), sama sumber data (rnAllMonthly) + sama daftar bulan (monthsSorted, dari
+      // cohortMonths, konsisten sama tabel Ringkasan Performa Bulanan di atas) -- cuma axis-nya dibalik.
+      var agentMonthByKey={}; // "agen||claimMonth" -> {rating,nps}
+      rnAllMonthly.forEach(function(x){
+        if(x.status!=='Approved'||!x.claimMonth)return;
+        var key=x.agentName+'||'+x.claimMonth;
+        if(!agentMonthByKey[key])agentMonthByKey[key]={rating:0,nps:0};
+        if(x.type==='nps')agentMonthByKey[key].nps++;else agentMonthByKey[key].rating++;
+      });
+      var pivotMonthCols=monthsSorted.map(function(m){return{label:m+' 26',claimStr:IDN_MONTHS_CLIENT[MONTH_KEYS.indexOf(m)]+' 2026'};});
+      var pivotHeaderCols=pivotMonthCols.map(function(mc){return'<th>'+mc.label+'</th>';}).join('');
+      var pivotRows=AGENTS.slice().sort().map(function(ag){
+        var cells=pivotMonthCols.map(function(mc){
+          var cell=agentMonthByKey[ag+'||'+mc.claimStr];
+          return'<td>⭐'+(cell?cell.rating:0)+' 🌟'+(cell?cell.nps:0)+'</td>';
+        }).join('');
+        return'<tr><td style="font-weight:600">'+ag+'</td>'+cells+'</tr>';
+      }).join('');
+      agentMonthPivotSection='<div class="ov-section"><div class="ov-section-title">⭐ Performa Rating & NPS per Agen per Bulan</div>'
+        +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+        +'<thead><tr><th>Agen</th>'+pivotHeaderCols+'</tr></thead>'
+        +'<tbody>'+pivotRows+'</tbody></table></div></div></div>';
     }
   }
 
@@ -5545,6 +5597,7 @@ function renderOverview(){
     +dailyViewSection
     +agentMtdSection
     +monthlySummarySection
+    +agentMonthPivotSection
     +backlogSection
     +agentSection;
 }
