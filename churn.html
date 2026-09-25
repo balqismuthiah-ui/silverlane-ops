@@ -2391,10 +2391,18 @@ function upsellLineBadge(line){
   return'<span class="badge badge-yel" style="font-size:10px">Menunggu Validasi</span>';
 }
 // Achievement: HANYA baris approved, kredit ke agentCredit final (bukan submitter awal)
+// 25 Sep (fix, ketemu pas debug mismatch Ringkasan per Agen vs pivot Agen x Bulan): SEBELUMNYA nggak
+// ada fallback ke assignedAgent kalau agentCredit kosong -- beda dari npsApprovedCount (di bawah)
+// yang udah bener. Klaim yang Agent Credit-nya belum ke-set (bridge-synced tapi Staff blank, atau
+// row lama) jadi invisible ke SIAPAPUN termasuk assignedAgent-nya sendiri. Dipake luas: Overview
+// Rating&Review card, My Journey, Combo Target incentive tiering, Ringkasan per Agen, pivot Agen x
+// Bulan -- fix ini SENGAJA di function SHARED (bukan cuma varian baru) biar semua konsisten,
+// operator explicit approve (blast radius termasuk angka incentive).
 function upsellApprovedCount(r,platform,agentName){
   var line=r.upsell&&r.upsell[platform];
   if(!line||line.status!=='approved')return 0;
-  if(agentName&&line.agentCredit!==agentName)return 0;
+  var credit=line.agentCredit||r.assignedAgent||'';
+  if(agentName&&credit!==agentName)return 0;
   return line.count||0;
 }
 function upsellClaimedCount(r,platform){
@@ -2421,7 +2429,8 @@ function npsApprovedCount(r,agentName){
 function upsellApprovedCountInMonth(r,platform,agentName,monthStr){
   var line=r.upsell&&r.upsell[platform];
   if(!line||line.status!=='approved')return 0;
-  if(agentName&&line.agentCredit!==agentName)return 0;
+  var credit=line.agentCredit||r.assignedAgent||''; // 25 Sep: fallback sama kayak upsellApprovedCount
+  if(agentName&&credit!==agentName)return 0;
   if((line.claimMonth||'')!==monthStr)return 0;
   return line.count||0;
 }
