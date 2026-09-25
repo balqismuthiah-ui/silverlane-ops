@@ -801,7 +801,11 @@ const TARGET_METRICS={
   // dikonfig). Actual = klaim APPROVED via upsellApprovedCount (kredit ke agentCredit, pola sama
   // hardware) -- scope team & personal dua2nya didukung (bypass di computeTargetActual).
   'review_maps':{family:'outcome',label:'Review Google Maps (approved)'},
-  'review_playstore':{family:'outcome',label:'Review PlayStore (approved)'}
+  'review_playstore':{family:'outcome',label:'Review PlayStore (approved)'},
+  // 25 Sep: NPS jadi Target Configurable juga, pola SAMA PERSIS review_maps/review_playstore -- nol
+  // fallback hardcode (beda dari review_maps/playstore yang fallback 400) krn belum pernah ada angka
+  // target NPS sebelumnya buat dijadiin default yang masuk akal -- "belum dikonfig" sampai leader isi.
+  'review_nps':{family:'outcome',label:'NPS (approved)'}
 };
 // CLM-11 Fase D2: lookup metadata generik buat SEMUA metricKey, termasuk 'sku:<addonType>' dinamis
 // yg SENGAJA nggak masuk TARGET_METRICS statis (SKU category nambah terus, bukan fixed list -- lihat
@@ -2290,6 +2294,19 @@ function computeTargetActual(target,allRecs,agentName){
     allRecs.forEach(function(r){cntRev+=upsellApprovedCount(r,platRev);});
     return{actual:cntRev,unit:'',denom:0,effectiveTarget:target.targetValue,effectiveTargetImproved:(target.targetValueImproved!=null)?target.targetValueImproved:null};
   }
+  // 25 Sep: NPS -- pola SAMA PERSIS review_maps/review_playstore di atas, cuma sumber count-nya
+  // npsApprovedCount (rec.nps, BUKAN rec.upsell). Kredit ke nps.agentCredit (fallback assignedAgent),
+  // BUKAN assignedAgent doang -- konsisten sama tab Rating & NPS/ratingNpsAllRows.
+  if(target.metricKey==='review_nps'){
+    var cntNps=0;
+    if(target.scope==='personal'&&agentName){
+      allRecs.forEach(function(r){cntNps+=npsApprovedCount(r,agentName);});
+      var ovrNps=target.personalOverrides||{};
+      return{actual:cntNps,unit:'',denom:0,effectiveTarget:(ovrNps[agentName]!=null)?ovrNps[agentName]:target.targetValue};
+    }
+    allRecs.forEach(function(r){cntNps+=npsApprovedCount(r);});
+    return{actual:cntNps,unit:'',denom:0,effectiveTarget:target.targetValue,effectiveTargetImproved:(target.targetValueImproved!=null)?target.targetValueImproved:null};
+  }
   if(target.scope==='personal'){
     // CLM-11 B1: renewal_count/upsell_approved_count Personal -> ground-truth billing (di atas).
     // AC-B1-3: scope TEAM (di bawah, blok terpisah) TETAP taxonomy-manual lama, TIDAK disentuh.
@@ -2383,6 +2400,18 @@ function upsellApprovedCount(r,platform,agentName){
 function upsellClaimedCount(r,platform){
   var line=r.upsell&&r.upsell[platform];
   return line?(line.count||0):0;
+}
+// 25 Sep: NPS punya bentuk achievement count -- pola SAMA upsellApprovedCount TAPI sumbernya
+// rec.nps (bukan rec.upsell[platform]), status normalisasi via ratingNpsStatusNorm_ (case-insensitive,
+// handle juga legacy raw Report text kayak 'ok'), kredit ke nps.agentCredit (fallback assignedAgent) --
+// konsisten sama ratingNpsAllRows(). Setiap NPS claim = 1 achievement (nggak ada konsep "count" kayak
+// Rating yang bisa multi-review per klaim).
+function npsApprovedCount(r,agentName){
+  if(!r.nps||!r.nps.evidence)return 0;
+  if(ratingNpsStatusNorm_(r.nps.status)!=='Approved')return 0;
+  var credit=r.nps.agentCredit||r.assignedAgent||'';
+  if(agentName&&credit!==agentName)return 0;
+  return 1;
 }
 function upsellIsPending(r){
   var u=r.upsell||{};
@@ -4465,9 +4494,15 @@ function renderOverview(){
   // -- fallback 400 = perilaku hardcode lama, tetep jalan selama Sekar belum bikin row target-nya.
   var REVIEW_TARGET_MAPS=findTeamTarget('review_maps',400,null).regular;
   var REVIEW_TARGET_APPS=findTeamTarget('review_playstore',400,null).regular;
+  // 25 Sep: NPS target configurable, NOL fallback hardcode (beda dari Maps/Apps yang fallback 400) --
+  // belum pernah ada angka NPS sebelumnya buat dijadiin default masuk akal, "belum dikonfig" sampai
+  // leader isi lewat Kelola Target.
+  var REVIEW_TARGET_NPS=findTeamTarget('review_nps',null,null).regular;
   var PER_AGENT_RENEWAL=Math.round(RENEWAL_TARGET/N_AGENTS);
   var PER_AGENT_REVIEW_MAPS=Math.round(REVIEW_TARGET_MAPS/N_AGENTS);
   var PER_AGENT_REVIEW_APPS=Math.round(REVIEW_TARGET_APPS/N_AGENTS);
+  // 25 Sep: 0 kalau belum dikonfig (REVIEW_TARGET_NPS null) -- ditangani di render (tampil count doang, nol "/0" nyesatin).
+  var PER_AGENT_REVIEW_NPS=REVIEW_TARGET_NPS?Math.round(REVIEW_TARGET_NPS/N_AGENTS):0;
   var PER_AGENT_RENEWAL_IMP=Math.round(RENEWAL_TARGET_IMP/N_AGENTS);
   var convTarget=convT.regular,convTargetImp=convT.improved;
 
@@ -4495,6 +4530,9 @@ function renderOverview(){
       var convClr=mpct>=convTargetImp?'var(--grn)':(mpct>=convTarget?'var(--yel)':'var(--red)');
       var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',ag);},0);
       var aApps=recs.reduce(function(s,r){return s+upsellApprovedCount(r,'playstore',ag);},0);
+      // 25 Sep: NPS per-agen, sama semangat Maps/Apps (all-time, kredit ke nps.agentCredit).
+      var aNps=recs.reduce(function(s,r){return s+npsApprovedCount(r,ag);},0);
+      var npsCell=PER_AGENT_REVIEW_NPS?(aNps+'/'+PER_AGENT_REVIEW_NPS):('⭐'+aNps);
       return'<tr><td><strong>'+ag+'</strong></td><td>'+aTotal+'</td><td>'+aBlasted+'</td>'
         +'<td><span class="badge badge-grn">'+aRenew+'</span>'
         +'<div class="prog-bar" style="margin-top:2px"><div class="prog-fill" style="width:'+Math.min(aTotal?aRenew/aTotal*100:0,100)+'%;background:var(--grn)"></div></div>'
@@ -4503,13 +4541,14 @@ function renderOverview(){
         +'<td><span class="badge badge-yel">'+aFu+'</span></td>'
         +'<td><span class="badge badge-gray">'+aNo+'</span></td>'
         +'<td><span style="font-size:11px;color:var(--tx2)">📍'+aMaps+'/'+PER_AGENT_REVIEW_MAPS+' &nbsp;📱'+aApps+'/'+PER_AGENT_REVIEW_APPS+'</span></td>'
+        +'<td><span style="font-size:11px;color:var(--tx2)">'+npsCell+'</span></td>'
         +'<td style="color:'+convClr+'">'+mpct+'%<div class="prog-bar"><div class="prog-fill" style="width:'+Math.min(convTargetImp?mpct/convTargetImp*100:0,100)+'%;background:'+convClr+'"></div></div>'
         +'<div style="font-size:10px;color:var(--tx3)">'+aConv.moving+'/'+aConv.total+' Hot'+(aConv.total?'':' <span title="nol Hot bulan ini">—</span>')+'</div>'
         +'<div style="font-size:10px;color:var(--tx3)">respons: '+pct+'%</div></td></tr>';
     }).join('');
     agentSection='<div class="ov-section"><div class="ov-section-title">👥 Ringkasan per Agen</div>'
       +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
-      +'<thead><tr><th>Agen</th><th>Total</th><th>Blasted</th><th>Renewal</th><th>Tdk Renewal</th><th>Follow Up</th><th>No Resp</th><th>Review (M/A)</th><th>Konversi (Moving)</th></tr></thead>'
+      +'<thead><tr><th>Agen</th><th>Total</th><th>Blasted</th><th>Renewal</th><th>Tdk Renewal</th><th>Follow Up</th><th>No Resp</th><th>Review (M/A)</th><th>NPS</th><th>Konversi (Moving)</th></tr></thead>'
       +'<tbody>'+agentRows+'</tbody></table></div></div></div>';
   }
 
@@ -5439,6 +5478,18 @@ function renderOverview(){
     recs.forEach(function(r){(r.cohortMonths||r.bulan||'').split(',').forEach(function(b){if(b)monthsPresent.add(b);});});
     var monthsSorted=MONTH_KEYS.filter(function(m){return monthsPresent.has(m);});
     if(monthsSorted.length){
+      // 25 Sep: tambahin Rating Review + NPS approved per-bulan ke tabel yang sama (operator minta
+      // "view performance per bulannya sekalian"). Sumber beda dari kolom lain di tabel ini -- kolom
+      // lain pakai cohortMonths (bulan expiry/assignment case), Rating/NPS pakai claimMonth ("Bulan
+      // Tahun" Indonesia, mis. "September 2026", field independen -- lihat Phase 1 Step 1/gas_claim_
+      // month_shared.gs). Precompute 1x dari ratingNpsAllRows() (bukan re-filter per baris bulan).
+      var rnAllMonthly=ratingNpsAllRows();
+      var ratingApprByMonth={},npsApprByMonth={};
+      rnAllMonthly.forEach(function(x){
+        if(x.status!=='Approved'||!x.claimMonth)return;
+        var map=x.type==='nps'?npsApprByMonth:ratingApprByMonth;
+        map[x.claimMonth]=(map[x.claimMonth]||0)+1;
+      });
       var monthRows=monthsSorted.map(function(m){
         var mRecs=recs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(m)>=0;});
         var mTotal=mRecs.length;
@@ -5446,15 +5497,19 @@ function renderOverview(){
         var mTidak=mRecs.filter(function(r){return respOutcome(r.response)==='churn';}).length;
         var mFu=mRecs.filter(function(r){return respOutcome(r.response)==='followup';}).length;
         var mBelum=mRecs.filter(function(r){return!(r.response&&r.response.category);}).length;
+        var claimMonthStr=IDN_MONTHS_CLIENT[MONTH_KEYS.indexOf(m)]+' 2026'; // "September 2026" -- tahun hardcode 2026, konsisten sama 'm+" 26"' di baris lain tabel ini
+        var mRating=ratingApprByMonth[claimMonthStr]||0;
+        var mNps=npsApprByMonth[claimMonthStr]||0;
         return'<tr><td style="font-weight:600">'+m+' 26</td><td>'+mTotal+'</td>'
           +'<td><span class="badge badge-grn">'+mRenew+'</span></td>'
           +'<td><span class="badge badge-red">'+mTidak+'</span></td>'
           +'<td><span class="badge badge-yel">'+mFu+'</span></td>'
-          +'<td><span class="badge badge-gray">'+mBelum+'</span></td></tr>';
+          +'<td><span class="badge badge-gray">'+mBelum+'</span></td>'
+          +'<td>⭐'+mRating+'</td><td>🌟'+mNps+'</td></tr>';
       }).join('');
-      monthlySummarySection='<div class="ov-section"><div class="ov-section-title">📆 Ringkasan Monthly (Taksonomi)</div>'
+      monthlySummarySection='<div class="ov-section"><div class="ov-section-title">📆 Ringkasan Performa Bulanan</div>'
         +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
-        +'<thead><tr><th>Bulan</th><th>Total</th><th>Renewal</th><th>Tidak Renewal</th><th>Follow Up</th><th>Belum Dikategorikan</th></tr></thead>'
+        +'<thead><tr><th>Bulan</th><th>Total</th><th>Renewal</th><th>Tidak Renewal</th><th>Follow Up</th><th>Belum Dikategorikan</th><th>Rating Review</th><th>NPS</th></tr></thead>'
         +'<tbody>'+monthRows+'</tbody></table></div></div></div>';
     }
   }
