@@ -4570,7 +4570,7 @@ function renderOverview(){
       var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCountInMonth(r,'maps',ag,CURRENT_CLAIM_MONTH_STR);},0);
       var aApps=recs.reduce(function(s,r){return s+upsellApprovedCountInMonth(r,'playstore',ag,CURRENT_CLAIM_MONTH_STR);},0);
       var aNps=recs.reduce(function(s,r){return s+npsApprovedCountInMonth(r,ag,CURRENT_CLAIM_MONTH_STR);},0);
-      var npsCell=PER_AGENT_REVIEW_NPS?(aNps+'/'+PER_AGENT_REVIEW_NPS):('⭐'+aNps);
+      var npsCell=PER_AGENT_REVIEW_NPS?(aNps+'/'+PER_AGENT_REVIEW_NPS):('😊'+aNps);
       return'<tr><td><strong>'+ag+'</strong></td><td>'+aTotal+'</td><td>'+aBlasted+'</td>'
         +'<td><span class="badge badge-grn">'+aRenew+'</span>'
         +'<div class="prog-bar" style="margin-top:2px"><div class="prog-fill" style="width:'+Math.min(aTotal?aRenew/aTotal*100:0,100)+'%;background:var(--grn)"></div></div>'
@@ -4683,7 +4683,7 @@ function renderOverview(){
       +'<div class="card" style="padding:12px 16px;font-size:12px;line-height:2">'
       +'<div>⭐ Rating: <strong>'+ratingSub+'</strong> submission → <strong style="color:var(--grn)">'+ratingAppr+'</strong> approved → <strong style="color:var(--red)">'+ratingRej+'</strong> reject</div>'
       +'<div>🎯 Rating vs Target: <strong>'+(mapsAch+appsAch)+'</strong>/'+(REVIEW_TARGET_MAPS+REVIEW_TARGET_APPS)+'</div>'
-      +'<div>🌟 NPS: <strong>'+npsSub+'</strong> submission → <strong style="color:var(--grn)">'+npsAppr+'</strong> approved → <strong style="color:var(--red)">'+npsRej+'</strong> reject</div>'
+      +'<div>😊 NPS: <strong>'+npsSub+'</strong> submission → <strong style="color:var(--grn)">'+npsAppr+'</strong> approved → <strong style="color:var(--red)">'+npsRej+'</strong> reject</div>'
       +'<div>💰 Renewal Paid (bulan ini): <strong>'+renewalPaidMonth+'</strong></div>'
       +'<div style="margin-top:6px"><a href="javascript:void(0)" onclick="renderTab(\'ratingnps\')" style="color:var(--pri)">Lihat detail Rating &amp; NPS →</a></div>'
       +'</div></div>';
@@ -5544,7 +5544,7 @@ function renderOverview(){
           +'<td><span class="badge badge-red">'+mTidak+'</span></td>'
           +'<td><span class="badge badge-yel">'+mFu+'</span></td>'
           +'<td><span class="badge badge-gray">'+mBelum+'</span></td>'
-          +'<td>⭐'+mRating+'</td><td>🌟'+mNps+'</td></tr>';
+          +'<td>⭐'+mRating+'</td><td>😊'+mNps+'</td></tr>';
       }).join('');
       monthlySummarySection='<div class="ov-section"><div class="ov-section-title">📆 Ringkasan Performa Bulanan</div>'
         +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
@@ -5552,7 +5552,7 @@ function renderOverview(){
         +'<tbody>'+monthRows+'</tbody></table></div></div></div>';
 
       // 25 Sep (request operator): pivot Agen (baris) x Bulan (kolom), cell = jumlah total approved
-      // (Rating ⭐ + NPS 🌟), sama sumber data (rnAllMonthly) + sama daftar bulan (monthsSorted, dari
+      // (Rating ⭐ + NPS 😊), sama sumber data (rnAllMonthly) + sama daftar bulan (monthsSorted, dari
       // cohortMonths, konsisten sama tabel Ringkasan Performa Bulanan di atas) -- cuma axis-nya dibalik.
       var agentMonthByKey={}; // "agen||claimMonth" -> {rating,nps}
       rnAllMonthly.forEach(function(x){
@@ -5566,7 +5566,7 @@ function renderOverview(){
       var pivotRows=AGENTS.slice().sort().map(function(ag){
         var cells=pivotMonthCols.map(function(mc){
           var cell=agentMonthByKey[ag+'||'+mc.claimStr];
-          return'<td>⭐'+(cell?cell.rating:0)+' 🌟'+(cell?cell.nps:0)+'</td>';
+          return'<td>⭐'+(cell?cell.rating:0)+' 😊'+(cell?cell.nps:0)+'</td>';
         }).join('');
         return'<tr><td style="font-weight:600">'+ag+'</td>'+cells+'</tr>';
       }).join('');
@@ -6456,7 +6456,7 @@ function ratingNpsAllRows(){
     }
     if(r.nps&&r.nps.evidence){
       out.push({
-        recId:r.id,key:r.id,type:'nps',platformKey:'nps',platformLabel:'⭐ NPS',
+        recId:r.id,key:r.id,type:'nps',platformKey:'nps',platformLabel:'😊 NPS',
         // 24 Sep (malam, feedback #2): agentName prefer "NPS Agent Credit" (atribusi klaim, koreksi-
         // able leader) -- fallback assignedAgent (case-assigned) kalau belum pernah ke-set, SAMA POLA
         // Rating (u.agentCredit||r.assignedAgent).
@@ -6664,7 +6664,7 @@ function renderRatingNps(){
   var monthFilterHtml=renderMultiSelect('ratingNpsMonthFilter','Bulan Klaim',monthOpts,ratingNpsMonthFilter);
   var agentFilterHtml=isSup?renderMultiSelect('ratingNpsAgentFilter','Agen',AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}),ratingNpsAgentFilter):'';
   // 24 Sep (feedback round 2): filter Tipe -- 3 platform UPSELL_PLATFORMS + NPS sintetis.
-  var typeOpts=UPSELL_PLATFORMS.map(function(p){return{value:p.key,label:p.icon+' '+p.label};}).concat([{value:'nps',label:'⭐ NPS'}]);
+  var typeOpts=UPSELL_PLATFORMS.map(function(p){return{value:p.key,label:p.icon+' '+p.label};}).concat([{value:'nps',label:'😊 NPS'}]);
   var typeFilterHtml=renderMultiSelect('ratingNpsTypeFilter','Tipe',typeOpts,ratingNpsTypeFilter);
 
   var rowsHtml=ratingNpsRowsHtml(all,me,isSup);
