@@ -491,8 +491,9 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
       </select>
       <div id="target-team-wrap">
         <div id="target-team-flat-wrap">
-          <label>Nilai Target Regular (Team)</label>
+          <label id="target-value-label">Nilai Target Regular (Team)</label>
           <input type="number" id="target-value-inp" min="0" placeholder="Contoh: 100">
+          <div id="target-value-peragent-hint" style="display:none;font-size:11px;color:var(--tx3);margin-top:2px">⚠️ Ini nilai PER-AGEN, bukan total tim — total tim dihitung otomatis (nilai ini × jumlah agen).</div>
           <label style="margin-top:6px">Nilai Target Improved (opsional — stretch goal, kosongkan kalau cuma 1 level)</label>
           <input type="number" id="target-value-improved-inp" min="0" placeholder="Contoh: 120">
         </div>
@@ -2282,18 +2283,26 @@ function computeTargetActual(target,allRecs,agentName){
   }
   // 13 Jul: Review Maps/PlayStore -- klaim APPROVED via upsellApprovedCount, kredit ke agentCredit
   // (BUKAN assignedAgent, sama alasan hardware/tier: siapa yg dapet kredit klaim != siapa pemilik
-  // case). Pakai allRecs FULL, bukan periodRecs -- klaim nempel di record & nggak month-scoped,
-  // konsisten persis sama card "Rating & Review" existing (B2) yg juga ngitung semua record.
+  // case).
+  // 26 Sep (request operator, 2 perubahan bareng): (1) achievement SEKARANG di-scope ke bulan target
+  // (target.period), BUKAN all-time lagi -- match target yang emang bulanan (akar masalah yang sama
+  // kayak "Ringkasan per Agen" Round 5, sekarang bypass generik ini yang giliran diselaraskan, biar
+  // kartu "🎯 Progres vs Target" konsisten sama kartu "⭐ Rating & Review"). (2) targetValue TEAM
+  // SEKARANG diartiin PER-AGEN (leader ketik 25, team = 25*N_AGENTS) -- scope PERSONAL/override TIDAK
+  // ikut berubah (itu emang udah per-agen dari awal, fitur independen).
+  var nAgentsRev=AGENTS.length||1;
+  var periodIdxRev=target.period?MONTH_KEYS.indexOf(target.period):-1;
+  var claimMonthRev=periodIdxRev>=0?(IDN_MONTHS_CLIENT[periodIdxRev]+' 2026'):null;
   if(target.metricKey==='review_maps'||target.metricKey==='review_playstore'){
     var platRev=target.metricKey==='review_maps'?'maps':'playstore';
     var cntRev=0;
     if(target.scope==='personal'&&agentName){
-      allRecs.forEach(function(r){cntRev+=upsellApprovedCount(r,platRev,agentName);});
+      allRecs.forEach(function(r){cntRev+=claimMonthRev?upsellApprovedCountInMonth(r,platRev,agentName,claimMonthRev):upsellApprovedCount(r,platRev,agentName);});
       var ovrRev=target.personalOverrides||{};
       return{actual:cntRev,unit:'',denom:0,effectiveTarget:(ovrRev[agentName]!=null)?ovrRev[agentName]:target.targetValue};
     }
-    allRecs.forEach(function(r){cntRev+=upsellApprovedCount(r,platRev);});
-    return{actual:cntRev,unit:'',denom:0,effectiveTarget:target.targetValue,effectiveTargetImproved:(target.targetValueImproved!=null)?target.targetValueImproved:null};
+    allRecs.forEach(function(r){cntRev+=claimMonthRev?upsellApprovedCountInMonth(r,platRev,null,claimMonthRev):upsellApprovedCount(r,platRev);});
+    return{actual:cntRev,unit:'',denom:0,effectiveTarget:target.targetValue*nAgentsRev,effectiveTargetImproved:(target.targetValueImproved!=null)?target.targetValueImproved*nAgentsRev:null};
   }
   // 25 Sep: NPS -- pola SAMA PERSIS review_maps/review_playstore di atas, cuma sumber count-nya
   // npsApprovedCount (rec.nps, BUKAN rec.upsell). Kredit ke nps.agentCredit (fallback assignedAgent),
@@ -2301,12 +2310,12 @@ function computeTargetActual(target,allRecs,agentName){
   if(target.metricKey==='review_nps'){
     var cntNps=0;
     if(target.scope==='personal'&&agentName){
-      allRecs.forEach(function(r){cntNps+=npsApprovedCount(r,agentName);});
+      allRecs.forEach(function(r){cntNps+=claimMonthRev?npsApprovedCountInMonth(r,agentName,claimMonthRev):npsApprovedCount(r,agentName);});
       var ovrNps=target.personalOverrides||{};
       return{actual:cntNps,unit:'',denom:0,effectiveTarget:(ovrNps[agentName]!=null)?ovrNps[agentName]:target.targetValue};
     }
-    allRecs.forEach(function(r){cntNps+=npsApprovedCount(r);});
-    return{actual:cntNps,unit:'',denom:0,effectiveTarget:target.targetValue,effectiveTargetImproved:(target.targetValueImproved!=null)?target.targetValueImproved:null};
+    allRecs.forEach(function(r){cntNps+=claimMonthRev?npsApprovedCountInMonth(r,null,claimMonthRev):npsApprovedCount(r);});
+    return{actual:cntNps,unit:'',denom:0,effectiveTarget:target.targetValue*nAgentsRev,effectiveTargetImproved:(target.targetValueImproved!=null)?target.targetValueImproved*nAgentsRev:null};
   }
   if(target.scope==='personal'){
     // CLM-11 B1: renewal_count/upsell_approved_count Personal -> ground-truth billing (di atas).
@@ -4521,14 +4530,17 @@ function renderOverview(){
   var convT=findTeamTarget('renewal_conversion_pct',82,87);
   var upRevT=findTeamTarget('upsell_revenue_nasional',null,null);
   var RENEWAL_TARGET=rrT.regular,RENEWAL_TARGET_IMP=rrT.improved;
-  // 13 Jul: target review configurable per platform (metric review_maps/review_playstore, scope team)
-  // -- fallback 400 = perilaku hardcode lama, tetep jalan selama Sekar belum bikin row target-nya.
-  var REVIEW_TARGET_MAPS=findTeamTarget('review_maps',400,null).regular;
-  var REVIEW_TARGET_APPS=findTeamTarget('review_playstore',400,null).regular;
+  // 13 Jul: target review configurable per platform (metric review_maps/review_playstore, scope team).
+  // 26 Sep (request operator, flip semantics): "Kelola Target" SEKARANG diisi angka PER-AGEN (bukan
+  // team-total lagi) -- leader ketik mis. 25, tim otomatis 25*N_AGENTS. INI CUMA berlaku buat nilai yang
+  // BENERAN dikonfig leader (t.configured===true) -- fallback "belum dikonfig" (400) DIPERTAHANKAN APA
+  // ADANYA sbg angka TEAM lama (nol perubahan behavior period yang belum pernah disentuh leader).
+  var reviewMapsT=findTeamTarget('review_maps',400,null);
+  var reviewAppsT=findTeamTarget('review_playstore',400,null);
   // 25 Sep: NPS target configurable, NOL fallback hardcode (beda dari Maps/Apps yang fallback 400) --
   // belum pernah ada angka NPS sebelumnya buat dijadiin default masuk akal, "belum dikonfig" sampai
   // leader isi lewat Kelola Target.
-  var REVIEW_TARGET_NPS=findTeamTarget('review_nps',null,null).regular;
+  var reviewNpsT=findTeamTarget('review_nps',null,null);
   // 25 Sep (request operator): "Ringkasan per Agen" Review(M/A)/NPS diganti dari all-time jadi
   // bulan-berjalan-doang -- konsisten sama REVIEW_TARGET_* yang emang udah period-scoped
   // (findTeamTarget filter period===currentMonthKey), sebelumnya achieved-nya all-time (mismatch
@@ -4536,10 +4548,15 @@ function renderOverview(){
   // Bulanan), tahun hardcode 2026 sama alasan yang sama.
   var CURRENT_CLAIM_MONTH_STR=IDN_MONTHS_CLIENT[MONTH_KEYS.indexOf(currentMonthKey)]+' 2026';
   var PER_AGENT_RENEWAL=Math.round(RENEWAL_TARGET/N_AGENTS);
-  var PER_AGENT_REVIEW_MAPS=Math.round(REVIEW_TARGET_MAPS/N_AGENTS);
-  var PER_AGENT_REVIEW_APPS=Math.round(REVIEW_TARGET_APPS/N_AGENTS);
-  // 25 Sep: 0 kalau belum dikonfig (REVIEW_TARGET_NPS null) -- ditangani di render (tampil count doang, nol "/0" nyesatin).
-  var PER_AGENT_REVIEW_NPS=REVIEW_TARGET_NPS?Math.round(REVIEW_TARGET_NPS/N_AGENTS):0;
+  // 26 Sep: kalau leader UDAH konfig -> nilai tersimpan ITU SENDIRI udah per-agen, team = per-agen*N.
+  // Kalau BELUM dikonfig -> pertahankan perilaku lama apa adanya (400 dibagi N_AGENTS, bukan dikali).
+  var PER_AGENT_REVIEW_MAPS=reviewMapsT.configured?reviewMapsT.regular:Math.round(reviewMapsT.regular/N_AGENTS);
+  var REVIEW_TARGET_MAPS=reviewMapsT.configured?PER_AGENT_REVIEW_MAPS*N_AGENTS:reviewMapsT.regular;
+  var PER_AGENT_REVIEW_APPS=reviewAppsT.configured?reviewAppsT.regular:Math.round(reviewAppsT.regular/N_AGENTS);
+  var REVIEW_TARGET_APPS=reviewAppsT.configured?PER_AGENT_REVIEW_APPS*N_AGENTS:reviewAppsT.regular;
+  // 25 Sep: 0 kalau belum dikonfig -- ditangani di render (tampil count doang, nol "/0" nyesatin).
+  var PER_AGENT_REVIEW_NPS=reviewNpsT.configured?reviewNpsT.regular:0;
+  var REVIEW_TARGET_NPS=reviewNpsT.configured?PER_AGENT_REVIEW_NPS*N_AGENTS:null;
   var PER_AGENT_RENEWAL_IMP=Math.round(RENEWAL_TARGET_IMP/N_AGENTS);
   var convTarget=convT.regular,convTargetImp=convT.improved;
 
@@ -4609,11 +4626,17 @@ function renderOverview(){
   var gcCount=Object.keys(gcFlagMap).length; // CLM-09: sheet-backed (confirmed+belum-resolve), bukan d.watchlist lokal
 
   // ── Review stats (team-wide) ──────────────────────────────────────────
+  // 26 Sep (request operator): di-scope ke bulan berjalan (CURRENT_CLAIM_MONTH_STR) -- SEBELUMNYA
+  // all-time (981/663 di screenshot operator), mismatch sama target yang emang bulanan (sama akar
+  // masalah yang udah difix di "Ringkasan per Agen" Round 5, sekarang giliran kartu Overview-nya).
+  // "belum approved" (claimedX-valX) IKUT di-scope biar konsisten -- kalau nggak, bandingannya nyesatin
+  // (all-time claimed vs bulanan approved).
   var allRecs=d.records;
-  var valMaps=allRecs.reduce(function(sum,r){return sum+upsellApprovedCount(r,'maps');},0);
-  var valApps=allRecs.reduce(function(sum,r){return sum+upsellApprovedCount(r,'playstore');},0);
-  var claimedMaps=allRecs.reduce(function(sum,r){return sum+upsellClaimedCount(r,'maps');},0);
-  var claimedApps=allRecs.reduce(function(sum,r){return sum+upsellClaimedCount(r,'playstore');},0);
+  var valMaps=allRecs.reduce(function(sum,r){return sum+upsellApprovedCountInMonth(r,'maps',null,CURRENT_CLAIM_MONTH_STR);},0);
+  var valApps=allRecs.reduce(function(sum,r){return sum+upsellApprovedCountInMonth(r,'playstore',null,CURRENT_CLAIM_MONTH_STR);},0);
+  var claimedMaps=allRecs.reduce(function(sum,r){var line=r.upsell&&r.upsell.maps;return sum+((line&&line.claimMonth===CURRENT_CLAIM_MONTH_STR)?(line.count||0):0);},0);
+  var claimedApps=allRecs.reduce(function(sum,r){var line=r.upsell&&r.upsell.playstore;return sum+((line&&line.claimMonth===CURRENT_CLAIM_MONTH_STR)?(line.count||0):0);},0);
+  var npsAchTeam=allRecs.reduce(function(sum,r){return sum+npsApprovedCountInMonth(r,null,CURRENT_CLAIM_MONTH_STR);},0);
 
   // ── Renewal Revenue (Team) bulan berjalan — LIVE dari FinancialsStore, bukan hardcode.
   // MONTHLY_ACTUALS (dulu Jan-Jun 2026 hardcoded) DICABUT 6 Jul (keputusan Muthia: retire panel
@@ -4628,6 +4651,7 @@ function renderOverview(){
   // hardcode 156/104 yg kebetulan sama kayak angka reference screenshot Muthia (placeholder lama,
   // bukan data riil). "0 jujur" kalau belum ada klaim approved sama sekali, no hardcode fallback.
   var mapsAch=valMaps, appsAch=valApps;
+  var npsAch=npsAchTeam;
   function fmtRp(n){
     if(n>=1000000000)return'Rp '+(n/1000000000).toFixed(1).replace('.',',')+'M';
     if(n>=1000000)return'Rp '+(Math.round(n/1000000)).toLocaleString('id-ID')+' jt';
@@ -5501,6 +5525,12 @@ function renderOverview(){
     +'<div style="font-size:12px;font-weight:600;color:var(--tx);margin-top:8px">📱 App Store</div>'
     +'<div style="font-size:11px;color:var(--tx2)"><strong>'+appsAch+'</strong>/'+REVIEW_TARGET_APPS+' approved'+(claimedApps>valApps?' &nbsp;·&nbsp; <span style="color:var(--tx3)">'+(claimedApps-valApps)+' belum approved</span>':'')+'</div>'
     +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+appsPct+'%"></div></div>'
+    // 26 Sep (request operator): NPS ditambah di bawah Maps/App Store -- "cukup jumlah approvednya
+    // dulu aja" (nol progress bar sengaja, beda dari Maps/Apps yang emang udah lama punya bar).
+    // Target NPS tetap ditampilin kalau leader udah konfig (murah, datanya udah ada), tapi TIDAK
+    // dipaksa -- "belum dikonfig" nunjukin count polos apa adanya.
+    +'<div style="font-size:12px;font-weight:600;color:var(--tx);margin-top:8px">😊 NPS</div>'
+    +'<div style="font-size:11px;color:var(--tx2)"><strong>'+npsAch+'</strong>'+(REVIEW_TARGET_NPS?'/'+REVIEW_TARGET_NPS:'')+' approved</div>'
     +'</div>'
     +'</div></div>';
 
@@ -5677,6 +5707,15 @@ function renderTargetsManage(){
       var isNonAdditive=unitP==='%'||NON_ADDITIVE_METRICS.indexOf(t.metricKey)>=0;
       var totalActual=AGENTS.reduce(function(s,ag){return s+computeTargetActual(t,recs,ag).actual;},0);
       actualDisp=isNonAdditive?'rata2 tim':(fmtMetricVal(totalActual,unitP)+' (total tim)');
+    }else if(t.metricKey==='review_maps'||t.metricKey==='review_playstore'||t.metricKey==='review_nps'){
+      // 26 Sep (request operator): t.targetValue tersimpan SEKARANG per-agen -- kolom Target di sini
+      // tampilin TEAM (computed, konsisten sama kolom Aktual yang emang team-wide), + anotasi angka
+      // per-agen asli yang diketik leader, biar nggak kebaca "25" vs actual "187" (nyesatin kayak
+      // over-target padahal target beneran 225).
+      var resRev=computeTargetActual(t,recs);
+      targetDisp=fmtMetricVal(resRev.effectiveTarget,resRev.unit)+' <span style="color:var(--tx3)">('+fmtMetricVal(t.targetValue,resRev.unit)+'/agen)</span>';
+      if(resRev.effectiveTargetImproved!=null)targetDisp+=' <span style="color:var(--tx3)">/ Improved '+fmtMetricVal(resRev.effectiveTargetImproved,resRev.unit)+'</span>';
+      actualDisp=fmtMetricVal(resRev.actual,resRev.unit);
     }else{
       var resT=computeTargetActual(t,recs);
       targetDisp=fmtMetricVal(t.targetValue,resT.unit);
@@ -7792,6 +7831,12 @@ function toggleTargetScopeWrap(){
   // CLM-11 Fase F: 5 field MRR per-paket gantiin target-value-inp/improved flat pas metric ini aktif.
   document.getElementById('target-mrr-paket-wrap').style.display=isMrr?'':'none';
   document.getElementById('target-team-flat-wrap').style.display=isMrr?'none':'';
+  // 26 Sep (request operator): review_maps/review_playstore/review_nps scope Team SEKARANG diartiin
+  // PER-AGEN (bukan total tim lagi) -- label+hint berubah biar leader nggak salah ketik angka total.
+  var isReviewMetric=metricKey==='review_maps'||metricKey==='review_playstore'||metricKey==='review_nps';
+  var showPeragentHint=isReviewMetric&&!isPersonal;
+  document.getElementById('target-value-label').textContent=showPeragentHint?'Nilai Target Per-Agen':'Nilai Target Regular (Team)';
+  document.getElementById('target-value-peragent-hint').style.display=showPeragentHint?'':'none';
 }
 function saveTarget(){
   var period=document.getElementById('target-period-sel').value;
