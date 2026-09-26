@@ -6377,7 +6377,10 @@ function ratingNpsAllRows(){
           recId:r.id,key:r.id+'_'+p.key,type:'rating',platformKey:p.key,platformLabel:p.icon+' '+p.label,
           outletName:r.outletName||r.id,agentName:(u.agentCredit||r.assignedAgent||''),
           status:ratingNpsStatusNorm_(u.status),rejectReason:u.rejectReason||'',
-          claimMonth:u.claimMonth||'',evidence:u.evidence||'',approvedBy:u.lastEditBy||''
+          claimMonth:u.claimMonth||'',evidence:u.evidence||'',approvedBy:u.lastEditBy||'',
+          count:u.count||0 // 26 Sep (request operator): jumlah rating diklaim -- SEBELUMNYA nggak
+          // pernah muncul di tab ini sama sekali (cuma keliatan/edit-able via modal Update Respon Outlet
+          // lama), padahal ini yang beneran ngitung progress ke target (bukan cuma "1 klaim = 1 unit").
         });
       });
     }
@@ -6429,7 +6432,7 @@ function ratingNpsRowsHtml(all,me,isSup){
   var cnt=document.getElementById('ratingnps-count');
   if(cnt)cnt.textContent=ratingNpsCountText;
   // Aksi (Approve/Reject) leader-only -- NOL dirender buat agent (bukan disabled/CSS-hide, preseden CLM-06).
-  var colspan=isSup?8:7;
+  var colspan=isSup?9:8;
   if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada klaim</td></tr>';
   var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
   ratingNpsPage=Math.min(ratingNpsPage,totalPages-1);
@@ -6451,11 +6454,16 @@ function ratingNpsRowsHtml(all,me,isSup){
         aksiCell='<span style="font-size:11px;color:var(--tx3)">'+(x.rejectReason?('Alasan: '+x.rejectReason):'—')+'</span>';
       }
     }
+    // 26 Sep (request operator): jumlah rating diklaim -- SEBELUMNYA nol muncul sama sekali di tab
+    // ini, padahal ini yang beneran ngitung progress ke target (upsellApprovedCount pakai line.count,
+    // bukan "1 row = 1 unit"). NPS nggak punya konsep count (selalu 1 per klaim) -- tampilin '—'.
+    var countCell=x.type==='rating'?x.count:'<span style="color:var(--tx3)">—</span>';
     return'<tr>'
       +'<td>'+x.outletName+'</td>'
       +'<td>'+x.platformLabel+'</td>'
       +(isSup?'<td>'+(x.agentName||'<span style="color:var(--tx3)">—</span>')+'</td>':'')
       +'<td>'+ratingNpsStatusBadge_(x.status)+'</td>'
+      +'<td style="text-align:center">'+countCell+'</td>'
       +'<td style="font-size:11px">'+ratingNpsApprovedByDisplay_(x)+'</td>'
       +'<td>'+monthCell+'</td>'
       +'<td>'+evidCell+'</td>'
@@ -6499,6 +6507,16 @@ function openRnEditModal(type,key){
       +'<select id="rnedit-agent"><option value="">— Nggak diubah —</option>'+agentOpts+'</select>'
       +'<p style="margin-top:4px;font-size:11px;color:var(--tx3)">Ganti agen TIDAK reset status approve/reject -- evidence-nya tetep valid, cuma siapa yang dapet kredit yang berubah.</p>';
   }
+  // 26 Sep (request operator): koreksi "Jumlah" -- LEADER-ONLY, cuma buat Rating (NPS nggak punya
+  // konsep count, selalu 1). Field ini sebelumnya cuma bisa diedit lewat modal Update Respon Outlet
+  // lama -- sekarang bisa juga langsung dari tab Rating & NPS. Ganti jumlah TRIGGER reset ke Pending
+  // (sama kayak ganti bulan) krn ini perubahan substansi klaim, bukan sekadar atribusi kredit.
+  var countField='';
+  if(isSup&&type==='rating'){
+    countField='<label style="margin-top:12px;display:block">Jumlah (koreksi kalau salah)</label>'
+      +'<input type="number" id="rnedit-count" min="0" value="'+(x.count||0)+'" style="margin-bottom:0">'
+      +'<p style="margin-top:4px;font-size:11px;color:var(--tx3)">Ganti jumlah otomatis reset status ke Pending kalau sebelumnya udah final (sama kayak ganti bulan) -- ini ubah substansi klaim, perlu direview ulang.</p>';
+  }
   document.getElementById('rnedit-body').innerHTML=
     '<p style="margin-bottom:12px">Outlet: <strong>'+x.outletName+'</strong> &nbsp;·&nbsp; '+x.platformLabel+'</p>'
     +'<label>Bulan Klaim</label>'
@@ -6507,7 +6525,7 @@ function openRnEditModal(type,key){
     +'<select id="rnedit-year" style="flex:1">'+yearOpts+'</select>'
     +'</div>'
     +'<p style="margin-top:4px;font-size:11px;color:var(--tx3)">Ganti bulan otomatis reset status ke Pending kalau sebelumnya udah final (perlu direview ulang).</p>'
-    +agentField;
+    +agentField+countField;
   openModal('rnedit-modal');
 }
 function saveRnEdit(){
@@ -6518,8 +6536,10 @@ function saveRnEdit(){
   var newMonth=IDN_MONTHS_CLIENT[monthIdx]+' '+year;
   var agentEl=document.getElementById('rnedit-agent');
   var newAgent=agentEl?agentEl.value:'';
+  var countEl=document.getElementById('rnedit-count');
   var payload={action:type==='nps'?'updateNpsClaimMonth':'updateUpsellClaimMonth',key:key,claimMonth:newMonth};
   if(newAgent)payload.agentCredit=newAgent;
+  if(countEl)payload.count=parseInt(countEl.value,10)||0; // 26 Sep: Rating-only (countEl cuma dirender kalau isSup&&type==='rating')
   var btn=document.getElementById('rnedit-save-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Menyimpan...';}
   _gasPost(payload).then(function(res){
@@ -6538,6 +6558,7 @@ function saveRnEdit(){
         r2.upsell[platform].claimMonth=newMonth;
         if(res.statusReset)r2.upsell[platform].status='pending';
         if(res.agentChanged)r2.upsell[platform].agentCredit=res.agentCredit;
+        if(res.countChanged)r2.upsell[platform].count=res.count;
       }
     }
     Store.set(d);
@@ -6589,7 +6610,7 @@ function renderRatingNps(){
     +'<span id="ratingnps-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+ratingNpsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr><th>Outlet</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Approved By</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
+    +'<thead><tr><th>Outlet</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Jumlah</th><th>Approved By</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
     +'<tbody id="ratingnps-tbody">'+rowsHtml+'</tbody></table></div></div>';
 }
 
