@@ -4060,7 +4060,8 @@ function buildUpsellPayload(r,platform,me){
     'Submitted At':line.submittedAt||'',
     'Reject Reason':line.rejectReason||'',
     'Last Edit By':line.lastEditBy||'',
-    'Last Edit At':line.lastEditAt||''
+    'Last Edit At':line.lastEditAt||'',
+    'Claim Month':line.claimMonth||'' // 26 Sep: fix Claim Month nggak pernah kekirim ke server dari path submission dashboard-native
   };
 }
 function writeBackUpsell(r,platform,me){
@@ -8580,7 +8581,13 @@ function saveResp(){
       // Kredit default = diri sendiri kalau agen yg submit; kalau Sekar yg submit (mis. input-in buat agen), default ke assignedAgent case
       // (bukan 'Sekar' -- Sekar bukan penerima kredit achievement yg valid & nggak ada di dropdown AGENTS)
       var defaultCredit=isSup?(r.assignedAgent||AGENTS[0]):me;
-      var line={count:countVal,evidence:evidVal,status:'pending',agentCredit:defaultCredit,submittedBy:me,submittedAt:new Date().toISOString(),rejectReason:null,lastEditBy:me,lastEditAt:new Date().toISOString(),audit:[]};
+      // 26 Sep (fix, request operator): Claim Month SEBELUMNYA nggak pernah keisi buat submission
+      // dashboard-native (nol field ini di line lama) -- klaim yang cuma exist via dashboard (nggak
+      // pernah ada row-nya di Report) Claim Month-nya PERMANEN kosong sampai leader manual isi. Set
+      // ke bulan SEKARANG (waktu submit), format "Bulan Tahun" Indonesia -- SAMA PERSIS server.
+      var nowD=new Date();
+      var claimMonthNow=IDN_MONTHS_CLIENT[nowD.getMonth()]+' '+nowD.getFullYear();
+      var line={count:countVal,evidence:evidVal,status:'pending',agentCredit:defaultCredit,submittedBy:me,submittedAt:new Date().toISOString(),rejectReason:null,lastEditBy:me,lastEditAt:new Date().toISOString(),claimMonth:claimMonthNow,audit:[]};
       upsellAudit(line,me,'submit',null,'count='+countVal);
       r.upsell[p.key]=line;
       writeBackUpsell(r,p.key,me);
