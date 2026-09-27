@@ -6701,7 +6701,12 @@ function renderRatingNps(){
   var monthSet={};all.forEach(function(x){if(x.claimMonth)monthSet[x.claimMonth]=true;});
   var monthOpts=Object.keys(monthSet).sort().map(function(m){return{value:m,label:m};});
   var monthFilterHtml=renderMultiSelect('ratingNpsMonthFilter','Bulan Klaim',monthOpts,ratingNpsMonthFilter);
-  var agentFilterHtml=isSup?renderMultiSelect('ratingNpsAgentFilter','Agen',AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}),ratingNpsAgentFilter):'';
+  // 27 Sep: +opsi "Belum ada agen" (value='' -- match langsung agentName kosong, konsisten sama
+  // ratingNpsBasePool yang bandingin string apa adanya) -- biar leader gampang nemuin+revisi klaim
+  // yang defaultCredit-nya sengaja dibiarin kosong (case tanpa assignedAgent, sebelumnya keliru default
+  // ke AGENTS[0]).
+  var agentOptsWithUnassigned=[{value:'',label:'⚠️ Belum ada agen'}].concat(AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return{value:a.name,label:a.name};}));
+  var agentFilterHtml=isSup?renderMultiSelect('ratingNpsAgentFilter','Agen',agentOptsWithUnassigned,ratingNpsAgentFilter):'';
   // 24 Sep (feedback round 2): filter Tipe -- 3 platform UPSELL_PLATFORMS + NPS sintetis.
   var typeOpts=UPSELL_PLATFORMS.map(function(p){return{value:p.key,label:p.icon+' '+p.label};}).concat([{value:'nps',label:'😊 NPS'}]);
   var typeFilterHtml=renderMultiSelect('ratingNpsTypeFilter','Tipe',typeOpts,ratingNpsTypeFilter);
@@ -8623,9 +8628,13 @@ function saveResp(){
 
     if(!existing){
       if(countVal<=0)return;
-      // Kredit default = diri sendiri kalau agen yg submit; kalau Sekar yg submit (mis. input-in buat agen), default ke assignedAgent case
-      // (bukan 'Sekar' -- Sekar bukan penerima kredit achievement yg valid & nggak ada di dropdown AGENTS)
-      var defaultCredit=isSup?(r.assignedAgent||AGENTS[0]):me;
+      // Kredit default = diri sendiri kalau agen yg submit; kalau Sekar/leader yg submit (mis. input-in
+      // buat agen), default ke assignedAgent case. 27 Sep (fix, request operator): SEBELUMNYA kalau case
+      // nggak punya assignedAgent (kosong), jatuh ke AGENTS[0] -- misattribution nyata ("Erizka" kekredit
+      // padahal nggak ada hubungannya, ditemuin QA Ryry + direproduksi operator di outlet baru). Sekarang
+      // dibiarin KOSONG ("0 jujur", sama filosofi upsellApprovedCount fallback) -- leader bisa filter
+      // Agen kosong di tab Rating & NPS terus koreksi manual via Edit Klaim begitu tau siapa yang bener.
+      var defaultCredit=isSup?(r.assignedAgent||''):me;
       // 26 Sep (fix, request operator): Claim Month SEBELUMNYA nggak pernah keisi buat submission
       // dashboard-native (nol field ini di line lama) -- klaim yang cuma exist via dashboard (nggak
       // pernah ada row-nya di Report) Claim Month-nya PERMANEN kosong sampai leader manual isi. Set
@@ -10421,6 +10430,15 @@ function syncResponsesOnly(opts){
       if(effSum)rec.effCategory=effSum;
       if(effKet)rec.effDetail=effKet;
       // 4 Agu: NPS TERPISAH dari resp.evidenceLink -- object sendiri, jangan digabung.
+      // 27 Sep (fix, request operator): SEBELUMNYA evidence kosong = no-op total, rec.nps LAMA
+      // (localStorage) nggak pernah ke-clear walau server udah genuinely dihapus (kasus: cleanup
+      // script ngosongin field NPS test) -- klaim jadi "hantu" nempel selamanya di browser manapun
+      // yang udah pernah nge-cache-nya, KEBUKTIAN forced full-sync sekalipun nggak ngilangin. Sync
+      // ini KHUSUS (manual, sengaja diklik operator/leader, BUKAN delta-poll otomatis tiap 5 menit)
+      // jadi aman dipercaya sbg ground truth -- evidence kosong di sini SEKARANG eksplisit ngosongin
+      // rec.nps, bukan cuma diem. mergeNpsFromRemote (delta-poll otomatis) SENGAJA TIDAK diubah --
+      // itu jalur background, lebih aman tetep konservatif; full-sync manual ini cukup buat
+      // nge-clear ghost begitu ke-trigger.
       var npsEvid=String(row['NPS Evidence']||'').trim();
       if(npsEvid){
         rec.nps={
@@ -10433,6 +10451,8 @@ function syncResponsesOnly(opts){
           approvedBy:String(row['NPS Approved By']||'').trim(), // 24 Sep (feedback #5)
           agentCredit:String(row['NPS Agent Credit']||'').trim() // 24 Sep (malam, feedback #2)
         };
+      }else if(rec.nps){
+        delete rec.nps;
       }
     });
     Store.set(d);renderMaster();
