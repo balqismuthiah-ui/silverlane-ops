@@ -3957,7 +3957,13 @@ function _gasPostOnce(payload){
       if(!r.ok){var e=new Error('HTTP '+r.status);e.retriable=(r.status>=500||r.status===429);throw e;}
       var j;try{j=JSON.parse(t);}catch(e2){var e3=new Error('Respons GAS bukan JSON (kemungkinan timeout eksekusi)');e3.retriable=true;throw e3;}
       if(j&&j.error==='unauthorized'){confirmUnauthorizedThenLogout();var eu=new Error('unauthorized');eu.retriable=false;throw eu;}
-      if(j&&j.ok===false){var eb=new Error(j.error||'write gagal');eb.retriable=(j.retry===true);throw eb;}
+      // 28 Sep: tag EKSPLISIT "server genuinely nolak" (vs gagal jaringan/timeout) -- dibedain dari
+      // `.retriable` (yang defaultnya falsy juga buat error jaringan biasa, nggak cukup buat mutusin
+      // "ini permanen, jangan diantre selamanya"). writeBack*/wbFlush pakai flag ini biar penolakan
+      // business-rule (mis. key_not_found) ke-surface ke user SELALU, bukan diem2 masuk antrean retry
+      // yang nggak akan pernah sukses (root cause insiden Damparan Seafood: klaim ke-reject server tapi
+      // UI nunjukin sukses).
+      if(j&&j.ok===false){var eb=new Error(j.error||'write gagal');eb.retriable=(j.retry===true);eb.serverRejected=true;throw eb;}
       return j;
     });})
     .catch(function(err){
@@ -4037,17 +4043,32 @@ function buildWbPayload(r,me){
   };
 }
 var _wbWarned=false;
+// 28 Sep (fix, insiden Damparan Seafood -- klaim ke-reject server dgn key_not_found tapi UI nunjukin
+// sukses): SEBELUMNYA writeBackResponse/writeBackUpsell/writeBackGcWatchlist nyamain SEMUA kegagalan
+// (network transient MAUPUN penolakan permanen server) -- diantre + toast SEKALI per sesi doang
+// (_wbWarned). Begitu toast itu udah pernah muncul (dari kegagalan LAIN, kapan pun), penolakan
+// PERMANEN berikutnya (mis. key_not_found -- retry SELAMANYA nggak akan pernah sukses) jadi TOTAL
+// SENYAP -- item nyangkut di antrean lokal buat selamanya, user nggak pernah tau datanya nggak
+// tersimpan. `_gasPostOnce` sekarang nge-tag `err.serverRejected=true` khusus buat respons
+// `{ok:false}` (server BENERAN nolak, beda dari genuinely offline/timeout) -- helper ini pakai flag
+// itu buat SELALU nyurface penolakan permanen (toast tiap kali, bukan sekali per sesi) dan JANGAN
+// diantre (percuma, nggak akan pernah sukses).
+function _wbHandleFail(err,payload,queueLabel){
+  if(err&&err.serverRejected){
+    toast('❌ Gagal disimpan ke server ('+(err.message||'unknown')+') — perubahan TIDAK tersimpan, cek data lalu coba lagi.',7000);
+    return;
+  }
+  var q=wbQueueGet();q.push(payload);wbQueueSet(q);
+  if(!_wbWarned){ // warning cukup sekali per sesi biar tak mengganggu -- CUMA buat transient/network
+    _wbWarned=true;
+    toast('⚠ Write-back ke Sheets belum aktif — '+queueLabel+' disimpan lokal & diantre, dikirim otomatis saat GAS siap',4500);
+  }
+}
 function writeBackResponse(r,me){
   var payload=buildWbPayload(r,me);
   _gasPost(payload).then(function(){
     if(_wbWarned)wbFlush(); // koneksi pulih → coba kirim antrean
-  }).catch(function(){
-    var q=wbQueueGet();q.push(payload);wbQueueSet(q);
-    if(!_wbWarned){ // warning cukup sekali per sesi biar tak mengganggu
-      _wbWarned=true;
-      toast('⚠ Write-back ke Sheets belum aktif — respons disimpan lokal & diantre, dikirim otomatis saat GAS siap',4500);
-    }
-  });
+  }).catch(function(err){_wbHandleFail(err,payload,'respons');});
 }
 // CLM-03: write-back klaim upsell — reuse mekanisme+antrean writeBackResponse, payload beda action.
 // Key komposit id+platform (mis. "74183546202_maps") krn 1 case bisa punya s.d. 2 baris platform independen.
@@ -4078,13 +4099,7 @@ function writeBackUpsell(r,platform,me){
   if(!payload)return;
   _gasPost(payload).then(function(){
     if(_wbWarned)wbFlush();
-  }).catch(function(){
-    var q=wbQueueGet();q.push(payload);wbQueueSet(q);
-    if(!_wbWarned){
-      _wbWarned=true;
-      toast('⚠ Write-back ke Sheets belum aktif — data disimpan lokal & diantre, dikirim otomatis saat GAS siap',4500);
-    }
-  });
+  }).catch(function(err){_wbHandleFail(err,payload,'data');});
 }
 // CLM-09: write-back GC Watchlist -- reuse antrean+_gasPost generik yg sama kayak writeBackUpsell
 // (action-agnostic, server route by payload.action). 2 mode: submit biasa (kategori known/need-check)
@@ -4147,13 +4162,7 @@ function saveInvReassign(){
 function writeBackGcWatchlist(payload){
   _gasPost(payload).then(function(){
     if(_wbWarned)wbFlush();
-  }).catch(function(){
-    var q=wbQueueGet();q.push(payload);wbQueueSet(q);
-    if(!_wbWarned){
-      _wbWarned=true;
-      toast('⚠ Write-back ke Sheets belum aktif — data disimpan lokal & diantre, dikirim otomatis saat GAS siap',4500);
-    }
-  });
+  }).catch(function(err){_wbHandleFail(err,payload,'data');});
 }
 // Kirim ulang antrean yang tertunda (dipanggil saat startApp & setelah sync)
 // (10 Agu, insiden auto-paid 1724-item flood): dulu loop tanpa jeda+tanpa circuit-breaker -- kalau
@@ -4191,8 +4200,22 @@ function wbFlush(){
       if(idx>=0)cur.splice(idx,1);
       wbQueueSet(cur);
       setTimeout(next,WB_FLUSH_GAP_MS);
-    }).catch(function(){
-      i++;consecFail++;
+    }).catch(function(err){
+      i++;
+      // 28 Sep (fix, sama insiden Damparan Seafood): penolakan PERMANEN (key_not_found dst) yang
+      // nyangkut di antrean SEBELUMNYA bakal di-retry SELAMANYA tiap wbFlush -- nggak pernah sukses
+      // (bukan masalah timing/koneksi), dan bisa numpuk consecFail dari item ini doang jadi nge-trip
+      // circuit-breaker buat item LAIN yang genuinely masih bisa retry. Sekarang: dikeluarin dari
+      // antrean + disurface (bukan diem2), bukan dihitung sebagai "gagal transient".
+      if(err&&err.serverRejected){
+        var cur2=wbQueueGet();
+        var idx2=cur2.findIndex(function(x){return x.key===item.key;});
+        if(idx2>=0)cur2.splice(idx2,1);
+        wbQueueSet(cur2);
+        toast('❌ 1 item antrean ditolak server ('+(err.message||'unknown')+') — dikeluarkan dari antrean, TIDAK tersimpan.',7000);
+      }else{
+        consecFail++;
+      }
       setTimeout(next,WB_FLUSH_GAP_MS);
     });
   })();
