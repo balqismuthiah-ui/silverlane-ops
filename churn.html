@@ -9816,6 +9816,7 @@ function syncUpsellOnly(opts){
     var d=Store.get();
     var idx={};d.records.forEach(function(r){idx[r.id]=r;});
     var n=0;
+    var seenKeys={}; // 28 Sep: track join code+platform yang server BENERAN punya row-nya, biar bisa clear ghost di bawah
     rows.forEach(function(row){
       var jc=String(row['Join Code']||'').trim();if(!jc)return;
       var sep=jc.lastIndexOf('_');if(sep<0)return;
@@ -9823,10 +9824,24 @@ function syncUpsellOnly(opts){
       // CLM-08 (4b): whitelist generik dari UPSELL_PLATFORMS (bukan hardcode 2 string) -- otomatis
       // ikut kalau platform baru ditambah lagi ke array, nggak perlu inget update di sini juga.
       if(!UPSELL_PLATFORMS.some(function(p){return p.key===platform;}))return;
+      seenKeys[caseId+'_'+platform]=true;
       var rec=idx[caseId];if(!rec)return;
       rec.upsell=rec.upsell||{maps:null,playstore:null,hardware:null};
       var merged=mergeUpsellFromRemote(rec.upsell[platform],row);
       if(merged!==rec.upsell[platform]){rec.upsell[platform]=merged;n++;}
+    });
+    // 28 Sep (fix, insiden Damparan Seafood): klaim lokal yang server-nya GENUINELY nggak punya row
+    // sama sekali (key-nya nggak pernah muncul di rows -- beda dari "field kosong", ini "row-nya nggak
+    // ada") SEBELUMNYA nggak pernah ke-clear -- loop di atas cuma iterate rows yang ADA, jadi klaim
+    // yang gagal ke-tulis server (mis. kena reject isRealCaseId lama) nempel permanen sbg "hantu" di
+    // local Store, walau server nggak pernah punya datanya sama sekali. Sync ini full fetch manual
+    // (getUpsellClaims() unfiltered, getUpsellClaims() confirmed nol status/recency filter) -- aman
+    // dipercaya sbg ground truth, clear apapun yang nggak ke-konfirmasi via seenKeys.
+    d.records.forEach(function(rec){
+      if(!rec.upsell)return;
+      UPSELL_PLATFORMS.forEach(function(p){
+        if(rec.upsell[p.key]&&!seenKeys[rec.id+'_'+p.key]){rec.upsell[p.key]=null;n++;}
+      });
     });
     Store.set(d);renderTab(currentTab);
     if(!opts.silent)toast(n+' klaim upsell disinkronkan dari '+rows.length+' baris');
