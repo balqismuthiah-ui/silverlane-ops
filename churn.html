@@ -8481,7 +8481,7 @@ function openResp(id){
     +'<div id="resp-detail-wrap"><label>Detail</label><select id="resp-detail">'+detailOpts+'</select></div>'
     +'<div id="resp-evidence-wrap"><label id="resp-evidence-lbl">Evidence (link chat / screenshot)</label>'
     +'<input type="text" id="resp-response-evidence" value="'+(resp.evidenceLink||'')+'" placeholder="https://... — WAJIB kalau kategori RESPON NEGATIF"></div>'
-    +'<label>Nomor HP yang Aktif Berkomunikasi Deal'+(canSeePhone?' <span style="color:var(--red)">*wajib</span>':' <span style="color:var(--tx3);font-weight:400">— disamarkan, cuma agen terkait/leader yg bisa lihat & ubah</span>')+'</label>'
+    +'<label>Nomor HP yang Aktif Berkomunikasi dengan Kamu'+(canSeePhone?' <span style="color:var(--red)">*wajib</span>':' <span style="color:var(--tx3);font-weight:400">— disamarkan, cuma agen terkait/leader yg bisa lihat & ubah</span>')+'</label>'
     +(canSeePhone
       ?'<input type="tel" id="resp-phone" value="'+(resp.updatedPhone||'')+'" placeholder="628xxx...">'
       :'<input type="tel" id="resp-phone" value="'+maskPhone(resp.updatedPhone)+'" disabled data-masked="1">')
@@ -8589,7 +8589,7 @@ function saveResp(){
   // 2 Okt (keputusan operator): wajib CUMA kalau field-nya genuinely kekliatan/editable
   // (!phoneEl.dataset.masked, canSeePhone=true) -- user yang field-nya disamarkan (nggak punya akses)
   // TETAP bisa save update lain tanpa kesandung field yang emang nggak bisa mereka edit.
-  if(!phoneEl.dataset.masked&&!phone){toast('⚠ Nomor HP yang Aktif Berkomunikasi Deal wajib diisi');return;}
+  if(!phoneEl.dataset.masked&&!phone){toast('⚠ Wajib input nomor HP yg aktif komunikasi dengan kamu');return;}
   var catFinal=cat||null;
   var detailFinal=detail||null;
 
