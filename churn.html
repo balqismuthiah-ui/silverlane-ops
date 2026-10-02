@@ -3781,7 +3781,7 @@ function mkRec(id,name,expiry,phone,agent,blastSt,email,pkg){
     blastDate:blasted?'2026-06-10T08:30:00':null,
     lastBlastAt:blasted?'2026-06-10T08:30:00':null,
     invoiced:false,paymentStatus:null,
-    response:{category:null,detail:null,note:'',updatedPhone:null,waStatus:'unchecked',updatedAt:null,updatedBy:null},
+    response:{category:null,detail:null,note:'',updatedPhone:null,namaPic:null,waStatus:'unchecked',updatedAt:null,updatedBy:null},
     upsell:{maps:null,playstore:null,hardware:null}, // CLM-08 (4b): hardware = platform ke-3
     blastLog:{} // CLM-05 #25: {[cpKey]: {status,sentAt,broadcastName}} dari sync BROADCASTLOG CLARA
   };
@@ -4042,7 +4042,12 @@ function _gasPostUnchained(payload){
 //     (= dirty-check mati total, balik ke bug semula)
 function respSheetFingerprint(resp,agent,npsEvidence){
   resp=resp||{};
-  return JSON.stringify([resp.category||null,resp.detail||null,resp.note||'',resp.evidenceLink||null,agent||'',npsEvidence||'']);
+  // 2 Okt: updatedPhone/namaPic ditambahin -- dua field ini SEKARANG beneran ke-kirim ke server
+  // (buildWbPayload), BUKAN local-only lagi kayak dulu. Kalau nggak diikutin fingerprint, edit yang
+  // CUMA ganti phone/PIC (nggak nyentuh kategori/detail/note/evidence) nggak akan pernah ke-detect
+  // dirty -> writeBackResponse nggak pernah dipanggil -> perubahan ilang senyap, nggak pernah nyampe
+  // sheet. waStatus TETAP di luar fingerprint (tetap local-only by design).
+  return JSON.stringify([resp.category||null,resp.detail||null,resp.note||'',resp.evidenceLink||null,agent||'',npsEvidence||'',resp.updatedPhone||'',resp.namaPic||'']);
 }
 function buildWbPayload(r,me){
   var resp=r.response||{};
@@ -4057,6 +4062,11 @@ function buildWbPayload(r,me){
     'Keterangan':resp.detail||'',
     'Note':resp.note||'',
     'Link Evidence':resp.evidenceLink||'',
+    // 2 Okt: GAS DASHBOARD_WRITABLE_FIELD_MAP_ udah lama siap buat 2 field ini (ditulis ke "Nama PIC
+    // (Dashboard)"/"Nomor Pelanggan (Dashboard)", lalu auto ke-recompute ke "...(Gabungan)"/"Nomor
+    // Gabungan") -- form input-nya baru dibangun sekarang.
+    'Nama PIC':resp.namaPic||'',
+    'Nomor Pelanggan':resp.updatedPhone||'',
     'NPS Evidence':(r.nps&&r.nps.evidence)||'',
     'Tgl Response':now,
     'Agen':r.assignedAgent||'',
@@ -8471,10 +8481,12 @@ function openResp(id){
     +'<div id="resp-detail-wrap"><label>Detail</label><select id="resp-detail">'+detailOpts+'</select></div>'
     +'<div id="resp-evidence-wrap"><label id="resp-evidence-lbl">Evidence (link chat / screenshot)</label>'
     +'<input type="text" id="resp-response-evidence" value="'+(resp.evidenceLink||'')+'" placeholder="https://... — WAJIB kalau kategori RESPON NEGATIF"></div>'
-    +'<label>Nomor HP Baru (opsional)'+(canSeePhone?'':' <span style="color:var(--tx3);font-weight:400">— disamarkan, cuma agen terkait/leader yg bisa lihat & ubah</span>')+'</label>'
+    +'<label>Nomor HP yang Aktif Berkomunikasi Deal'+(canSeePhone?' <span style="color:var(--red)">*wajib</span>':' <span style="color:var(--tx3);font-weight:400">— disamarkan, cuma agen terkait/leader yg bisa lihat & ubah</span>')+'</label>'
     +(canSeePhone
       ?'<input type="tel" id="resp-phone" value="'+(resp.updatedPhone||'')+'" placeholder="628xxx...">'
       :'<input type="tel" id="resp-phone" value="'+maskPhone(resp.updatedPhone)+'" disabled data-masked="1">')
+    +'<label>Nama PIC</label>'
+    +'<input type="text" id="resp-pic" value="'+(resp.namaPic||'')+'" placeholder="Nama PIC yang dihubungi">'
     +'<label>Status WA</label>'
     +'<select id="resp-wa">'
     +'<option value="unchecked"'+(resp.waStatus==='unchecked'?' selected':'')+'>Belum dicek</option>'
@@ -8565,6 +8577,8 @@ function saveResp(){
   // Kalau field disamarkan (nggak canSeePhone), value-nya cuma teks mask ("0812••••34") -- BUKAN
   // input beneran, jangan divalidasi/dipakai buat overwrite. Preserve punya lama (lihat di bawah).
   var phone=phoneEl.dataset.masked?'':phoneEl.value.trim();
+  var picEl=document.getElementById('resp-pic');
+  var namaPic=((picEl&&picEl.value)||'').trim();
   var wa=document.getElementById('resp-wa').value;
   var note=document.getElementById('resp-note').value.trim();
   var evidEl2=document.getElementById('resp-response-evidence');
@@ -8572,6 +8586,10 @@ function saveResp(){
   var npsEvidEl=document.getElementById('resp-nps-evidence');
   var npsEvidenceIn=((npsEvidEl&&npsEvidEl.value)||'').trim();
   if(phone&&!isValidPhone(phone)){toast('Nomor HP tidak valid (min 10 digit)');return;}
+  // 2 Okt (keputusan operator): wajib CUMA kalau field-nya genuinely kekliatan/editable
+  // (!phoneEl.dataset.masked, canSeePhone=true) -- user yang field-nya disamarkan (nggak punya akses)
+  // TETAP bisa save update lain tanpa kesandung field yang emang nggak bisa mereka edit.
+  if(!phoneEl.dataset.masked&&!phone){toast('⚠ Nomor HP yang Aktif Berkomunikasi Deal wajib diisi');return;}
   var catFinal=cat||null;
   var detailFinal=detail||null;
 
@@ -8604,7 +8622,7 @@ function saveResp(){
   var prevCat=prevResp.category||null,prevDetail=prevResp.detail||null;
 
   var normP=phone?normPhone(phone):null;
-  r.response={category:catFinal,detail:detailFinal,evidenceLink:evidenceLink||prevResp.evidenceLink||null,updatedPhone:normP||prevResp.updatedPhone||null,waStatus:wa,note:note,updatedAt:new Date().toISOString(),updatedBy:me};
+  r.response={category:catFinal,detail:detailFinal,evidenceLink:evidenceLink||prevResp.evidenceLink||null,updatedPhone:normP||prevResp.updatedPhone||null,namaPic:namaPic||prevResp.namaPic||null,waStatus:wa,note:note,updatedAt:new Date().toISOString(),updatedBy:me};
 
   // 4 Agu: Evidence NPS -- object TERPISAH (r.nps), bukan bagian r.response. Ganti evidence ->
   // status balik jadi Pending (perlu direview ulang) + reset reject reason. Sama isi -> preserve
@@ -10403,7 +10421,12 @@ function mergeResponseFromRemote(local,remoteRow){
     detail:String(remoteRow['Keterangan']||'').trim()||(local&&local.detail)||null,
     note:String(remoteRow['Note']||'').trim()||(local&&local.note)||null,
     evidenceLink:String(remoteRow['Link Evidence']||'').trim()||(local&&local.evidenceLink)||null,
-    updatedPhone:(local&&local.updatedPhone)||null,
+    // 2 Okt: updatedPhone/namaPic SEKARANG beneran round-trip ke server ("Nomor Pelanggan (Dashboard)"/
+    // "Nama PIC (Dashboard)") -- remote menang kalau ada isinya, sama pola kayak category/detail/note
+    // di atas (dulu updatedPhone cuma local, nggak pernah ke-overwrite dari remote karena memang nggak
+    // pernah ke-kirim ke server sama sekali).
+    updatedPhone:String(remoteRow['Nomor Pelanggan (Dashboard)']||'').trim()||(local&&local.updatedPhone)||null,
+    namaPic:String(remoteRow['Nama PIC (Dashboard)']||'').trim()||(local&&local.namaPic)||null,
     waStatus:(local&&local.waStatus)||'unchecked',
     updatedAt:remoteRow['Last Edit At']||'',
     updatedBy:remoteRow['Last Edit By']||''
