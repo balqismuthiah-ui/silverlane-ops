@@ -3781,7 +3781,7 @@ function mkRec(id,name,expiry,phone,agent,blastSt,email,pkg){
     blastDate:blasted?'2026-06-10T08:30:00':null,
     lastBlastAt:blasted?'2026-06-10T08:30:00':null,
     invoiced:false,paymentStatus:null,
-    response:{category:null,detail:null,note:'',updatedPhone:null,namaPic:null,waStatus:'unchecked',updatedAt:null,updatedBy:null},
+    response:{category:null,detail:null,note:'',updatedPhone:null,namaPic:null,kompetitor:null,waStatus:'unchecked',updatedAt:null,updatedBy:null},
     upsell:{maps:null,playstore:null,hardware:null}, // CLM-08 (4b): hardware = platform ke-3
     blastLog:{} // CLM-05 #25: {[cpKey]: {status,sentAt,broadcastName}} dari sync BROADCASTLOG CLARA
   };
@@ -4042,12 +4042,12 @@ function _gasPostUnchained(payload){
 //     (= dirty-check mati total, balik ke bug semula)
 function respSheetFingerprint(resp,agent,npsEvidence){
   resp=resp||{};
-  // 2 Okt: updatedPhone/namaPic ditambahin -- dua field ini SEKARANG beneran ke-kirim ke server
-  // (buildWbPayload), BUKAN local-only lagi kayak dulu. Kalau nggak diikutin fingerprint, edit yang
-  // CUMA ganti phone/PIC (nggak nyentuh kategori/detail/note/evidence) nggak akan pernah ke-detect
-  // dirty -> writeBackResponse nggak pernah dipanggil -> perubahan ilang senyap, nggak pernah nyampe
-  // sheet. waStatus TETAP di luar fingerprint (tetap local-only by design).
-  return JSON.stringify([resp.category||null,resp.detail||null,resp.note||'',resp.evidenceLink||null,agent||'',npsEvidence||'',resp.updatedPhone||'',resp.namaPic||'']);
+  // 2 Okt: updatedPhone/namaPic/kompetitor ditambahin -- field-field ini SEKARANG beneran ke-kirim ke
+  // server (buildWbPayload), BUKAN local-only lagi kayak dulu. Kalau nggak diikutin fingerprint, edit
+  // yang CUMA ganti phone/PIC/kompetitor (nggak nyentuh kategori/detail/note/evidence) nggak akan
+  // pernah ke-detect dirty -> writeBackResponse nggak pernah dipanggil -> perubahan ilang senyap,
+  // nggak pernah nyampe sheet. waStatus TETAP di luar fingerprint (tetap local-only by design).
+  return JSON.stringify([resp.category||null,resp.detail||null,resp.note||'',resp.evidenceLink||null,agent||'',npsEvidence||'',resp.updatedPhone||'',resp.namaPic||'',resp.kompetitor||'']);
 }
 function buildWbPayload(r,me){
   var resp=r.response||{};
@@ -4062,11 +4062,12 @@ function buildWbPayload(r,me){
     'Keterangan':resp.detail||'',
     'Note':resp.note||'',
     'Link Evidence':resp.evidenceLink||'',
-    // 2 Okt: GAS DASHBOARD_WRITABLE_FIELD_MAP_ udah lama siap buat 2 field ini (ditulis ke "Nama PIC
-    // (Dashboard)"/"Nomor Pelanggan (Dashboard)", lalu auto ke-recompute ke "...(Gabungan)"/"Nomor
-    // Gabungan") -- form input-nya baru dibangun sekarang.
+    // 2 Okt: GAS DASHBOARD_WRITABLE_FIELD_MAP_ udah lama siap buat field-field ini (ditulis ke "Nama PIC
+    // (Dashboard)"/"Nomor Pelanggan (Dashboard)"/"Kompetitor (Dashboard)", lalu auto ke-recompute ke
+    // "...(Gabungan)"/"Nomor Gabungan") -- form input-nya baru dibangun sekarang.
     'Nama PIC':resp.namaPic||'',
     'Nomor Pelanggan':resp.updatedPhone||'',
+    'Kompetitor':resp.kompetitor||'',
     'NPS Evidence':(r.nps&&r.nps.evidence)||'',
     'Tgl Response':now,
     'Agen':r.assignedAgent||'',
@@ -8481,6 +8482,8 @@ function openResp(id){
     +'<div id="resp-detail-wrap"><label>Detail</label><select id="resp-detail">'+detailOpts+'</select></div>'
     +'<div id="resp-evidence-wrap"><label id="resp-evidence-lbl">Evidence (link chat / screenshot)</label>'
     +'<input type="text" id="resp-response-evidence" value="'+(resp.evidenceLink||'')+'" placeholder="https://... — WAJIB kalau kategori RESPON NEGATIF"></div>'
+    +'<div id="resp-kompetitor-wrap" style="display:none"><label id="resp-kompetitor-lbl">Nama Kompetitor</label>'
+    +'<input type="text" id="resp-kompetitor" value="'+(resp.kompetitor||'')+'" placeholder="Nama kompetitor tujuan pindah"></div>'
     +'<label>Nomor HP yang Aktif Berkomunikasi dengan Kamu'+(canSeePhone?' <span style="color:var(--red)">*wajib</span>':' <span style="color:var(--tx3);font-weight:400">— disamarkan, cuma agen terkait/leader yg bisa lihat & ubah</span>')+'</label>'
     +(canSeePhone
       ?'<input type="tel" id="resp-phone" value="'+(resp.updatedPhone||'')+'" placeholder="628xxx...">'
@@ -8523,6 +8526,19 @@ function openResp(id){
   }
   updateEvidenceHint(resp.category);
 
+  // 2 Okt: Nama Kompetitor cuma wajib/keliatan kalau Keterangan yang dipilih salah satu dari 4 opsi
+  // "PINDAH KE KOMPETITOR - *" (SUMMARY_CHURN_BUCKETS['Kompetitor'], taksonomi udah ada, reuse bukan
+  // nebak ulang) -- bukan dari Kategori, karena itu nested di bawah RESPON NEGATIF bareng alasan lain.
+  function updateKompetitorHint(detail){
+    var wrap=document.getElementById('resp-kompetitor-wrap');
+    var lbl=document.getElementById('resp-kompetitor-lbl');
+    if(!wrap||!lbl)return;
+    var isKompetitor=SUMMARY_CHURN_BUCKETS['Kompetitor'].indexOf(detail)>=0;
+    wrap.style.display=isKompetitor?'':'none';
+    lbl.innerHTML='Nama Kompetitor'+(isKompetitor?' <span style="color:var(--red)">*wajib</span>':' <span style="color:var(--tx3);font-weight:400">(opsional)</span>');
+  }
+  updateKompetitorHint(resp.detail);
+
   document.getElementById('resp-cat').addEventListener('change',function(e){
     var cat=e.target.value;
     updateEvidenceHint(cat);
@@ -8537,6 +8553,10 @@ function openResp(id){
         if(opts.length===1)sel.value=opts[0];
       }
     }else{sel.innerHTML='<option value="">—</option>';}
+    updateKompetitorHint(sel.value);
+  });
+  document.getElementById('resp-detail').addEventListener('change',function(e){
+    updateKompetitorHint(e.target.value);
   });
   openModal('resp-modal');
 }
@@ -8579,6 +8599,8 @@ function saveResp(){
   var phone=phoneEl.dataset.masked?'':phoneEl.value.trim();
   var picEl=document.getElementById('resp-pic');
   var namaPic=((picEl&&picEl.value)||'').trim();
+  var kompEl=document.getElementById('resp-kompetitor');
+  var kompetitor=((kompEl&&kompEl.value)||'').trim();
   var wa=document.getElementById('resp-wa').value;
   var note=document.getElementById('resp-note').value.trim();
   var evidEl2=document.getElementById('resp-response-evidence');
@@ -8596,6 +8618,11 @@ function saveResp(){
   // P0-2: evidence wajib utk RESPON NEGATIF (PAID CRM/Self Onboard exempt otomatis krn beda kategori)
   if(catFinal==='RESPON NEGATIF'&&!evidenceLink){
     toast('⚠ Evidence (link chat/screenshot) wajib untuk Respon Negatif');
+    return;
+  }
+  // 2 Okt: Nama Kompetitor wajib kalau detail salah satu dari 4 opsi "PINDAH KE KOMPETITOR - *"
+  if(SUMMARY_CHURN_BUCKETS['Kompetitor'].indexOf(detailFinal)>=0&&!kompetitor){
+    toast('⚠ Wajib input Nama Kompetitor untuk alasan Pindah ke Kompetitor');
     return;
   }
 
@@ -8622,7 +8649,7 @@ function saveResp(){
   var prevCat=prevResp.category||null,prevDetail=prevResp.detail||null;
 
   var normP=phone?normPhone(phone):null;
-  r.response={category:catFinal,detail:detailFinal,evidenceLink:evidenceLink||prevResp.evidenceLink||null,updatedPhone:normP||prevResp.updatedPhone||null,namaPic:namaPic||prevResp.namaPic||null,waStatus:wa,note:note,updatedAt:new Date().toISOString(),updatedBy:me};
+  r.response={category:catFinal,detail:detailFinal,evidenceLink:evidenceLink||prevResp.evidenceLink||null,updatedPhone:normP||prevResp.updatedPhone||null,namaPic:namaPic||prevResp.namaPic||null,kompetitor:kompetitor||prevResp.kompetitor||null,waStatus:wa,note:note,updatedAt:new Date().toISOString(),updatedBy:me};
 
   // 4 Agu: Evidence NPS -- object TERPISAH (r.nps), bukan bagian r.response. Ganti evidence ->
   // status balik jadi Pending (perlu direview ulang) + reset reject reason. Sama isi -> preserve
@@ -10427,6 +10454,10 @@ function mergeResponseFromRemote(local,remoteRow){
     // pernah ke-kirim ke server sama sekali).
     updatedPhone:String(remoteRow['Nomor Pelanggan (Dashboard)']||'').trim()||(local&&local.updatedPhone)||null,
     namaPic:String(remoteRow['Nama PIC (Dashboard)']||'').trim()||(local&&local.namaPic)||null,
+    // 'Kompetitor (Gabungan)' (bukan cuma Dashboard) -- beda dari namaPic/updatedPhone yang cuma
+    // punya 1 sumber (Dashboard), Kompetitor di-dedupe dari 3 sumber (Dashboard+TC+Report) server-side,
+    // jadi field ini muncul "response gabungan"-nya langsung pas form dibuka ulang.
+    kompetitor:String(remoteRow['Kompetitor (Gabungan)']||'').trim()||(local&&local.kompetitor)||null,
     waStatus:(local&&local.waStatus)||'unchecked',
     updatedAt:remoteRow['Last Edit At']||'',
     updatedBy:remoteRow['Last Edit By']||''
