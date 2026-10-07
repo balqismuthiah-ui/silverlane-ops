@@ -3806,6 +3806,11 @@ var wsAgentFilter=[]; // CLM-08 (e): multi-select, array kosong = semua agen
 var wsPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
 var wsMonthFilter=[],wsTerminFilter=[],wsHwczFilter=[]; // 18 Agu: filter Periode/Termin/Potensi(HWCZ), pola sama Master&Assign/Blast
 var wsSortDir='asc'; // 19 Agu: sort by Exp (Historical) -- 'asc'=paling deket jatuh tempo dulu (workorder), 'desc'=kebalikannya
+// 7 Okt (request operator): filter rentang tanggal Exp (Historical) start-end (lebih presisi dari
+// wsMonthFilter yang per-bulan doang), + klik header buat sort (ganti dari 1 tombol khusus Exp
+// Historical doang jadi generik semua kolom yang masuk akal diurutin). wsSortCol default 'expHist'
+// biar behavior lama (sort default by Exp Historical asc) TETAP sama, nol regresi buat yang udah biasa.
+var wsExpStart='',wsExpEnd='',wsSortCol='expHist';
 var wsCountText=''; // CLM-08: teks counter #ws-count, di-set wsRows() -- lihat catatan masterCountText
 var mSearch='',mAgent=[],mBlast=[],mResp=[]; // CLM-08 (e): semua multi-select (array kosong = semua)
 var mPayment=[]; // CLM-08 (c)+(e): filter Status Pembayaran, multi-select
@@ -6060,6 +6065,18 @@ function wsFilteredRecs(d,me,isSup){
   }
   if(wsTerminFilter.length)pool=pool.filter(function(r){return wsTerminFilter.indexOf(r.termin)>=0;});
   if(wsHwczFilter.length)pool=pool.filter(function(r){return wsHwczFilter.indexOf(String(r.hwcz||'').trim())>=0;});
+  // 7 Okt: filter rentang tanggal Exp (Historical) -- expiredDateHistorical udah 'YYYY-MM-DD' (lihat
+  // localDateStr di sumbernya), sama format kayak value <input type="date">, jadi perbandingan string
+  // langsung valid (sama pola comparison yang udah dipake wsRows buat sort).
+  if(wsExpStart||wsExpEnd){
+    pool=pool.filter(function(r){
+      var h=r.expiredDateHistorical;
+      if(!h)return false;
+      if(wsExpStart&&h<wsExpStart)return false;
+      if(wsExpEnd&&h>wsExpEnd)return false;
+      return true;
+    });
+  }
   if(!wsSearch)return pool;
   var s=wsSearch.toLowerCase();
   // CLM-05 UX fix (operator 13 Jul): guard toLowerCase -- ADA record dgn id/outletName null di pool
@@ -6076,14 +6093,27 @@ function wsRows(d,me,isSup){
   var cnt=document.getElementById('ws-count');
   if(cnt)cnt.textContent=wsCountText;
   if(!recs.length)return'<tr><td colspan="12" class="empty">Tidak ada data</td></tr>';
-  // 19 Agu (request operator): sort by Exp (Historical) -- itu yg jadi acuan workorder agen, bukan
-  // urutan sync/insert. Kosong (nggak ada info) selalu ke belakang, apa pun arah sort-nya.
+  // 19 Agu (request operator): sort by Exp (Historical) default -- itu yg jadi acuan workorder agen,
+  // bukan urutan sync/insert. 7 Okt: digeneralisir, leader/agen sekarang bisa klik header kolom lain
+  // (ID/Nama Outlet/Expired Latest/Agen) jg -- wsSortCol nentuin kolom mana, kosong tetap SELALU ke
+  // belakang independen dari arah sort (pola lama dipertahankan, cuma diterapin ke semua kolom date).
   recs=recs.slice().sort(function(a,b){
-    var ha=a.expiredDateHistorical||'',hb=b.expiredDateHistorical||'';
-    if(!ha&&!hb)return 0;
-    if(!ha)return 1;
-    if(!hb)return-1;
-    return wsSortDir==='asc'?ha.localeCompare(hb):hb.localeCompare(ha);
+    var dir=wsSortDir==='asc'?1:-1;
+    function cmpEmptyLast(va,vb){
+      if(!va&&!vb)return 0;
+      if(!va)return 1;
+      if(!vb)return-1;
+      return dir>0?va.localeCompare(vb):vb.localeCompare(va);
+    }
+    if(wsSortCol==='id'){
+      var na=parseFloat(a.id),nb=parseFloat(b.id);
+      if(!isNaN(na)&&!isNaN(nb)&&na!==nb)return(na-nb)*dir;
+      return String(a.id||'').localeCompare(String(b.id||''))*dir;
+    }
+    if(wsSortCol==='outletName')return String(a.outletName||'').localeCompare(String(b.outletName||''))*dir;
+    if(wsSortCol==='expLatest')return cmpEmptyLast(a.expiryDate||'',b.expiryDate||'');
+    if(wsSortCol==='agen')return String(a.assignedAgent||'').localeCompare(String(b.assignedAgent||''))*dir;
+    return cmpEmptyLast(a.expiredDateHistorical||'',b.expiredDateHistorical||''); // default: expHist
   });
   var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
   wsPage=Math.min(wsPage,totalPages-1);
@@ -6121,6 +6151,31 @@ function wsRows(d,me,isSup){
   }).join('')+pagerRow(12,wsPage,totalPages,recs.length,'ws-prev-btn','ws-next-btn');
 }
 
+// 7 Okt: header tabel My Worksheet, kolom yang masuk akal diurutin (ID/Nama Outlet/2 kolom
+// tanggal/Agen) jadi clickable -- klik kolom yang sama toggle asc/desc, klik kolom lain pindah ke situ
+// (default asc). Ganti dari 1 tombol khusus "Exp (Historical)" doang jadi generik semua kolom ini.
+function wsHeaderHtml(){
+  function th(label,col){
+    if(!col)return'<th>'+label+'</th>';
+    var arrow=wsSortCol===col?(wsSortDir==='asc'?' ▲':' ▼'):'';
+    return'<th class="ws-th-sort" data-sort="'+col+'" style="cursor:pointer;user-select:none" title="Urutkan '+label+'">'+label+arrow+'</th>';
+  }
+  return'<tr><th><input type="checkbox" id="ws-chk-all"></th>'
+    +th('ID','id')+th('Nama Outlet','outletName')+th('Exp (Historical)','expHist')+th('Expired (Latest)','expLatest')
+    +'<th>HP Utama</th><th>HP Update</th>'+th('Agen','agen')
+    +'<th>Blast</th><th>Respon</th><th>WA</th><th>Aksi</th></tr>';
+}
+function wsSortHeaderClick(col){
+  if(wsSortCol===col){wsSortDir=wsSortDir==='asc'?'desc':'asc';}else{wsSortCol=col;wsSortDir='asc';}
+  var allChk=document.getElementById('ws-chk-all');
+  var wasChecked=allChk&&allChk.checked;
+  var theadTr=document.querySelector('#tab-content thead tr');
+  if(theadTr)theadTr.outerHTML=wsHeaderHtml();
+  var allChk2=document.getElementById('ws-chk-all');
+  if(allChk2)allChk2.checked=wasChecked;
+  refreshWsBody();
+}
+
 function renderWorksheet(){
   var d=Store.get();
   var me=Auth.getActive();
@@ -6140,10 +6195,12 @@ function renderWorksheet(){
   var monthFilterHtml=renderMultiSelect('wsMonthFilter','Periode',wsBulanOptsArr,wsMonthFilter);
   var terminFilterHtml=renderMultiSelect('wsTerminFilter','Termin',[{value:'Bulanan',label:'Bulanan'},{value:'Tahunan',label:'Tahunan'}],wsTerminFilter);
   var hwczFilterHtml=renderMultiSelect('wsHwczFilter','Potensi (HWCZ)',blastHwczOpts(),wsHwczFilter);
-  // 19 Agu: tombol sort by Exp (Historical) -- toggle asc/desc, default asc (jatuh tempo paling
-  // deket duluan, cocok buat kerja workorder harian).
-  var sortBtnHtml='<button class="btn btn-sec" id="ws-sort-btn" style="padding:5px 12px;font-size:12px" title="Urutkan berdasarkan Exp (Historical)">'
-    +(wsSortDir==='asc'?'⬆️ Exp (Historical)':'⬇️ Exp (Historical)')+'</button>';
+  // 7 Okt (request operator): filter rentang tanggal Exp (Historical) -- start/end, lebih presisi
+  // dari wsMonthFilter yang per-bulan doang. Sort sekarang klik header (lihat wsHeaderHtml), tombol
+  // "Exp (Historical)" terpisah DIHAPUS -- header kolomnya sendiri yang jadi kontrolnya.
+  var expRangeHtml='<input type="date" id="ws-exp-start" value="'+wsExpStart+'" title="Dari tanggal (Exp Historical)" style="padding:6px 8px;font-size:12px;border:1px solid var(--bd);border-radius:6px;background:var(--bg2);color:var(--tx)">'
+    +'<span style="font-size:11px;color:var(--tx3);align-self:center">s/d</span>'
+    +'<input type="date" id="ws-exp-end" value="'+wsExpEnd+'" title="Sampai tanggal (Exp Historical)" style="padding:6px 8px;font-size:12px;border:1px solid var(--bd);border-radius:6px;background:var(--bg2);color:var(--tx)">';
   // Hitung rows + counter DULU (sama pola kayak renderMaster) -- biar #ws-count keisi benar
   // di render PERTAMA, bukan cuma pas filter berikutnya.
   var wsRowsHtml=wsRows(d,me,isSup);
@@ -6156,7 +6213,7 @@ function renderWorksheet(){
     +monthFilterHtml
     +terminFilterHtml
     +hwczFilterHtml
-    +sortBtnHtml
+    +expRangeHtml
     // 18 Jul (Ubay approve): tombol Sync Upsell buat agen. Klaim upsell dulu cuma auto-sync ON-LOAD
     // (nggak ada poll interval -- keputusan kuota/GATE 3), jadi agen mesti reload buat lihat hasil
     // validasi leader (approved/rejected). Tombol ini = tarik terbaru tanpa reload penuh. Reuse id
@@ -6175,7 +6232,7 @@ function renderWorksheet(){
     +'<span id="ws-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+wsCountText+'</span>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr><th><input type="checkbox" id="ws-chk-all"></th><th>ID</th><th>Nama Outlet</th><th>Exp (Historical)</th><th>Expired (Latest)</th><th>HP Utama</th><th>HP Update</th><th>Agen</th><th>Blast</th><th>Respon</th><th>WA</th><th>Aksi</th></tr></thead>'
+    +'<thead>'+wsHeaderHtml()+'</thead>'
     +'<tbody id="ws-tbody">'+wsRowsHtml+'</tbody>'
     +'</table></div></div>';
 
@@ -10726,7 +10783,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='sync-gas-btn')syncFromGAS();
   else if(tgt.id==='sync-assign-btn')syncAssignOnly();
   else if(tgt.id==='sync-data-self-btn')syncDataSelfMultiMonth(); // 18 Agu: gantiin tombol 'sync-assign-self-btn' lama (dihapus, redundan)
-  else if(tgt.id==='ws-sort-btn'){wsSortDir=wsSortDir==='asc'?'desc':'asc';refreshWsBody();var sb=document.getElementById('ws-sort-btn');if(sb)sb.textContent=(wsSortDir==='asc'?'⬆️ Exp (Historical)':'⬇️ Exp (Historical)');}
+  else if(tgt.classList&&tgt.classList.contains('ws-th-sort'))wsSortHeaderClick(tgt.dataset.sort); // 7 Okt: ganti dari tombol khusus Exp(Historical) ke klik-header generik
   else if(tgt.id==='sync-resp-btn')syncResponsesOnly();
   else if(tgt.id==='sync-upsell-btn')syncUpsellOnly();
   else if(tgt.id==='sync-blastlog-btn')syncBroadcastLogOnly();
@@ -10950,6 +11007,8 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='daily-view-mode-sel'){dailyViewSeriesMode=tgt.value;renderTab('overview');return;} // 25 Jul: dropdown kumulatif/harian
   if(tgt.id==='dv-compare-month-sel'){dvCompareMonth=tgt.value;renderTab('overview');return;} // 19 Agu: bulan pembanding Daily View bebas pilih
   if(tgt.id==='invsum-month'){invsumMonth=tgt.value;renderTab('invsummary');return;}
+  if(tgt.id==='ws-exp-start'){wsExpStart=tgt.value;refreshWsBody();return;}
+  if(tgt.id==='ws-exp-end'){wsExpEnd=tgt.value;refreshWsBody();return;}
   if(tgt.id==='mj-gran-sel'){myJourneyGranularity=tgt.value;renderTab('myjourney');return;}
   if(tgt.id==='mj-day-sel'){myJourneyDaySel=tgt.value;renderTab('myjourney');return;}
   if(tgt.id==='mj-week-sel'){myJourneyWeekAnchor=tgt.value;renderTab('myjourney');return;}
