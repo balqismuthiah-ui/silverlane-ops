@@ -1448,7 +1448,11 @@ function computeRenewalArpuPersonal(period,agentName){
 // matchAgentFuzzy) -- exclude outlet yang ada di MultioutletStore (hand-curated, sync via
 // syncMultioutletList). agentName null = team-wide (semua agen digabung, dipake kartu "⭐ Rating &
 // Review"); agentName diisi = per-agen (dipake "Ringkasan per Agen").
-function computeNpsAutoTarget(period,agentName){
+// 8 Okt: factored out dari computeNpsAutoTarget -- jumlah PAID renewal ground-truth (distinct
+// outletId dari renewalsRaw/UpsellTeamStore, multioutlet-excluded, match agent via creatorName
+// fuzzy) TANPA ×0.8. Dipake bareng computeNpsAutoTarget (target) DAN ratio "NPS vs Paid CX"
+// (observasi murni, bukan target) -- satu sumber kebenaran biar 2 angka itu nggak pernah ketuker.
+function computeRenewalPaidCxCount_(period,agentName){
   var fin=period?UpsellTeamStore.getMonth(period):null;
   if(!fin||!fin.renewalsRaw||!fin.renewalsRaw.length)return 0;
   var agents=AgentsConfig.getAll();
@@ -1459,8 +1463,10 @@ function computeNpsAutoTarget(period,agentName){
   });
   var outletSet={};var hasOutletId=false;
   rows.forEach(function(r){if(r.outletId){hasOutletId=true;outletSet[r.outletId]=true;}});
-  var denom=hasOutletId?Object.keys(outletSet).length:rows.length;
-  return Math.round(denom*0.8);
+  return hasOutletId?Object.keys(outletSet).length:rows.length;
+}
+function computeNpsAutoTarget(period,agentName){
+  return Math.round(computeRenewalPaidCxCount_(period,agentName)*0.8);
 }
 // 10-11 Agu (operator): "My Journey" -- laporan performa personal per-agen, granularitas day/week/
 // month/year, lintas berapa pun bulan UpsellTeamStore yang KEBETULAN udah tersync (UpsellTeamStore
@@ -4659,9 +4665,9 @@ function renderOverview(){
       // nggak bisa dibagi rata dari 1 angka team kayak Rating Maps/Apps).
       var aNpsTarget=computeNpsAutoTarget(currentMonthKey,ag);
       var npsCell=aNpsTarget?(aNps+'/'+aNpsTarget):('😊'+aNps);
-      // 8 Okt (request operator): NPS vs Paid CX per-agen, reuse aRecs yang udah di-scope cohort bulan
-      // berjalan (sama pola persis aRenew di atas, cuma ditambah filter detail PAID CRM).
-      var aPaidCx=aRecs.filter(function(r){return respOutcome(r.response)==='renewal'&&r.response&&r.response.detail==='PAID CRM';}).length;
+      // 8 Okt (fix): "Paid" ground-truth renewalsRaw (SAMA sumber persis kayak aNpsTarget di atas),
+      // BUKAN RESPONSES lagi -- lihat catatan panjang di computeRenewalPaidCxCount_.
+      var aPaidCx=computeRenewalPaidCxCount_(currentMonthKey,ag);
       var aNpsVsPaidPct=aPaidCx?Math.round(aNps/aPaidCx*100):0;
       return'<tr><td><strong>'+ag+'</strong></td><td>'+aTotal+'</td><td>'+aBlasted+'</td>'
         +'<td><span class="badge badge-grn">'+aRenew+'</span>'
@@ -4728,15 +4734,11 @@ function renderOverview(){
   // bukan data riil). "0 jujur" kalau belum ada klaim approved sama sekali, no hardcode fallback.
   var mapsAch=valMaps, appsAch=valApps;
   var npsAch=npsAchTeam;
-  // 8 Okt (request operator): NPS approved vs Renewal Paid CX-ONLY (exclude Self Onboard) -- detail
-  // 'PAID SELF ONBOARD' vs 'PAID CRM' udah ke-set otomatis pas payment (respOutcome/auto-mark
-  // response), tinggal filter detail-nya, nggak perlu re-derive dari pembayaranMelalui lagi.
-  // Multioutlet exclusion SENGAJA belum dipasang di sini (operator: "itu dulu baru nanti layer
-  // exclude multi") -- beda dari computeNpsAutoTarget yang udah exclude, metrik ini observasi murni.
-  var renewalPaidCxMonth=allRecs.filter(function(r){
-    return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0
-      &&respOutcome(r.response)==='renewal'&&r.response&&r.response.detail==='PAID CRM';
-  }).length;
+  // 8 Okt (fix, request operator): "Paid" buat ratio NPS vs Paid CX SEKARANG renewalsRaw ground-truth
+  // (UpsellTeamStore, SAMA sumber+exclusion kayak computeNpsAutoTarget -- computeRenewalPaidCxCount_),
+  // BUKAN RESPONSES/respOutcome lagi. Versi pertama (RESPONSES-based) ternyata nggak nyambung ke NPS
+  // Target (yang emang dari renewalsRaw+multioutlet-exclude) -- operator notice 61 vs ~52 nggak match.
+  var renewalPaidCxMonth=computeRenewalPaidCxCount_(currentMonthKey,null);
   var npsVsPaidCxPct=renewalPaidCxMonth?Math.round(npsAch/renewalPaidCxMonth*100):0;
   function fmtRp(n){
     if(n>=1000000000)return'Rp '+(n/1000000000).toFixed(1).replace('.',',')+'M';
@@ -4795,9 +4797,12 @@ function renderOverview(){
       +'<div>🎯 Rating vs Target: <strong>'+(mapsAch+appsAch)+'</strong>/'+(REVIEW_TARGET_MAPS+REVIEW_TARGET_APPS)+'</div>'
       +'<div>😊 NPS: <strong>'+npsSub+'</strong> submission → <strong style="color:var(--grn)">'+npsAppr+'</strong> approved → <strong style="color:var(--red)">'+npsRej+'</strong> reject</div>'
       // 8 Okt (request operator): ratio NPS vs Paid CX bulan berjalan -- BEDA dari baris di atas yang
-      // all-time funnel submission/approved/reject. npsAch/renewalPaidCxMonth udah di-scope currentMonthKey.
+      // all-time funnel submission/approved/reject. "Paid CX" di sini ground-truth renewalsRaw
+      // (computeRenewalPaidCxCount_, SAMA sumber kayak NPS Target), BUKAN RESPONSES -- makanya nggak
+      // dipasang jadi anotasi di baris "Renewal Paid" di bawah (itu TETAP RESPONSES-based, 2 sumber
+      // beda, nggak dicampur di 1 angka biar nggak nyesatin).
       +'<div>😊 NPS vs Paid CX (bulan ini): <strong>'+npsAch+'</strong>/'+renewalPaidCxMonth+(renewalPaidCxMonth?' ('+npsVsPaidCxPct+'%)':'')+' approved</div>'
-      +'<div>💰 Renewal Paid (bulan ini): <strong>'+renewalPaidMonth+'</strong> <span style="color:var(--tx3);font-size:11px">('+renewalPaidCxMonth+' CX-only)</span></div>'
+      +'<div>💰 Renewal Paid (bulan ini): <strong>'+renewalPaidMonth+'</strong></div>'
       +'<div style="margin-top:6px"><a href="javascript:void(0)" onclick="renderTab(\'ratingnps\')" style="color:var(--pri)">Lihat detail Rating &amp; NPS →</a></div>'
       +'</div></div>';
   }
