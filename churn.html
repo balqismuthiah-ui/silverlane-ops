@@ -4659,6 +4659,10 @@ function renderOverview(){
       // nggak bisa dibagi rata dari 1 angka team kayak Rating Maps/Apps).
       var aNpsTarget=computeNpsAutoTarget(currentMonthKey,ag);
       var npsCell=aNpsTarget?(aNps+'/'+aNpsTarget):('😊'+aNps);
+      // 8 Okt (request operator): NPS vs Paid CX per-agen, reuse aRecs yang udah di-scope cohort bulan
+      // berjalan (sama pola persis aRenew di atas, cuma ditambah filter detail PAID CRM).
+      var aPaidCx=aRecs.filter(function(r){return respOutcome(r.response)==='renewal'&&r.response&&r.response.detail==='PAID CRM';}).length;
+      var aNpsVsPaidPct=aPaidCx?Math.round(aNps/aPaidCx*100):0;
       return'<tr><td><strong>'+ag+'</strong></td><td>'+aTotal+'</td><td>'+aBlasted+'</td>'
         +'<td><span class="badge badge-grn">'+aRenew+'</span>'
         +'<div class="prog-bar" style="margin-top:2px"><div class="prog-fill" style="width:'+Math.min(aTotal?aRenew/aTotal*100:0,100)+'%;background:var(--grn)"></div></div>'
@@ -4667,7 +4671,8 @@ function renderOverview(){
         +'<td><span class="badge badge-yel">'+aFu+'</span></td>'
         +'<td><span class="badge badge-gray">'+aNo+'</span></td>'
         +'<td><span style="font-size:11px;color:var(--tx2)">📍'+aMaps+'/'+PER_AGENT_REVIEW_MAPS+' &nbsp;📱'+aApps+'/'+PER_AGENT_REVIEW_APPS+'</span></td>'
-        +'<td><span style="font-size:11px;color:var(--tx2)">'+npsCell+'</span></td>'
+        +'<td><span style="font-size:11px;color:var(--tx2)">'+npsCell+'</span>'
+        +'<div style="font-size:10px;color:var(--tx3)">vs Paid CX: '+aNps+'/'+aPaidCx+(aPaidCx?' ('+aNpsVsPaidPct+'%)':'')+'</div></td>'
         +'<td style="color:'+convClr+'">'+mpct+'%<div class="prog-bar"><div class="prog-fill" style="width:'+Math.min(convTargetImp?mpct/convTargetImp*100:0,100)+'%;background:'+convClr+'"></div></div>'
         +'<div style="font-size:10px;color:var(--tx3)">'+aConv.moving+'/'+aConv.total+' Hot'+(aConv.total?'':' <span title="nol Hot bulan ini">—</span>')+'</div>'
         +'<div style="font-size:10px;color:var(--tx3)">respons: '+pct+'%</div></td></tr>';
@@ -4723,6 +4728,16 @@ function renderOverview(){
   // bukan data riil). "0 jujur" kalau belum ada klaim approved sama sekali, no hardcode fallback.
   var mapsAch=valMaps, appsAch=valApps;
   var npsAch=npsAchTeam;
+  // 8 Okt (request operator): NPS approved vs Renewal Paid CX-ONLY (exclude Self Onboard) -- detail
+  // 'PAID SELF ONBOARD' vs 'PAID CRM' udah ke-set otomatis pas payment (respOutcome/auto-mark
+  // response), tinggal filter detail-nya, nggak perlu re-derive dari pembayaranMelalui lagi.
+  // Multioutlet exclusion SENGAJA belum dipasang di sini (operator: "itu dulu baru nanti layer
+  // exclude multi") -- beda dari computeNpsAutoTarget yang udah exclude, metrik ini observasi murni.
+  var renewalPaidCxMonth=allRecs.filter(function(r){
+    return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0
+      &&respOutcome(r.response)==='renewal'&&r.response&&r.response.detail==='PAID CRM';
+  }).length;
+  var npsVsPaidCxPct=renewalPaidCxMonth?Math.round(npsAch/renewalPaidCxMonth*100):0;
   function fmtRp(n){
     if(n>=1000000000)return'Rp '+(n/1000000000).toFixed(1).replace('.',',')+'M';
     if(n>=1000000)return'Rp '+(Math.round(n/1000000)).toLocaleString('id-ID')+' jt';
@@ -4779,7 +4794,10 @@ function renderOverview(){
       +'<div>⭐ Rating: <strong>'+ratingSub+'</strong> submission → <strong style="color:var(--grn)">'+ratingAppr+'</strong> approved → <strong style="color:var(--red)">'+ratingRej+'</strong> reject</div>'
       +'<div>🎯 Rating vs Target: <strong>'+(mapsAch+appsAch)+'</strong>/'+(REVIEW_TARGET_MAPS+REVIEW_TARGET_APPS)+'</div>'
       +'<div>😊 NPS: <strong>'+npsSub+'</strong> submission → <strong style="color:var(--grn)">'+npsAppr+'</strong> approved → <strong style="color:var(--red)">'+npsRej+'</strong> reject</div>'
-      +'<div>💰 Renewal Paid (bulan ini): <strong>'+renewalPaidMonth+'</strong></div>'
+      // 8 Okt (request operator): ratio NPS vs Paid CX bulan berjalan -- BEDA dari baris di atas yang
+      // all-time funnel submission/approved/reject. npsAch/renewalPaidCxMonth udah di-scope currentMonthKey.
+      +'<div>😊 NPS vs Paid CX (bulan ini): <strong>'+npsAch+'</strong>/'+renewalPaidCxMonth+(renewalPaidCxMonth?' ('+npsVsPaidCxPct+'%)':'')+' approved</div>'
+      +'<div>💰 Renewal Paid (bulan ini): <strong>'+renewalPaidMonth+'</strong> <span style="color:var(--tx3);font-size:11px">('+renewalPaidCxMonth+' CX-only)</span></div>'
       +'<div style="margin-top:6px"><a href="javascript:void(0)" onclick="renderTab(\'ratingnps\')" style="color:var(--pri)">Lihat detail Rating &amp; NPS →</a></div>'
       +'</div></div>';
   }
@@ -5602,6 +5620,8 @@ function renderOverview(){
     // dipaksa -- "belum dikonfig" nunjukin count polos apa adanya.
     +'<div style="font-size:12px;font-weight:600;color:var(--tx);margin-top:8px">😊 NPS</div>'
     +'<div style="font-size:11px;color:var(--tx2)"><strong>'+npsAch+'</strong>'+(REVIEW_TARGET_NPS?'/'+REVIEW_TARGET_NPS:'')+' approved</div>'
+    // 8 Okt (request operator): ratio tambahan vs Renewal Paid CX-only, taruh di bawah count approved.
+    +'<div style="font-size:10px;color:var(--tx3);margin-top:2px">vs Paid CX: '+npsAch+'/'+renewalPaidCxMonth+(renewalPaidCxMonth?' ('+npsVsPaidCxPct+'%)':'')+'</div>'
     +'</div>'
     +'</div></div>';
 
