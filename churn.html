@@ -4584,8 +4584,16 @@ function renderOverview(){
     // targetValueImproved:null (dikosongin sengaja) HARUS dihormati apa adanya -- BUKAN balik ke fallback
     // hardcode, itu bug (Sekar nggak akan pernah bisa "matiin" tier Improved kalau di-treat kayak
     // belum-dikonfig).
-    if(!t)return{regular:fallbackRegular,improved:fallbackImproved,configured:fallbackRegular!=null};
-    return{regular:t.targetValue,improved:t.targetValueImproved!=null?t.targetValueImproved:null,configured:true};
+    // 8 Okt (fix bug KETEMU operator): `configured` di sini artinya "fallbackRegular yang DIKASIH
+    // CALLER nggak null" -- BUKAN "row-nya BENERAN ada di Targets store". Buat renewal_revenue dkk itu
+    // nggak masalah (fallback dipake apa adanya, interpretasi angkanya nggak berubah). TAPI buat
+    // review_maps/review_playstore (lihat caller di bawah), `configured` DIPAKE nentuin apa targetValue
+    // di-multiply N_AGENTS apa nggak -- `configured:true` palsu (row-nya SEBENARNYA nggak ada, cuma
+    // fallback 400 yang kebetulan non-null) bikin fallback 400 ke-multiply jadi 3600 (400*9), padahal
+    // harusnya tetep flat 400. Tambah `found` (SELALU akurat row-nya genuinely ada apa nggak) biar
+    // caller yang butuh presisi ini (bukan cuma "ada angka buat ditampilin") pakai itu, bukan `configured`.
+    if(!t)return{regular:fallbackRegular,improved:fallbackImproved,configured:fallbackRegular!=null,found:false};
+    return{regular:t.targetValue,improved:t.targetValueImproved!=null?t.targetValueImproved:null,configured:true,found:true};
   }
   var rrT=findTeamTarget('renewal_revenue',1500000000,1620474969);
   var convT=findTeamTarget('renewal_conversion_pct',82,87);
@@ -4607,10 +4615,12 @@ function renderOverview(){
   var PER_AGENT_RENEWAL=Math.round(RENEWAL_TARGET/N_AGENTS);
   // 26 Sep: kalau leader UDAH konfig -> nilai tersimpan ITU SENDIRI udah per-agen, team = per-agen*N.
   // Kalau BELUM dikonfig -> pertahankan perilaku lama apa adanya (400 dibagi N_AGENTS, bukan dikali).
-  var PER_AGENT_REVIEW_MAPS=reviewMapsT.configured?reviewMapsT.regular:Math.round(reviewMapsT.regular/N_AGENTS);
-  var REVIEW_TARGET_MAPS=reviewMapsT.configured?PER_AGENT_REVIEW_MAPS*N_AGENTS:reviewMapsT.regular;
-  var PER_AGENT_REVIEW_APPS=reviewAppsT.configured?reviewAppsT.regular:Math.round(reviewAppsT.regular/N_AGENTS);
-  var REVIEW_TARGET_APPS=reviewAppsT.configured?PER_AGENT_REVIEW_APPS*N_AGENTS:reviewAppsT.regular;
+  // 8 Okt (fix): `.found` (row genuinely ada), BUKAN `.configured` (cuma "fallback non-null") -- lihat
+  // catatan panjang di findTeamTarget di atas. Ini yang bikin fallback 400 kemarin ke-multiply jadi 3600.
+  var PER_AGENT_REVIEW_MAPS=reviewMapsT.found?reviewMapsT.regular:Math.round(reviewMapsT.regular/N_AGENTS);
+  var REVIEW_TARGET_MAPS=reviewMapsT.found?PER_AGENT_REVIEW_MAPS*N_AGENTS:reviewMapsT.regular;
+  var PER_AGENT_REVIEW_APPS=reviewAppsT.found?reviewAppsT.regular:Math.round(reviewAppsT.regular/N_AGENTS);
+  var REVIEW_TARGET_APPS=reviewAppsT.found?PER_AGENT_REVIEW_APPS*N_AGENTS:reviewAppsT.regular;
   // 30 Sep: target NPS SEKARANG computed (80% renewal paid - multioutlet), BUKAN manual Kelola
   // Target lagi -- lihat computeNpsAutoTarget(). Team-wide dulu di sini; per-agen dihitung ULANG
   // di dalam loop agentRows di bawah (targetnya beda-beda per agen, nggak bisa 1 angka dibagi rata).
