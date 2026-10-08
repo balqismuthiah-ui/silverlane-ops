@@ -4738,7 +4738,13 @@ function renderOverview(){
   // (UpsellTeamStore, SAMA sumber+exclusion kayak computeNpsAutoTarget -- computeRenewalPaidCxCount_),
   // BUKAN RESPONSES/respOutcome lagi. Versi pertama (RESPONSES-based) ternyata nggak nyambung ke NPS
   // Target (yang emang dari renewalsRaw+multioutlet-exclude) -- operator notice 61 vs ~52 nggak match.
-  var renewalPaidCxMonth=computeRenewalPaidCxCount_(currentMonthKey,null);
+  // 8 Okt (fix KEDUA, bug ketemu operator): computeRenewalPaidCxCount_(period,null) itu artinya
+  // "nol filter agen" (if(agentName&&...) short-circuit begitu agentName falsy) -- ini BENAR buat
+  // computeNpsAutoTarget(period,null) (target emang didefinisiin company-wide), TAPI SALAH buat "Paid
+  // CX" di sini (ikut ngitung CC/TC/Self Onboard/Sales non-CX juga, bukan cuma tim CX). Fix: SUM
+  // per-agen (konsisten sama konvensi "team = jumlah per-agen" yang udah dipake di tempat lain kayak
+  // Review Maps/Apps), BUKAN panggil sekali dengan agentName=null.
+  var renewalPaidCxMonth=AGENTS.reduce(function(s,ag){return s+computeRenewalPaidCxCount_(currentMonthKey,ag);},0);
   var npsVsPaidCxPct=renewalPaidCxMonth?Math.round(npsAch/renewalPaidCxMonth*100):0;
   function fmtRp(n){
     if(n>=1000000000)return'Rp '+(n/1000000000).toFixed(1).replace('.',',')+'M';
