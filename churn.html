@@ -6778,7 +6778,18 @@ function ratingNpsRowsHtml(all,me,isSup){
     var bs=rnBulkState_(x);
     var evidCell;
     if(!x.evidence)evidCell='<span style="color:var(--tx3)">—</span>';
-    else if(!bs.urls.length)evidCell='<a href="'+x.evidence+'" target="_blank" rel="noopener">🔗 Lihat</a>';
+    else if(!bs.urls.length){
+      // 12 Okt: evidence BUKAN URL (mis. nama file "Review Google Maps X.jpeg" atau deskripsi teks hasil
+      // bridge sync dari kolom Report) -- SEBELUMNYA tetep dirender <a href=teks> -> relatif ke domain
+      // dashboard (clm.ryanza.my.id/Review%20Google...jpeg, 404). Domain tanpa skema -> tambahin https://,
+      // selain itu tampilkan sebagai teks biasa (bukan link).
+      var evTxt=String(x.evidence).trim();
+      if(/^(www\.|[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\/)\S+$/i.test(evTxt)){
+        evidCell='<a href="'+rnAttr_('https://'+evTxt)+'" target="_blank" rel="noopener">🔗 Lihat</a>';
+      }else{
+        evidCell='<span title="'+rnAttr_(evTxt)+'" style="font-size:11px;color:var(--tx3);display:inline-block;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom">📎 '+rnAttr_(evTxt)+'</span>';
+      }
+    }
     else{
       // 12 Okt: per-link (class rn-evid-link) -- klik dicatat buat syarat bulk. Tanda ✓ = sudah dibuka.
       evidCell=bs.urls.map(function(u,i){
