@@ -3892,6 +3892,13 @@ var invBulanFilter=[],invStartDate='',invEndDate='';
 var invTcFilter=[];
 // 24 Sep (Phase 1 Step 5): Rating & NPS state -- pola sama Invoice Tracker.
 var ratingNpsStatusFilter=[],ratingNpsMonthFilter=[],ratingNpsAgentFilter=[],ratingNpsTypeFilter=[],ratingNpsSearch='',ratingNpsPage=0;
+// 12 Okt (request operator): bulk approve/reject. Page size dipilih leader (25/50/75/100, diingat per
+// browser); selection = "type|key" -> true, SELALU dikosongin pas halaman/filter/page-size berubah
+// (bulk cuma boleh nyentuh baris yang lagi keliatan di halaman aktif).
+var RN_PAGE_SIZES=[25,50,75,100];
+var ratingNpsPageSize=(function(){try{var v=parseInt(localStorage.getItem('clm_rn_pagesize'),10);return RN_PAGE_SIZES.indexOf(v)>=0?v:25;}catch(e){return 25;}})();
+var ratingNpsSelected={};
+var rnBulkBusy=false;
 // CLM-11 Fase G (Batch B): tab Invoice Summary — matrix agen×hari per status pembayaran.
 // invsumCat/invsumAgent = multi-select collapsible (reuse renderMultiSelect + G6). invsumMonth = 1
 // bulan (native select, default bulan berjalan). invsumMatrix = status aktif (pill). invsumUnit =
@@ -6689,17 +6696,70 @@ function ratingNpsApprovedByDisplay_(x){
   if(x.approvedBy)return x.approvedBy;
   return x.type==='rating'?'<span style="color:var(--tx3);font-style:italic">(dari Report)</span>':'<span style="color:var(--tx3)">—</span>';
 }
-function ratingNpsRowsHtml(all,me,isSup){
+// 12 Okt: evidence bisa lebih dari 1 link (dipisah spasi/koma/baris baru) -- ekstrak semua URL, dedupe.
+// Dipakai buat render per-link + syarat "semua link sudah dibuka" di bulk approve/reject.
+function rnEvidenceUrls_(ev){
+  var m=String(ev||'').match(/https?:\/\/[^\s,;<>"']+/gi)||[];
+  var seen={},out=[];
+  m.forEach(function(u){if(!seen[u]){seen[u]=true;out.push(u);}});
+  return out;
+}
+function rnAttr_(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+// Tracking "link sudah dibuka" -- honor system, per browser per leader (localStorage). Key = URL
+// persis, jadi kalau evidence diganti link baru otomatis belum-dibuka lagi.
+var RnClicked={
+  _set:null,_for:null,
+  _k:function(){var s=Auth.getSession();return'clm_rn_clicked_'+((s&&s.email)||'anon');},
+  load:function(){
+    var k=this._k();
+    if(this._set&&this._for===k)return this._set;
+    var o={};
+    try{(JSON.parse(localStorage.getItem(k)||'[]')||[]).forEach(function(u){o[u]=1;});}catch(e){}
+    this._set=o;this._for=k;return o;
+  },
+  has:function(u){return !!this.load()[u];},
+  add:function(u){
+    var st=this.load();if(st[u])return false;
+    st[u]=1;
+    var a=Object.keys(st);if(a.length>5000)a=a.slice(a.length-5000);
+    try{localStorage.setItem(this._k(),JSON.stringify(a));}catch(e){}
+    return true;
+  }
+};
+// Baris boleh di-bulk: masih Pending, punya >=1 link, dan SEMUA link sudah dibuka leader ini.
+// Evidence non-URL (teks biasa) -> nggak bisa "diklik" -> nggak eligible, harus direview satu-satu.
+function rnBulkState_(x){
+  var urls=rnEvidenceUrls_(x.evidence);
+  if(x.status!=='Pending')return{eligible:false,urls:urls,reason:''};
+  if(!urls.length)return{eligible:false,urls:urls,reason:'Evidence bukan link — review satu per satu'};
+  var unseen=urls.filter(function(u){return !RnClicked.has(u);}).length;
+  if(unseen)return{eligible:false,urls:urls,reason:'Buka '+(urls.length>1?'semua ('+unseen+' belum) link':'link')+' evidence dulu'};
+  return{eligible:true,urls:urls,reason:''};
+}
+// Satu sumber paging buat tabel + bulk (bulk HARUS ngikutin persis baris yang keliatan di halaman).
+function ratingNpsPageRows_(all,me,isSup){
   var recs=ratingNpsFilteredRows(all,me,isSup);
-  ratingNpsCountText='Menampilkan '+recs.length+' dari '+ratingNpsBasePool(all,me,isSup).length+' klaim';
+  var size=ratingNpsPageSize;
+  var totalPages=Math.max(1,Math.ceil(recs.length/size));
+  ratingNpsPage=Math.min(ratingNpsPage,totalPages-1);
+  return{recs:recs,totalPages:totalPages,paged:recs.slice(ratingNpsPage*size,(ratingNpsPage+1)*size)};
+}
+function ratingNpsRowsHtml(all,me,isSup){
+  var pg=ratingNpsPageRows_(all,me,isSup);
+  var recs=pg.recs;
+  var poolN=ratingNpsBasePool(all,me,isSup).length;
+  if(!recs.length)ratingNpsCountText='Menampilkan 0 dari '+poolN+' klaim';
+  else{
+    var from=ratingNpsPage*ratingNpsPageSize+1,to=Math.min(recs.length,from+ratingNpsPageSize-1);
+    ratingNpsCountText='Menampilkan '+from+'–'+to+' dari '+recs.length+' klaim'+(recs.length!==poolN?' (total '+poolN+')':'');
+  }
   var cnt=document.getElementById('ratingnps-count');
   if(cnt)cnt.textContent=ratingNpsCountText;
-  // Aksi (Approve/Reject) leader-only -- NOL dirender buat agent (bukan disabled/CSS-hide, preseden CLM-06).
-  var colspan=isSup?9:8;
+  // Aksi (Approve/Reject) + checkbox bulk leader-only -- NOL dirender buat agent (bukan disabled/CSS-hide, preseden CLM-06).
+  var colspan=isSup?10:8;
   if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada klaim</td></tr>';
-  var totalPages=Math.max(1,Math.ceil(recs.length/PAGE_SIZE));
-  ratingNpsPage=Math.min(ratingNpsPage,totalPages-1);
-  var paged=recs.slice(ratingNpsPage*PAGE_SIZE,(ratingNpsPage+1)*PAGE_SIZE);
+  var totalPages=pg.totalPages;
+  var paged=pg.paged;
   return paged.map(function(x){
     // Bulan Klaim (+ koreksi Agen buat leader): leader bisa koreksi klaim SIAPA AJA, agent cuma
     // klaim MILIK SENDIRI (brief operator). Tombol buka modal "Edit Klaim" (dropdown Bulan/Tahun,
@@ -6707,12 +6767,29 @@ function ratingNpsRowsHtml(all,me,isSup){
     var canEditMonth=isSup||x.agentName===Auth.getActive();
     var monthCell=(x.claimMonth||'<span style="color:var(--tx3)">—</span>')
       +(canEditMonth?' <button class="action-btn ab-edit" data-act="edit-claim-month" data-key="'+x.key+'" data-type="'+x.type+'" style="font-size:10px;padding:2px 6px">✏️</button>':'');
-    var evidCell=x.evidence?'<a href="'+x.evidence+'" target="_blank" rel="noopener">🔗 Lihat</a>':'<span style="color:var(--tx3)">—</span>';
+    var bs=rnBulkState_(x);
+    var evidCell;
+    if(!x.evidence)evidCell='<span style="color:var(--tx3)">—</span>';
+    else if(!bs.urls.length)evidCell='<a href="'+x.evidence+'" target="_blank" rel="noopener">🔗 Lihat</a>';
+    else{
+      // 12 Okt: per-link (class rn-evid-link) -- klik dicatat buat syarat bulk. Tanda ✓ = sudah dibuka.
+      evidCell=bs.urls.map(function(u,i){
+        var lbl=bs.urls.length>1?('🔗 '+(i+1)):'🔗 Lihat';
+        var seen=isSup&&x.status==='Pending'&&RnClicked.has(u);
+        return'<a class="rn-evid-link" href="'+rnAttr_(u)+'" data-url="'+rnAttr_(u)+'" target="_blank" rel="noopener">'+lbl+'</a>'
+          +(seen?'<span title="Sudah dibuka" style="color:var(--grn,#2e9e5b);font-size:11px;margin-left:2px">✓</span>':'');
+      }).join(' ');
+    }
     var aksiCell='';
+    var chkCell='';
     if(isSup){
       if(x.status==='Pending'){
         aksiCell='<button class="action-btn ab-ok" data-act="review-claim" data-decision="approved" data-key="'+x.key+'" data-type="'+x.type+'">✓ Approve</button> '
           +'<button class="action-btn ab-del" data-act="review-claim" data-decision="rejected" data-key="'+x.key+'" data-type="'+x.type+'">✕ Reject</button>';
+        var ck=x.type+'|'+x.key;
+        chkCell='<input type="checkbox" class="rn-chk" data-rnkey="'+rnAttr_(ck)+'"'
+          +(ratingNpsSelected[ck]&&bs.eligible?' checked':'')
+          +(bs.eligible?'':' disabled title="'+rnAttr_(bs.reason)+'"')+'>';
       }else{
         aksiCell='<span style="font-size:11px;color:var(--tx3)">'+(x.rejectReason?('Alasan: '+x.rejectReason):'—')+'</span>';
       }
@@ -6722,6 +6799,7 @@ function ratingNpsRowsHtml(all,me,isSup){
     // bukan "1 row = 1 unit"). NPS nggak punya konsep count (selalu 1 per klaim) -- tampilin '—'.
     var countCell=x.type==='rating'?x.count:'<span style="color:var(--tx3)">—</span>';
     return'<tr>'
+      +(isSup?'<td style="text-align:center">'+chkCell+'</td>':'')
       +'<td>'+x.outletName+'</td>'
       +'<td>'+x.platformLabel+'</td>'
       +(isSup?'<td>'+(x.agentName||'<span style="color:var(--tx3)">—</span>')+'</td>':'')
@@ -6733,6 +6811,121 @@ function ratingNpsRowsHtml(all,me,isSup){
       +(isSup?'<td>'+aksiCell+'</td>':'')
       +'</tr>';
   }).join('')+pagerRow(colspan,ratingNpsPage,totalPages,recs.length,'ratingnps-prev-btn','ratingnps-next-btn');
+}
+// Bar bulk (leader-only): jumlah dipilih + tombol. Diupdate in-place tiap checkbox berubah.
+function rnBulkBarHtml_(){
+  var all=ratingNpsAllRows();
+  var pg=ratingNpsPageRows_(all,Auth.getActive(),true);
+  var pending=0,eligible=0;
+  pg.paged.forEach(function(x){if(x.status!=='Pending')return;pending++;if(rnBulkState_(x).eligible)eligible++;});
+  var sel=Object.keys(ratingNpsSelected).length;
+  var dis=(sel===0||rnBulkBusy)?' disabled':'';
+  return'<span style="font-size:12px;color:var(--tx2)"><strong>'+sel+'</strong> dipilih</span>'
+    +'<button class="action-btn ab-ok" data-act="rn-bulk" data-decision="approved"'+dis+'>✓ Approve terpilih</button>'
+    +'<button class="action-btn ab-del" data-act="rn-bulk" data-decision="rejected"'+dis+'>✕ Reject terpilih</button>'
+    +'<span style="font-size:11px;color:var(--tx3)">Di halaman ini: '+pending+' Pending, '+eligible+' bisa dipilih'
+    +(pending>eligible?' (sisanya: buka link evidence-nya dulu)':'')+'</span>';
+}
+function rnUpdateBulkBar_(){
+  var bar=document.getElementById('rn-bulkbar');
+  if(bar)bar.innerHTML=rnBulkBarHtml_();
+  var hdr=document.getElementById('rn-chk-all');
+  if(hdr){
+    var boxes=document.querySelectorAll('#ratingnps-tbody .rn-chk:not(:disabled)');
+    var n=0;boxes.forEach(function(b){if(b.checked)n++;});
+    hdr.disabled=boxes.length===0;
+    hdr.checked=boxes.length>0&&n===boxes.length;
+  }
+}
+function rnRerenderKeepPage_(){
+  var tb=document.getElementById('ratingnps-tbody');
+  if(tb)tb.innerHTML=ratingNpsRowsHtml(ratingNpsAllRows(),Auth.getActive(),Auth.isSuperior());
+  if(Auth.isSuperior())rnUpdateBulkBar_();
+}
+// Link evidence diklik (klik biasa / ctrl-klik / klik tengah) -> catat, lalu re-render ditunda 1 tick
+// biar navigasi tab baru nggak keganggu DOM yang diganti.
+function rnMarkClicked_(url){
+  if(!url||!Auth.isSuperior())return;
+  if(!RnClicked.add(url))return;
+  setTimeout(rnRerenderKeepPage_,0);
+}
+function rnToggleChk_(chk){
+  var k=chk.dataset.rnkey;
+  if(chk.checked)ratingNpsSelected[k]=true;else delete ratingNpsSelected[k];
+  rnUpdateBulkBar_();
+}
+function rnToggleAll_(on){
+  document.querySelectorAll('#ratingnps-tbody .rn-chk:not(:disabled)').forEach(function(b){
+    b.checked=on;
+    if(on)ratingNpsSelected[b.dataset.rnkey]=true;else delete ratingNpsSelected[b.dataset.rnkey];
+  });
+  rnUpdateBulkBar_();
+}
+// Optimistic update lokal -- SAMA persis handler review-claim satuan (UPSELL_CLAIM status LOWERCASE,
+// NPS capitalized).
+function rnApplyReviewLocal_(d,type,key,decision,reason,email){
+  if(type==='nps'){
+    var r=d.records.find(function(x){return x.id===key;});
+    if(r&&r.nps){r.nps.status=decision==='rejected'?'Rejected':'Approved';r.nps.rejectReason=decision==='rejected'?reason:'';r.nps.approvedBy=email;}
+  }else{
+    var sep=key.lastIndexOf('_'),recId=key.substring(0,sep),platform=key.substring(sep+1);
+    var r2=d.records.find(function(x){return x.id===recId;});
+    if(r2&&r2.upsell&&r2.upsell[platform]){r2.upsell[platform].status=decision;r2.upsell[platform].rejectReason=decision==='rejected'?reason:'';r2.upsell[platform].lastEditBy=email;}
+  }
+}
+var RN_BULK_CHUNK=25; // = REVIEW_BATCH_MAX_KEYS_ server minus margin; 1 request tetep < timeout 20dtk client
+function rnBulkReview(decision){
+  if(rnBulkBusy)return;
+  if(!Auth.isSuperior()){toast('Khusus Team Lead');return;}
+  if(decision!=='approved'&&decision!=='rejected')return;
+  // Re-validasi di titik aksi: cuma baris yang BENERAN ada di halaman aktif + masih eligible.
+  var pg=ratingNpsPageRows_(ratingNpsAllRows(),Auth.getActive(),true);
+  var picked=pg.paged.filter(function(x){return ratingNpsSelected[x.type+'|'+x.key]&&rnBulkState_(x).eligible;});
+  if(!picked.length){toast('Belum ada klaim yang dipilih');return;}
+  var reason='';
+  if(decision==='rejected'){
+    reason=(prompt('Alasan reject (dipakai untuk semua '+picked.length+' klaim terpilih):','')||'').trim();
+    if(!reason){toast('Alasan reject wajib diisi');return;}
+  }else if(!confirm('Approve '+picked.length+' klaim terpilih?'))return;
+
+  var byType={nps:[],rating:[]};
+  picked.forEach(function(x){byType[x.type].push(x.key);});
+  var jobs=[];
+  ['nps','rating'].forEach(function(t){
+    for(var i=0;i<byType[t].length;i+=RN_BULK_CHUNK)jobs.push({type:t,keys:byType[t].slice(i,i+RN_BULK_CHUNK)});
+  });
+  rnBulkBusy=true;rnUpdateBulkBar_();
+  var email=(Auth.getSession()||{}).email||'';
+  var okN=0,failed=[],aborted=null,done=0;
+  var chain=Promise.resolve();
+  jobs.forEach(function(job){
+    chain=chain.then(function(){
+      if(aborted){failed=failed.concat(job.keys.map(function(k){return{key:k,error:'belum diproses'};}));return;}
+      toast('⏳ Memproses '+Math.min(done+job.keys.length,picked.length)+'/'+picked.length+'…',20000);
+      return _gasPost({action:'reviewClaimsBatch',type:job.type,keys:job.keys,decision:decision,rejectReason:reason}).then(function(res){
+        var d=Store.get();
+        (res.results||[]).forEach(function(r){
+          if(r.ok){okN++;rnApplyReviewLocal_(d,job.type,r.key,decision,reason,email);}
+          else failed.push({key:r.key,error:r.error||'gagal'});
+        });
+        Store.set(d);
+        done+=job.keys.length;
+      }).catch(function(err){
+        aborted=err;
+        failed=failed.concat(job.keys.map(function(k){return{key:k,error:err.message};}));
+      });
+    });
+  });
+  chain.then(function(){
+    rnBulkBusy=false;
+    ratingNpsSelected={};
+    rnRerenderKeepPage_();
+    var verb=decision==='rejected'?'reject':'approve';
+    if(!failed.length){toast('✓ '+okN+' klaim berhasil di-'+verb,4000);return;}
+    var firstErr=failed[0].error;
+    var hint=aborted?(' Proses berhenti: '+aborted.message+(/unknown|not.?found|invalid.?action/i.test(aborted.message)?' (GAS belum di-deploy versi terbaru?)':'')+'. Sync dulu buat cek status terakhir.'):' Contoh error: '+firstErr+'.';
+    toast(okN+' berhasil, '+failed.length+' gagal.'+hint,9000);
+  });
 }
 // 24 Sep (feedback #2c): dropdown Bulan+Tahun -- ganti prompt() free-text (potensi typo, mis. "Sept"
 // vs "September" bikin klaim nggak match filter Bulan Klaim manapun). Format target SAMA PERSIS
@@ -6836,9 +7029,8 @@ function saveRnEdit(){
 }
 function refreshRatingNpsBody(){
   ratingNpsPage=0;
-  var me=Auth.getActive(),isSup=Auth.isSuperior();
-  var tb=document.getElementById('ratingnps-tbody');
-  if(tb)tb.innerHTML=ratingNpsRowsHtml(ratingNpsAllRows(),me,isSup);
+  ratingNpsSelected={}; // 12 Okt: filter/search/page-size berubah -> pilihan bulk dibuang (cuma boleh nyentuh baris yang keliatan)
+  rnRerenderKeepPage_();
 }
 function renderRatingNps(){
   var me=Auth.getActive();
@@ -6875,11 +7067,16 @@ function renderRatingNps(){
     +typeFilterHtml
     +monthFilterHtml
     +(agentFilterHtml||'')
+    +'<select id="ratingnps-pagesize" title="Jumlah baris per halaman">'
+    +RN_PAGE_SIZES.map(function(n){return'<option value="'+n+'"'+(n===ratingNpsPageSize?' selected':'')+'>'+n+' / halaman</option>';}).join('')
+    +'</select>'
     +'<span id="ratingnps-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center">'+ratingNpsCountText+'</span>'
     +'</div>'
+    +(isSup?'<div id="rn-bulkbar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">'+rnBulkBarHtml_()+'</div>':'')
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr><th>Outlet</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Jumlah</th><th>Approved By</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
+    +'<thead><tr>'+(isSup?'<th style="width:28px;text-align:center"><input type="checkbox" id="rn-chk-all" title="Pilih semua yang bisa dipilih di halaman ini"></th>':'')+'<th>Outlet</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Jumlah</th><th>Approved By</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
     +'<tbody id="ratingnps-tbody">'+rowsHtml+'</tbody></table></div></div>';
+  if(isSup)rnUpdateBulkBar_(); // sinkronin checkbox header kalau selection kebawa dari render sebelumnya
 }
 
 // ── TAB: RESPONSE ──────────────────────────────────────────────────────────
@@ -10714,7 +10911,14 @@ function syncResponsesOnly(opts){
 // ── EVENT DELEGATION ────────────────────────────────────────────────────────
 var tabContent=document.getElementById('tab-content');
 
+// 12 Okt: catat link evidence yang dibuka leader (syarat bulk approve/reject). Klik tengah = 'auxclick'.
+tabContent.addEventListener('auxclick',function(e){
+  var a=e.target.closest&&e.target.closest('a.rn-evid-link');
+  if(a&&e.button===1)rnMarkClicked_(a.dataset.url);
+});
 tabContent.addEventListener('click',function(e){
+  var rnLink=e.target.closest('a.rn-evid-link');
+  if(rnLink)rnMarkClicked_(rnLink.dataset.url); // nggak return -- navigasi tab baru tetep jalan
   var btn=e.target.closest('[data-act]');
   if(btn){
     var act=btn.dataset.act,id=btn.dataset.id,wid=btn.dataset.wid;
@@ -10803,6 +11007,7 @@ tabContent.addEventListener('click',function(e){
     else if(act==='edit-claim-month'){
       openRnEditModal(btn.dataset.type,btn.dataset.key);
     }
+    else if(act==='rn-bulk'){if(!btn.disabled)rnBulkReview(btn.dataset.decision);} // 12 Okt: bulk approve/reject
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab(currentTab);}}
     else if(act==='toggle-wl'){
       // CLM-09: sheet-backed -- resolveOnly write, nutup/buka kolom "Resolved At" (L), nggak
@@ -10938,7 +11143,8 @@ tabContent.addEventListener('click',function(e){
   }
   else if(tgt.id==='ratingnps-prev-btn'||tgt.id==='ratingnps-next-btn'){
     ratingNpsPage=tgt.id==='ratingnps-prev-btn'?Math.max(0,ratingNpsPage-1):ratingNpsPage+1;
-    var tbrn=document.getElementById('ratingnps-tbody');if(tbrn)tbrn.innerHTML=ratingNpsRowsHtml(ratingNpsAllRows(),Auth.getActive(),Auth.isSuperior());
+    ratingNpsSelected={}; // 12 Okt: pindah halaman -> pilihan bulk dibuang
+    rnRerenderKeepPage_();
   }
   else if(tgt.id==='loginlog-prev-btn'||tgt.id==='loginlog-next-btn'){
     loginLogPage=tgt.id==='loginlog-prev-btn'?Math.max(0,loginLogPage-1):loginLogPage+1;
@@ -11048,6 +11254,13 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='daily-view-mode-sel'){dailyViewSeriesMode=tgt.value;renderTab('overview');return;} // 25 Jul: dropdown kumulatif/harian
   if(tgt.id==='dv-compare-month-sel'){dvCompareMonth=tgt.value;renderTab('overview');return;} // 19 Agu: bulan pembanding Daily View bebas pilih
   if(tgt.id==='invsum-month'){invsumMonth=tgt.value;renderTab('invsummary');return;}
+  if(tgt.id==='ratingnps-pagesize'){
+    var rnPs=parseInt(tgt.value,10);
+    if(RN_PAGE_SIZES.indexOf(rnPs)>=0){ratingNpsPageSize=rnPs;try{localStorage.setItem('clm_rn_pagesize',String(rnPs));}catch(e){}}
+    refreshRatingNpsBody();return;
+  }
+  if(tgt.classList&&tgt.classList.contains('rn-chk')){rnToggleChk_(tgt);return;}
+  if(tgt.id==='rn-chk-all'){rnToggleAll_(tgt.checked);return;}
   if(tgt.id==='ws-exp-start'){wsExpStart=tgt.value;refreshWsBody();return;}
   if(tgt.id==='ws-exp-end'){wsExpEnd=tgt.value;refreshWsBody();return;}
   if(tgt.id==='mj-gran-sel'){myJourneyGranularity=tgt.value;renderTab('myjourney');return;}
