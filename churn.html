@@ -3985,10 +3985,15 @@ function wbQueueSet(q){try{localStorage.setItem(WB_QUEUE_KEY,JSON.stringify(q));
 // (response, upsell, blast batch, break-glass, dll -- lewat _gasPost/_gasPostWithRetry), fix di sini
 // otomatis nutup celah yang sama di semua call site sekaligus, bukan nambal satu-satu tiap ketauan.
 // AbortController 20dtk (retriable, biar _gasPostWithRetry tetep retry normal 0.8/1.6/3.2dtk di atasnya).
-function _gasPostOnce(payload){
+// 12 Okt: o.timeoutMs (default 20000) -- review klaim Rating nulis ke SHEET_ID_2 (workbook ~10jt cell)
+// yang bisa >20dtk; client nyerah duluan tapi server TETAP nyelesaiin write -> dashboard "Pending",
+// sheet "Approved" (kasus 63005946290). Error timeout di-tag `timedOut` biar caller bisa bedain
+// "status nggak pasti" dari penolakan beneran.
+function _gasPostOnce(payload,o){
+  o=o||{};
   var withToken=Object.assign({},payload,{token:Auth.getToken()});
   var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
-  var timer=ctrl?setTimeout(function(){ctrl.abort();},20000):null;
+  var timer=ctrl?setTimeout(function(){ctrl.abort();},o.timeoutMs||20000):null;
   var opts={method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(withToken)};
   if(ctrl)opts.signal=ctrl.signal;
   // text/plain hindari CORS preflight (GAS tak handle OPTIONS)
@@ -4008,18 +4013,21 @@ function _gasPostOnce(payload){
     });})
     .catch(function(err){
       if(timer)clearTimeout(timer);
-      if(err&&err.name==='AbortError'){var ea=new Error('Timeout 20dtk -- GAS terlalu lambat');ea.retriable=true;throw ea;}
+      if(err&&err.name==='AbortError'){var ea=new Error('Timeout '+Math.round((o.timeoutMs||20000)/1000)+'dtk -- GAS terlalu lambat');ea.retriable=true;ea.timedOut=true;throw ea;}
       throw err;
     });
 }
 // (Ubay 17 Jul, interim stanch-bleeding sebelum GAS lock+flush deploy): retry-backoff buat error TRANSIENT.
 // Lock/commit contention itu sesaat (sesi lain kelar ~1-2dtk) -> retry sering langsung landed. Backoff
 // 0.8/1.6/3.2dtk, maks 3x, baru nyerah ke antrean lokal (writeBack*.catch). Permanen (unauth/business) langsung nyerah.
-function _gasPostWithRetry(payload,attempt){
-  attempt=attempt||0;
-  return _gasPostOnce(payload).catch(function(err){
+function _gasPostWithRetry(payload,attempt,o){
+  attempt=attempt||0;o=o||{};
+  return _gasPostOnce(payload,o).catch(function(err){
+    // 12 Okt: o.noRetryOnTimeout -- retry setelah timeout cuma nambah antrean (tiap retry = 1 eksekusi
+    // GAS lagi nunggu lock yang sama) di saat GAS udah lambat. Dipakai review klaim.
+    if(err&&err.timedOut&&o.noRetryOnTimeout)throw err;
     if(err&&err.retriable&&attempt<3){
-      return new Promise(function(res){setTimeout(res,800*Math.pow(2,attempt));}).then(function(){return _gasPostWithRetry(payload,attempt+1);});
+      return new Promise(function(res){setTimeout(res,800*Math.pow(2,attempt));}).then(function(){return _gasPostWithRetry(payload,attempt+1,o);});
     }
     throw err;
   });
@@ -4030,8 +4038,8 @@ function _gasPostWithRetry(payload,attempt){
 // (upsert-by-key) jadi retry aman. Timeout advance 60dtk (akomodasi 3x retry+backoff, biar fetch nyangkut
 // nggak nge-freeze antrean; kalau kepicu & respons telat dateng .then/.catch caller tetep jalan).
 var _wbChain=Promise.resolve();
-function _gasPost(payload){
-  var p=_wbChain.then(function(){return _gasPostWithRetry(payload);},function(){return _gasPostWithRetry(payload);});
+function _gasPost(payload,o){
+  var p=_wbChain.then(function(){return _gasPostWithRetry(payload,0,o);},function(){return _gasPostWithRetry(payload,0,o);});
   _wbChain=new Promise(function(resolve){var done=false,fin=function(){if(!done){done=true;resolve();}};p.then(fin,fin);setTimeout(fin,60000);});
   return p;
 }
@@ -6756,7 +6764,7 @@ function ratingNpsRowsHtml(all,me,isSup){
   var cnt=document.getElementById('ratingnps-count');
   if(cnt)cnt.textContent=ratingNpsCountText;
   // Aksi (Approve/Reject) + checkbox bulk leader-only -- NOL dirender buat agent (bukan disabled/CSS-hide, preseden CLM-06).
-  var colspan=isSup?10:8;
+  var colspan=isSup?11:8;
   if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada klaim</td></tr>';
   var totalPages=pg.totalPages;
   var paged=pg.paged;
@@ -6801,6 +6809,9 @@ function ratingNpsRowsHtml(all,me,isSup){
     return'<tr>'
       +(isSup?'<td style="text-align:center">'+chkCell+'</td>':'')
       +'<td>'+x.outletName+'</td>'
+      // 12 Okt (request operator): Join Code (= key RESPONSES; UPSELL_CLAIM pakai {joinCode}_{platform})
+      // biar cek silang ke sheet nggak perlu bolak-balik via nama outlet. Teks biasa, tinggal select/Ctrl+F.
+      +'<td style="font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--tx2);user-select:all">'+x.recId+'</td>'
       +'<td>'+x.platformLabel+'</td>'
       +(isSup?'<td>'+(x.agentName||'<span style="color:var(--tx3)">—</span>')+'</td>':'')
       +'<td>'+ratingNpsStatusBadge_(x.status)+'</td>'
@@ -6873,6 +6884,15 @@ function rnApplyReviewLocal_(d,type,key,decision,reason,email){
     if(r2&&r2.upsell&&r2.upsell[platform]){r2.upsell[platform].status=decision;r2.upsell[platform].rejectReason=decision==='rejected'?reason:'';r2.upsell[platform].lastEditBy=email;}
   }
 }
+// 12 Okt: write klaim ke UPSELL_CLAIM/RESPONSES bisa >20dtk -> timeout client TIDAK berarti gagal.
+// Timeout panjang, tanpa retry otomatis, dan kalau tetap timeout: tarik ulang status dari sheet.
+var RN_WRITE_OPTS={timeoutMs:55000,noRetryOnTimeout:true};
+function rnVerifyAfterTimeout_(){
+  setTimeout(function(){
+    try{syncUpsellOnly({silent:true});}catch(e){}
+    try{pollResponsesDelta();}catch(e){}
+  },25000);
+}
 var RN_BULK_CHUNK=25; // = REVIEW_BATCH_MAX_KEYS_ server minus margin; 1 request tetep < timeout 20dtk client
 function rnBulkReview(decision){
   if(rnBulkBusy)return;
@@ -6896,13 +6916,13 @@ function rnBulkReview(decision){
   });
   rnBulkBusy=true;rnUpdateBulkBar_();
   var email=(Auth.getSession()||{}).email||'';
-  var okN=0,failed=[],aborted=null,done=0;
+  var okN=0,failed=[],aborted=null,done=0,timedOut=false;
   var chain=Promise.resolve();
   jobs.forEach(function(job){
     chain=chain.then(function(){
       if(aborted){failed=failed.concat(job.keys.map(function(k){return{key:k,error:'belum diproses'};}));return;}
       toast('⏳ Memproses '+Math.min(done+job.keys.length,picked.length)+'/'+picked.length+'…',20000);
-      return _gasPost({action:'reviewClaimsBatch',type:job.type,keys:job.keys,decision:decision,rejectReason:reason}).then(function(res){
+      return _gasPost({action:'reviewClaimsBatch',type:job.type,keys:job.keys,decision:decision,rejectReason:reason},RN_WRITE_OPTS).then(function(res){
         var d=Store.get();
         (res.results||[]).forEach(function(r){
           if(r.ok){okN++;rnApplyReviewLocal_(d,job.type,r.key,decision,reason,email);}
@@ -6912,6 +6932,7 @@ function rnBulkReview(decision){
         done+=job.keys.length;
       }).catch(function(err){
         aborted=err;
+        if(err&&err.timedOut)timedOut=true;
         failed=failed.concat(job.keys.map(function(k){return{key:k,error:err.message};}));
       });
     });
@@ -6922,6 +6943,13 @@ function rnBulkReview(decision){
     rnRerenderKeepPage_();
     var verb=decision==='rejected'?'reject':'approve';
     if(!failed.length){toast('✓ '+okN+' klaim berhasil di-'+verb,4000);return;}
+    if(timedOut){
+      // Server kemungkinan TETAP nyelesaiin write setelah client nyerah -- jangan klik ulang; status
+      // aslinya ditarik otomatis dari sheet ~25dtk lagi.
+      toast('⏳ GAS lambat — '+okN+' berhasil terkonfirmasi, sisanya BELUM PASTI (kemungkinan tetap diproses server). Jangan klik ulang; status ditarik otomatis ±25 detik lagi.',10000);
+      rnVerifyAfterTimeout_();
+      return;
+    }
     var firstErr=failed[0].error;
     var hint=aborted?(' Proses berhenti: '+aborted.message+(/unknown|not.?found|invalid.?action/i.test(aborted.message)?' (GAS belum di-deploy versi terbaru?)':'')+'. Sync dulu buat cek status terakhir.'):' Contoh error: '+firstErr+'.';
     toast(okN+' berhasil, '+failed.length+' gagal.'+hint,9000);
@@ -6998,7 +7026,7 @@ function saveRnEdit(){
   if(countEl)payload.count=parseInt(countEl.value,10)||0; // 26 Sep: Rating-only (countEl cuma dirender kalau isSup&&type==='rating')
   var btn=document.getElementById('rnedit-save-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Menyimpan...';}
-  _gasPost(payload).then(function(res){
+  _gasPost(payload,RN_WRITE_OPTS).then(function(res){
     var d=Store.get();
     if(type==='nps'){
       var r=d.records.find(function(x){return x.id===key;});
@@ -7022,6 +7050,7 @@ function saveRnEdit(){
     toast(res.statusReset?'Klaim diupdate — status di-reset jadi Pending (perlu direview ulang)':'Klaim diupdate');
     refreshRatingNpsBody();
   }).catch(function(err){
+    if(err&&err.timedOut){closeModal('rnedit-modal');toast('⏳ GAS lambat — perubahan klaim BELUM PASTI (kemungkinan tetap tersimpan). Jangan simpan ulang; status ditarik otomatis ±25 detik lagi.',10000);rnVerifyAfterTimeout_();return;}
     toast('Gagal update klaim: '+err.message,5000);
   }).then(function(){
     if(btn){btn.disabled=false;btn.textContent='Simpan';}
@@ -7074,7 +7103,7 @@ function renderRatingNps(){
     +'</div>'
     +(isSup?'<div id="rn-bulkbar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">'+rnBulkBarHtml_()+'</div>':'')
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
-    +'<thead><tr>'+(isSup?'<th style="width:28px;text-align:center"><input type="checkbox" id="rn-chk-all" title="Pilih semua yang bisa dipilih di halaman ini"></th>':'')+'<th>Outlet</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Jumlah</th><th>Approved By</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
+    +'<thead><tr>'+(isSup?'<th style="width:28px;text-align:center"><input type="checkbox" id="rn-chk-all" title="Pilih semua yang bisa dipilih di halaman ini"></th>':'')+'<th>Outlet</th><th>Join Code</th><th>Tipe</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>Jumlah</th><th>Approved By</th><th>Bulan Klaim</th><th>Evidence</th>'+(isSup?'<th>Aksi</th>':'')+'</tr></thead>'
     +'<tbody id="ratingnps-tbody">'+rowsHtml+'</tbody></table></div></div>';
   if(isSup)rnUpdateBulkBar_(); // sinkronin checkbox header kalau selection kebawa dari render sebelumnya
 }
@@ -10766,7 +10795,30 @@ function mergeNpsFromRemote(local,remoteRow){
   if(!remoteEvid)return local;
   var remoteSubmittedAt=String(remoteRow['NPS Submitted At']||'');
   var localSubmittedAt=local?String(local.submittedAt||''):'';
-  if(local&&remoteSubmittedAt&&localSubmittedAt&&remoteSubmittedAt<=localSubmittedAt)return local;
+  if(local&&remoteSubmittedAt&&localSubmittedAt&&remoteSubmittedAt<=localSubmittedAt){
+    // 12 Okt: sync harian server (gas_sync_nondestructive.gs) ngisi NPS Claim Month / NPS Agent Credit /
+    // NPS Status (dari Report) di row existing TANPA nge-bump NPS Submitted At & Last Edit At -> guard di
+    // atas bikin dashboard nempel di nilai lama selamanya (kasus 60746946272: sheet "September 2026"/
+    // "Sunarti", dashboard "—"/"Sarah"). Timestamp SAMA + evidence SAMA = bukan edit lokal yang lebih
+    // baru, jadi aman: isi cuma yang lokalnya KOSONG, dan keputusan final remote (Approved/Rejected)
+    // menang atas Pending lokal. Local yang lebih baru (timestamp lokal > remote) tetap menang penuh.
+    if(remoteSubmittedAt===localSubmittedAt&&remoteEvid===String(local.evidence||'').trim()){
+      var rmCM=String(remoteRow['NPS Claim Month']||'').trim();
+      var rmAG=String(remoteRow['NPS Agent Credit']||'').trim();
+      var rmST=String(remoteRow['NPS Status']||'').trim();
+      var rmAB=String(remoteRow['NPS Approved By']||'').trim();
+      var patch={};
+      if(!local.claimMonth&&rmCM)patch.claimMonth=rmCM;
+      if(!local.agentCredit&&rmAG)patch.agentCredit=rmAG;
+      if(!local.approvedBy&&rmAB)patch.approvedBy=rmAB;
+      if(local.status==='Pending'&&(rmST==='Approved'||rmST==='Rejected')){
+        patch.status=rmST;
+        patch.rejectReason=String(remoteRow['NPS Reject Reason']||'').trim();
+      }
+      if(Object.keys(patch).length)return Object.assign({},local,patch);
+    }
+    return local;
+  }
   return{
     evidence:remoteEvid,
     status:String(remoteRow['NPS Status']||'').trim()||'Pending',
@@ -10983,7 +11035,7 @@ tabContent.addEventListener('click',function(e){
         if(!rnRejectReason){toast('Alasan reject wajib diisi');return;}
       }
       var rnAction=rnType==='nps'?'reviewNpsEvidence':'reviewUpsellClaim';
-      _gasPost({action:rnAction,key:rnKey,decision:rnDecision,rejectReason:rnRejectReason}).then(function(){
+      _gasPost({action:rnAction,key:rnKey,decision:rnDecision,rejectReason:rnRejectReason},RN_WRITE_OPTS).then(function(){
         var rnD=Store.get();
         if(rnType==='nps'){
           var rnR=rnD.records.find(function(x){return x.id===rnKey;});
@@ -10999,7 +11051,10 @@ tabContent.addEventListener('click',function(e){
         Store.set(rnD);
         toast('Klaim di-'+(rnDecision==='rejected'?'reject':'approve'));
         refreshRatingNpsBody();
-      }).catch(function(err){toast('Gagal review klaim: '+err.message,5000);});
+      }).catch(function(err){
+        if(err&&err.timedOut){toast('⏳ GAS lambat — hasil review BELUM PASTI (kemungkinan tetap diproses server). Jangan klik ulang; status ditarik otomatis ±25 detik lagi.',10000);rnVerifyAfterTimeout_();return;}
+        toast('Gagal review klaim: '+err.message,5000);
+      });
     }
     // Bulan Klaim (+ koreksi Agen leader-only) -- 24 Sep (feedback #2b/#2c): buka modal dropdown
     // (rnedit-modal/openRnEditModal), bukan prompt() free-text lagi. Agent (milik sendiri) ATAU
