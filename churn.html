@@ -10614,6 +10614,11 @@ function syncVisitTCOnly(syncOpts){
     .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
     .then(function(json){
       if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
+      // 13 Okt: respons kosong/ber-error JANGAN dianggap "nol visit" -- GAS lama diam2 balikin data kosong
+      // kalau terjadi exception (mis. Spreadsheets timeout). Tanpa guard ini, reset visitTC di bawah
+      // bakal ngosongin SEMUA visit TC lokal. Biarin Store apa adanya + kasih tau.
+      if(json&&json.error)throw new Error('Visit TC: '+json.error);
+      if(!json||!Array.isArray(json.data)||!json.data.length)throw new Error('Visit TC: server balikin data kosong (data lama dipertahankan)');
       var d=Store.get();
       // 27 Agu (fix): 1 outlet bisa punya BANYAK record (1 per cohort-month, key = outletId+expiredDateHistorical).
       // Dulu di sini "latest expiryDate wins" dipilih SEKALI di awal per-outlet -- salah, bikin visit TC buat
@@ -10806,9 +10811,15 @@ function mergeResponseFromRemote(local,remoteRow){
   var localLastEdit=local?String(local.updatedAt||''):'';
   if(local&&remoteLastEdit&&localLastEdit&&remoteLastEdit<=localLastEdit)return local;
   var sum=String(remoteRow['Summary']||'').trim();
+  // 13 Okt: SEBELUMNYA category/detail kosong dari remote SELALU jatuh balik ke nilai lokal (`||local`) ->
+  // respons yang di-KOSONGIN di sheet (cleanup salah-tempel Auto-TC, kasus Innotex 36291146338) nggak
+  // pernah ilang dari dashboard. Penanda eksplisit biar aman: Last Edit By "Sistem (Cleanup ..." DAN
+  // Summary+Keterangan kosong (+ remote udah lolos guard "lebih baru" di atas) = sengaja dikosongin.
+  var clearedRemote=!sum&&!String(remoteRow['Keterangan']||'').trim()
+    &&/^Sistem \(Cleanup/.test(String(remoteRow['Last Edit By']||''));
   return{
-    category:mapSummaryToCategory(sum)||(local&&local.category)||null,
-    detail:String(remoteRow['Keterangan']||'').trim()||(local&&local.detail)||null,
+    category:clearedRemote?null:(mapSummaryToCategory(sum)||(local&&local.category)||null),
+    detail:clearedRemote?null:(String(remoteRow['Keterangan']||'').trim()||(local&&local.detail)||null),
     note:String(remoteRow['Note']||'').trim()||(local&&local.note)||null,
     evidenceLink:String(remoteRow['Link Evidence']||'').trim()||(local&&local.evidenceLink)||null,
     // 2 Okt: updatedPhone/namaPic SEKARANG beneran round-trip ke server ("Nomor Pelanggan (Dashboard)"/
