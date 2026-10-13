@@ -10654,12 +10654,29 @@ function syncVisitTCOnly(syncOpts){
       // atasnya) -- write-back ke server abis Store.set(), BUKAN di tengah loop (sama pola auto-paid
       // di syncMonthList). Label per-record beda tergantung siapa yang AKHIRNYA nentuin nilai final.
       var autoChanged=[];
-      (json.data||[]).forEach(function(row){
+      // 13 Okt (kasus Innotex 362911): sumber (getVisitTCV2) sekarang bawa `joinCode` (kolom AB form).
+      // Record dgn joinCode valid -> match EXACT ke record.id; sisanya (tanpa Join Code) pakai heuristik
+      // lama TAPI cuma ke record yang BELUM kena exact-match -- jangan lagi nempel visit ke case lain
+      // gara2 jarak bulan seri (tie -> expired terbaru). visitTC lama di-reset dulu: sumber kebenarannya
+      // form, jadi tempelan salah dari sync sebelumnya NGGAK boleh nyangkut di Store.
+      d.records.forEach(function(r){if(r.visitTC)r.visitTC=null;});
+      var idIdx={};d.records.forEach(function(r){idIdx[r.id]=r;});
+      var exactIds={};
+      var tcRows=(json.data||[]).slice().sort(function(a,b){return (a.timestamp||0)-(b.timestamp||0);});
+      var exactRows=tcRows.filter(function(row){return row.joinCode&&idIdx[row.joinCode];});
+      exactRows.forEach(function(row){exactIds[row.joinCode]=true;});
+      var orderedRows=exactRows.concat(tcRows.filter(function(row){return !(row.joinCode&&idIdx[row.joinCode]);}));
+      orderedRows.forEach(function(row){
         var oid=String(row.outletId||'').trim();if(!oid)return;
-        var candidates=outletIdx[oid];
-        if(!candidates||!candidates.length){notFound++;return;}
+        var rec;
+        if(row.joinCode&&idIdx[row.joinCode]){
+          rec=idIdx[row.joinCode];
+        }else{
+          var candidates=(outletIdx[oid]||[]).filter(function(r){return !exactIds[r.id];});
+          if(!candidates.length){notFound++;return;}
+          rec=pickClosestTcRecord(candidates,row.timestamp);
+        }
         matched++;
-        var rec=pickClosestTcRecord(candidates,row.timestamp);
         rec.visitTC={
           csName:row.csName,outletName:row.outletName,program:row.program,fotoVisit:row.fotoVisit,
           statusVisit:row.statusVisit,alasanChurn:row.alasanChurn,noteTambahan:row.noteTambahan,
