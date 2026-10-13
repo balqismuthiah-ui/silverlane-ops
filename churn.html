@@ -8919,6 +8919,14 @@ function reviewNpsEvidenceUI(decision){
   }).catch(function(err){toast('Gagal review evidence NPS: '+err.message,5000);});
 }
 
+// 12 Okt: evidence klaim (Rating/NPS) HARUS link. Sebelumnya cuma dicek "nggak kosong" -> agen ngetik
+// nama file ("Review Google Maps X.jpeg") yang nggak bisa dibuka siapa pun (kasus Teako/Seblak Makenon).
+// Dicek HANYA kalau nilainya baru/berubah -- evidence lama (legacy dari Report) nggak memblok save lain.
+var EVIDENCE_LINK_MSG='Evidence harus berupa LINK (https://...) — upload screenshot ke Drive/Chatwoot lalu tempel linknya, bukan nama file.';
+function evidenceLooksLikeLink_(s){
+  s=String(s||'').trim();
+  return /https?:\/\/\S+/i.test(s)||/^(www\.|[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\/)\S+$/i.test(s);
+}
 function saveResp(){
   if(!respTargetId)return;
   var d=Store.get();
@@ -8943,6 +8951,7 @@ function saveResp(){
   var npsEvidEl=document.getElementById('resp-nps-evidence');
   var npsEvidenceIn=((npsEvidEl&&npsEvidEl.value)||'').trim();
   if(phone&&!isValidPhone(phone)){toast('Nomor HP tidak valid (min 10 digit)');return;}
+  if(npsEvidenceIn&&npsEvidenceIn!==((r.nps&&r.nps.evidence)||'')&&!evidenceLooksLikeLink_(npsEvidenceIn)){toast('⚠ NPS: '+EVIDENCE_LINK_MSG,6000);return;}
   // 2 Okt (keputusan operator): wajib CUMA kalau field-nya genuinely kekliatan/editable
   // (!phoneEl.dataset.masked, canSeePhone=true) -- user yang field-nya disamarkan (nggak punya akses)
   // TETAP bisa save update lain tanpa kesandung field yang emang nggak bisa mereka edit.
@@ -9031,6 +9040,8 @@ function saveResp(){
     var evidVal=((document.getElementById('upsell-'+p.key+'-evidence')||{}).value||'').trim();
     if(!existing&&countVal<=0)return; // belum ada klaim & nggak diisi -> skip aman (AC-A3-2)
     if(!evidVal){upsellError='Evidence wajib untuk klaim '+p.label;return;} // AC-A4
+    // 12 Okt: baru/berubah harus link (lihat evidenceLooksLikeLink_)
+    if(evidVal!==((existing&&existing.evidence)||'')&&!evidenceLooksLikeLink_(evidVal)){upsellError=p.label+': '+EVIDENCE_LINK_MSG;return;}
     if(isSup){
       var statusEl=document.getElementById('upsell-'+p.key+'-status');
       var newStatus=statusEl?statusEl.value:(existing?existing.status:'pending');
