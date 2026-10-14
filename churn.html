@@ -10809,17 +10809,34 @@ function mapSummaryToCategory(sum){
 function mergeResponseFromRemote(local,remoteRow){
   var remoteLastEdit=String(remoteRow['Last Edit At']||'');
   var localLastEdit=local?String(local.updatedAt||''):'';
+  // 14 Okt: respons yang SENGAJA dikosongin server (cleanup salah-tempel Auto-TC, penanda Last Edit By
+  // "Sistem (Cleanup ..." + Summary/Keterangan kosong) harus ngosongin lokal JUGA walau timestamp-nya
+  // SAMA dengan lokal -- delta-poll versi lama udah sempet nge-merge baris ini (updatedAt lokal = Last
+  // Edit At remote, nilai kategori lama kepertahankan krn fallback `||local`), jadi guard "remote
+  // <= lokal" di bawah bikin dia nggak pernah dievaluasi ulang. Lokal yang BENERAN lebih baru tetap menang.
+  var clearedRemote=!String(remoteRow['Summary']||'').trim()&&!String(remoteRow['Keterangan']||'').trim()
+    &&/^Sistem \(Cleanup/.test(String(remoteRow['Last Edit By']||''));
+  if(clearedRemote&&(!local||!localLastEdit||remoteLastEdit>=localLastEdit)){
+    if(local&&!local.category&&!local.detail&&!local.note&&!local.evidenceLink&&local.updatedAt===remoteLastEdit)return local; // udah bersih, idempotent
+    return{
+      category:null,detail:null,note:null,evidenceLink:null,
+      updatedPhone:(local&&local.updatedPhone)||null,
+      namaPic:(local&&local.namaPic)||null,
+      kompetitor:String(remoteRow['Kompetitor (Gabungan)']||'').trim()||null,
+      waStatus:(local&&local.waStatus)||'unchecked',
+      updatedAt:remoteLastEdit,
+      updatedBy:remoteRow['Last Edit By']||''
+    };
+  }
   if(local&&remoteLastEdit&&localLastEdit&&remoteLastEdit<=localLastEdit)return local;
   var sum=String(remoteRow['Summary']||'').trim();
   // 13 Okt: SEBELUMNYA category/detail kosong dari remote SELALU jatuh balik ke nilai lokal (`||local`) ->
   // respons yang di-KOSONGIN di sheet (cleanup salah-tempel Auto-TC, kasus Innotex 36291146338) nggak
   // pernah ilang dari dashboard. Penanda eksplisit biar aman: Last Edit By "Sistem (Cleanup ..." DAN
   // Summary+Keterangan kosong (+ remote udah lolos guard "lebih baru" di atas) = sengaja dikosongin.
-  var clearedRemote=!sum&&!String(remoteRow['Keterangan']||'').trim()
-    &&/^Sistem \(Cleanup/.test(String(remoteRow['Last Edit By']||''));
   return{
-    category:clearedRemote?null:(mapSummaryToCategory(sum)||(local&&local.category)||null),
-    detail:clearedRemote?null:(String(remoteRow['Keterangan']||'').trim()||(local&&local.detail)||null),
+    category:mapSummaryToCategory(sum)||(local&&local.category)||null,
+    detail:String(remoteRow['Keterangan']||'').trim()||(local&&local.detail)||null,
     note:String(remoteRow['Note']||'').trim()||(local&&local.note)||null,
     evidenceLink:String(remoteRow['Link Evidence']||'').trim()||(local&&local.evidenceLink)||null,
     // 2 Okt: updatedPhone/namaPic SEKARANG beneran round-trip ke server ("Nomor Pelanggan (Dashboard)"/
@@ -10949,6 +10966,14 @@ function syncResponsesOnly(opts){
       var note=String(row['NOTE']||'').trim();
       var staff=String(row['Staff']||'').trim();
       var link=String(row['Link Evidence']||'').trim();
+      // 14 Okt: baris yang SENGAJA dikosongin server (cleanup salah-tempel Auto-TC; penanda Last Edit By /
+      // Staff "Sistem (Cleanup ...", Summary+Keterangan kosong) -> kosongin lokal. Tanpa ini `if(ket)...`
+      // di bawah nggak pernah bisa "menghapus" nilai lama (kasus Innotex 36291146338).
+      var cleanedBy=String(row['Last Edit By']||staff||'');
+      if(!sum&&!ket&&/^Sistem \(Cleanup/.test(cleanedBy)){
+        resp.category=null;resp.detail=null;resp.summary=null;resp.note=null;resp.evidenceLink=null;
+        resp.updatedBy=cleanedBy;
+      }else{
       if(ket)resp.detail=ket;
       if(sum)resp.summary=sum;
       var mappedCat=mapSummaryToCategory(sum);
@@ -10956,6 +10981,7 @@ function syncResponsesOnly(opts){
       if(note)resp.note=note;
       if(staff)resp.updatedBy=staff;
       if(link)resp.evidenceLink=link;
+      }
       rec.response=resp;n++;
       // 13 Sep: klasifikasi GABUNGAN (Dashboard+TC precedence, sama basis sama sheet RESPONSES kolom
       // "Status Gabungan (Summary+TC)") -- field TERPISAH dari resp.category/detail di atas (yang itu
