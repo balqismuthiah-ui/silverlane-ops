@@ -5686,6 +5686,7 @@ function renderOverview(){
       var ratingApprByMonth={},npsApprByMonth={};
       rnAllMonthly.forEach(function(x){
         if(x.status!=='Approved'||!x.claimMonth)return;
+        if(x.type==='engnps')return; // klaim NPS Engagement belum dihitung ke target/ringkasan (keputusan terpisah)
         var map=x.type==='nps'?npsApprByMonth:ratingApprByMonth;
         map[x.claimMonth]=(map[x.claimMonth]||0)+1;
       });
@@ -6687,6 +6688,20 @@ function ratingNpsAllRows(){
       });
     }
   });
+  // 15 Okt (request operator): klaim NPS dari workorder Engagement (ENGAGEMENT_WO) ikut tampil di sini.
+  // Sumber engWoData (di-lazy-load oleh renderRatingNps). Bulan klaim diturunkan dari kode yyyymm.
+  (typeof engWoData!=='undefined'&&engWoData?engWoData:[]).forEach(function(w){
+    var ev=String(w['NPS Evidence']||'').trim();
+    if(!ev)return;
+    var ym=String(w['Bulan Kode']||'').trim();
+    var cm=/^\d{6}$/.test(ym)?(IDN_MONTHS_CLIENT[+ym.slice(4)-1]+' '+ym.slice(0,4)):'';
+    out.push({
+      recId:w['Kode'],key:w['Kode'],type:'engnps',platformKey:'nps',platformLabel:'😊 NPS · Engagement',
+      outletName:w['Nama Outlet']||w['ID Outlet']||w['Kode'],agentName:w['Agen']||'',
+      status:ratingNpsStatusNorm_(w['NPS Status']),rejectReason:w['NPS Reject Reason']||'',
+      claimMonth:cm,evidence:ev,approvedBy:w['NPS Reviewed By']||''
+    });
+  });
   return out;
 }
 function ratingNpsBasePool(all,me,isSup){
@@ -6785,7 +6800,7 @@ function ratingNpsRowsHtml(all,me,isSup){
     // Bulan Klaim (+ koreksi Agen buat leader): leader bisa koreksi klaim SIAPA AJA, agent cuma
     // klaim MILIK SENDIRI (brief operator). Tombol buka modal "Edit Klaim" (dropdown Bulan/Tahun,
     // + dropdown Agen kalau leader+tipe rating -- feedback #2b/#2c, bukan prompt() free-text lagi.
-    var canEditMonth=isSup||x.agentName===Auth.getActive();
+    var canEditMonth=(isSup||x.agentName===Auth.getActive())&&x.type!=='engnps';
     var monthCell=(x.claimMonth||'<span style="color:var(--tx3)">—</span>')
       +(canEditMonth?' <button class="action-btn ab-edit" data-act="edit-claim-month" data-key="'+x.key+'" data-type="'+x.type+'" style="font-size:10px;padding:2px 6px">✏️</button>':'');
     var bs=rnBulkState_(x);
@@ -6937,12 +6952,14 @@ function rnBulkReview(decision){
     if(!reason){toast('Alasan reject wajib diisi');return;}
   }else if(!confirm('Approve '+picked.length+' klaim terpilih?'))return;
 
-  var byType={nps:[],rating:[]};
+  var byType={nps:[],rating:[],engnps:[]};
   picked.forEach(function(x){byType[x.type].push(x.key);});
   var jobs=[];
   ['nps','rating'].forEach(function(t){
     for(var i=0;i<byType[t].length;i+=RN_BULK_CHUNK)jobs.push({type:t,keys:byType[t].slice(i,i+RN_BULK_CHUNK)});
   });
+  // Klaim NPS Engagement: belum ada endpoint batch -> 1 request per kode (reviewEngagementNps).
+  byType.engnps.forEach(function(k){jobs.push({type:'engnps',keys:[k]});});
   rnBulkBusy=true;rnUpdateBulkBar_();
   var email=(Auth.getSession()||{}).email||'';
   var okN=0,failed=[],aborted=null,done=0,timedOut=false;
@@ -6951,12 +6968,21 @@ function rnBulkReview(decision){
     chain=chain.then(function(){
       if(aborted){failed=failed.concat(job.keys.map(function(k){return{key:k,error:'belum diproses'};}));return;}
       toast('⏳ Memproses '+Math.min(done+job.keys.length,picked.length)+'/'+picked.length+'…',20000);
-      return _gasPost({action:'reviewClaimsBatch',type:job.type,keys:job.keys,decision:decision,rejectReason:reason},RN_WRITE_OPTS).then(function(res){
+      var jobPayload=job.type==='engnps'
+        ?{action:'reviewEngagementNps',kode:job.keys[0],decision:decision,rejectReason:reason}
+        :{action:'reviewClaimsBatch',type:job.type,keys:job.keys,decision:decision,rejectReason:reason};
+      return _gasPost(jobPayload,RN_WRITE_OPTS).then(function(res){
         var d=Store.get();
-        (res.results||[]).forEach(function(r){
-          if(r.ok){okN++;rnApplyReviewLocal_(d,job.type,r.key,decision,reason,email);}
-          else failed.push({key:r.key,error:r.error||'gagal'});
-        });
+        if(job.type==='engnps'){
+          var w=engWoData.find(function(x){return x['Kode']===job.keys[0];});
+          if(w&&res&&res.row)Object.keys(res.row).forEach(function(k){w[k]=res.row[k];});
+          okN++;
+        }else{
+          (res.results||[]).forEach(function(r){
+            if(r.ok){okN++;rnApplyReviewLocal_(d,job.type,r.key,decision,reason,email);}
+            else failed.push({key:r.key,error:r.error||'gagal'});
+          });
+        }
         Store.set(d);
         done+=job.keys.length;
       }).catch(function(err){
@@ -7093,6 +7119,8 @@ function refreshRatingNpsBody(){
 function renderRatingNps(){
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
+  // 15 Okt: klaim NPS dari workorder Engagement -- muat sekali (jangan loop kalau gagal: engWoError).
+  if(!engWoLoaded&&!engWoLoading&&!engWoError)engLoad(false);
   var all=ratingNpsAllRows();
 
   if(!all.length){
@@ -8691,7 +8719,11 @@ function engLoad(force){
     if(j&&j.ok===false)throw new Error(j.error||'gagal');
     engWoData=(j&&j.data)||[];engWoLoaded=true;
   }).catch(function(err){engWoError=err.message||'gagal memuat';})
-  .then(function(){engWoLoading=false;if(currentTab==='engagement')renderEngagement();});
+  .then(function(){
+    engWoLoading=false;
+    if(currentTab==='engagement')renderEngagement();
+    else if(currentTab==='ratingnps')renderRatingNps(); // klaim NPS Engagement baru tiba -> masuk list
+  });
 }
 function engFiltered(){
   var today=engTodayIso(),isSup=Auth.isSuperior();
@@ -8875,7 +8907,7 @@ function openEngModal(kode){
     +'<div id="eng-nps-line" style="font-size:12px;margin-bottom:6px"></div>'
     +'<input type="text" id="eng-f-npsev" value="'+engEsc(x['NPS Evidence']||'')+'" placeholder="https://… screenshot Drive / link chat bukti NPS terkirim">'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 12px">'
-    +'<button type="button" class="btn btn-pri" id="eng-nps-submit" style="padding:5px 12px;font-size:12px">📤 Kirim klaim NPS</button>'
+    +'<span style="font-size:11px;color:var(--tx3);align-self:center">Link bukti terkirim otomatis saat klik <b>Simpan</b> (masuk review leader).</span>'
     +(isSup?'<button type="button" class="action-btn ab-ok" id="eng-nps-approve">✓ Approve</button><button type="button" class="action-btn ab-del" id="eng-nps-reject">✕ Reject</button>':'')
     +'</div><div class="sep"></div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
@@ -8919,6 +8951,10 @@ function saveEngModal(){
     var miss=repKeys.filter(function(k){return !fields[k];});
     if(miss.length){toast('⚠ Report diisi → semua kolom wajib. Belum: '+miss.join(', '),7000);return;}
   }
+  // 15 Okt: klaim NPS ikut tersimpan -- link bukti baru/berubah dikirim sebagai klaim setelah workorder tersimpan.
+  var npsEv=v('eng-f-npsev');
+  var npsChanged=!!npsEv&&npsEv!==String(x['NPS Evidence']||'').trim();
+  if(npsChanged&&!evidenceLooksLikeLink_(npsEv)){toast('⚠ Bukti NPS: '+EVIDENCE_LINK_MSG,6000);return;}
   var btn=document.getElementById('eng-save-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Menyimpan...';}
   var newAgent=document.getElementById('eng-f-agent');
@@ -8928,8 +8964,15 @@ function saveEngModal(){
       return _gasPost({action:'reassignEngagementWo',kode:engEditKode,agent:newAgent.value},RN_WRITE_OPTS).then(function(){x['Agen']=newAgent.value;});
     }
   });
+  if(npsChanged){
+    chain=chain.then(function(){
+      return _gasPost({action:'submitEngagementNps',kode:engEditKode,evidence:npsEv},RN_WRITE_OPTS).then(function(res){
+        if(res&&res.row)Object.keys(res.row).forEach(function(k){x[k]=res.row[k];});
+      });
+    });
+  }
   chain.then(function(){
-    closeModal('eng-modal');toast('Workorder disimpan');
+    closeModal('eng-modal');toast(npsChanged?'Workorder disimpan + klaim NPS terkirim (menunggu review leader)':'Workorder disimpan');
     if(currentTab==='engagement')renderEngagement();
   }).catch(function(err){
     if(err&&err.timedOut)toast('⏳ GAS lambat — hasil BELUM PASTI. Muat ulang daftar dulu sebelum menyimpan lagi.',8000);
@@ -11506,9 +11549,15 @@ tabContent.addEventListener('click',function(e){
         if(!rnRejectReason){toast('Alasan reject wajib diisi');return;}
       }
       var rnAction=rnType==='nps'?'reviewNpsEvidence':'reviewUpsellClaim';
-      _gasPost({action:rnAction,key:rnKey,decision:rnDecision,rejectReason:rnRejectReason},RN_WRITE_OPTS).then(function(){
+      var rnPayload=rnType==='engnps'
+        ?{action:'reviewEngagementNps',kode:rnKey,decision:rnDecision,rejectReason:rnRejectReason}
+        :{action:rnAction,key:rnKey,decision:rnDecision,rejectReason:rnRejectReason};
+      _gasPost(rnPayload,RN_WRITE_OPTS).then(function(rnRes){
         var rnD=Store.get();
-        if(rnType==='nps'){
+        if(rnType==='engnps'){
+          var rnW=engWoData.find(function(w){return w['Kode']===rnKey;});
+          if(rnW&&rnRes&&rnRes.row)Object.keys(rnRes.row).forEach(function(k){rnW[k]=rnRes.row[k];});
+        }else if(rnType==='nps'){
           var rnR=rnD.records.find(function(x){return x.id===rnKey;});
           if(rnR&&rnR.nps){rnR.nps.status=rnDecision==='rejected'?'Rejected':'Approved';rnR.nps.rejectReason=rnDecision==='rejected'?rnRejectReason:'';rnR.nps.approvedBy=(Auth.getSession()||{}).email||'';}
         }else{
