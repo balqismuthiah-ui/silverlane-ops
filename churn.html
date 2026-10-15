@@ -4893,13 +4893,21 @@ function renderOverview(){
   // ── Per-agent target section (agents only) ───────────────────────────
   var agentTargetSection='';
   if(!isSup){
-    var myMaps=allRecs.reduce(function(s,r){return s+upsellApprovedCount(r,'maps',me);},0);
-    var myApps=allRecs.reduce(function(s,r){return s+upsellApprovedCount(r,'playstore',me);},0);
-    var myUpsellFin=computeUpsellCountAttach(myRecs,currentMonthKey);
+    // 15 Okt (QA operator): kartu agen HARUS sama dgn tampilan leader (Ringkasan per Agen / MTD per-Agen) --
+    // dulu: Maps/Apps ALL-TIME (130/25), upsell+renewal berbasis outlet yg ditugaskan (bukan creator billing),
+    // konversi = renewal/total SEMUA record (705/1445). Sekarang pakai fungsi yg sama persis dgn leader.
+    var myMaps=allRecs.reduce(function(s,r){return s+upsellApprovedCountInMonth(r,'maps',me,CURRENT_CLAIM_MONTH_STR);},0);
+    var myApps=allRecs.reduce(function(s,r){return s+upsellApprovedCountInMonth(r,'playstore',me,CURRENT_CLAIM_MONTH_STR);},0);
+    var _myAr=computePersonalAttachRate(currentMonthKey,me); // = kolom Attach Rate di MTD per-Agen (42/58)
+    var myUpsellFin={synced:_myAr.synced,count:_myAr.dealCount,attachPct:_myAr.pct,denom:_myAr.denom};
+    var _myRenBill=computePersonalBillingCount('renewal_count',currentMonthKey,me); // deal renewal billing bulan ini
+    var _myRenLive=computeAgentMtdCompare('renewalsRaw',me,currentMonthKey,null,null,null).cur; // = "Live Revenue" MTD per-Agen
+    var myCohortRecs=myRecs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(currentMonthKey)>=0;});
+    var myConv=computeMovingConversion(convBaseFilter(myCohortRecs,'Hot'),currentMonthKey); // = konversi per agen leader (135/272)
     // 18 Jul (operator): revenue PERSONAL (Rp) — renewal (join FinancialsStore, scope myRecs) + upsell
     // (UpsellTeamStore, filter creatorName=me). Ditampilin nominal PENUH (fmtRpFull). Dulu agen cuma
     // lihat COUNT (outlet renewal / deal), sekarang + Rp punya dia sendiri.
-    var myRenewalRev=computeFinancialsMetric('renewal_revenue',myRecs,currentMonthKey);
+    var myRenewalRev={denom:_myRenLive.synced?1:0,actual:_myRenLive.revenue};
     var myUpsellRev=computeUpsellRevenuePersonal(currentMonthKey,me);
     // 15 Okt (request operator): agen juga lihat performa NPS pribadinya -- target SAMA persis yang dipakai
     // "Ringkasan per Agen" leader (computeNpsAutoTarget per agen = 80% renewal paid CX - multioutlet),
@@ -4912,7 +4920,7 @@ function renderOverview(){
     var myNpsClr=myNpsPct>=100?'var(--grn)':(myNpsPct>=70?'var(--yel)':'var(--red)');
     var myMapsPct=Math.min(PER_AGENT_REVIEW_MAPS?Math.round(myMaps/PER_AGENT_REVIEW_MAPS*100):0,100);
     var myAppsPct=Math.min(PER_AGENT_REVIEW_APPS?Math.round(myApps/PER_AGENT_REVIEW_APPS*100):0,100);
-    var myConvPct=total?Math.round((renewal/total)*100):0;
+    var myConvPct=myConv.actual;
     var myConvClr=myConvPct>=convTargetImp?'var(--grn)':(myConvPct>=convTarget?'var(--yel)':'var(--red)');
     agentTargetSection='<div class="ov-section"><div class="ov-section-title">🎯 Target Saya Bulan Ini</div>'
       +'<div class="grid4">'
@@ -4923,7 +4931,7 @@ function renderOverview(){
       +'<div style="font-size:11px;color:var(--tx3);margin-top:4px">Improved</div>'
       +'<div style="font-size:18px;font-weight:700;color:var(--blu)">'+fmtRp(PER_AGENT_RENEWAL_IMP)+'</div>'
       +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">Insentif: T0 Rp5jt · T1 Rp5,5jt · T2 Rp6jt · T3 Rp7jt (+konversi)</div>'
-      +'<div style="font-size:11px;color:var(--tx2);margin-top:3px">Outlet renewal saya: <strong>'+renewal+'</strong></div>'
+      +'<div style="font-size:11px;color:var(--tx2);margin-top:3px">Deal renewal saya (billing): <strong>'+(_myRenBill.synced?_myRenBill.actual:'—')+'</strong></div>'
       +'<div style="font-size:10px;color:var(--tx3);margin-top:6px">Revenue renewal saya ('+currentMonthKey+' 26)</div>'
       +'<div style="font-size:17px;font-weight:800;color:var(--grn)">'+(myRenewalRev.denom?fmtRpFull(myRenewalRev.actual):'<span style="font-size:11px;font-weight:400;color:var(--tx3)">belum ada data financials</span>')+'</div>'
       +'</div>'
@@ -4951,7 +4959,7 @@ function renderOverview(){
       +'<div style="font-size:10px;color:var(--tx3)">Improved: <strong>'+convTargetImp+'%</strong></div>'
       +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+Math.min(convTargetImp?myConvPct/convTargetImp*100:0,100)+'%;background:'+(myConvPct>=convTargetImp?'var(--grn)':'var(--org)')+'"></div></div>'
       +'</div>'
-      +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+renewal+' renewal dari '+total+' outlet</div>'
+      +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+myConv.moving+'/'+myConv.total+' Hot (expiry pindah)'+(myConv.total?'':' <span title="nol Hot bulan ini">—</span>')+'</div>'
       +'</div>'
       +'<div class="card">'
       +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⭐ Target Review Saya</div>'
@@ -10805,8 +10813,12 @@ function syncMultioutletList(opts){
   opts=opts||{};
   _gasGet('multioutletList',30000).then(function(json){
     var ids=json.ids||[];
+    var prevN=Object.keys(MultioutletStore.getSet()).length;
     try{localStorage.setItem(MULTIOUTLET_LS_KEY_,JSON.stringify({ids:ids,syncedAt:new Date().toISOString()}));}catch(e){}
     if(!opts.silent){toast(ids.length+' outlet multioutlet disinkronkan');renderTab(currentTab);}
+    // 15 Okt: sync silent dulu TIDAK re-render -> browser yg baru/cache kosong terus menampilkan target & Paid CX
+    // NPS TANPA exclude multioutlet (beda dari leader). Daftar berubah -> render ulang Overview sekali.
+    else if(ids.length!==prevN&&currentTab==='overview')renderTab('overview');
   }).catch(function(err){
     if(!opts.silent)toast(err.name==='AbortError'?'Timeout — coba lagi':'Gagal sync multioutlet: '+err.message,5000);
   });
