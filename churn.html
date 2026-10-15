@@ -303,6 +303,7 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
     <button class="ntab" data-tab="klopos">📅 KLOPOS Daily</button>
     <button class="ntab" data-tab="churntrend">📈 Churn Trend</button>
     <button class="ntab" data-tab="ratingnps">⭐ Rating & NPS</button>
+    <button class="ntab" data-tab="engagement">🗂️ Engagement</button>
     <button class="ntab" data-tab="invoice">🧾 Invoice Tracker</button>
     <button class="ntab" data-tab="invsummary">📆 Invoice Summary</button>
     <button class="ntab" data-tab="targetsmanage">🎯 Kelola Target</button>
@@ -381,6 +382,18 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
     <div class="modal-ft">
       <button class="btn btn-sec" data-close="rnedit-modal">Batal</button>
       <button class="btn btn-pri" id="rnedit-save-btn">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<!-- 15 Okt: Engagement -- update workorder H14/M07 -->
+<div class="modal-overlay" id="eng-modal">
+  <div class="modal">
+    <div class="modal-hd"><h3>Update Workorder Engagement</h3><button class="modal-close" data-close="eng-modal">✕</button></div>
+    <div class="modal-bd" id="eng-body"></div>
+    <div class="modal-ft">
+      <button class="btn btn-sec" data-close="eng-modal">Batal</button>
+      <button class="btn btn-pri" id="eng-save-btn">Simpan</button>
     </div>
   </div>
 </div>
@@ -8620,6 +8633,7 @@ function renderTab(tab){
     case 'invoice':renderInvoiceTracker();break;
     case 'invsummary':renderInvoiceSummary();break;
     case 'ratingnps':renderRatingNps();break;
+    case 'engagement':renderEngagement();break;
     case 'targetsmanage':renderTargetsManage();break;
     case 'loginlog':renderLoginLog();break;
     case 'myjourney':renderMyJourney();break;
@@ -8629,6 +8643,186 @@ function renderTab(tab){
 }
 
 // ── MODALS ─────────────────────────────────────────────────────────────────
+// ── TAB: ENGAGEMENT (15 Okt) -- workorder H14 / M07 dari tab ENGAGEMENT_WO (gas_engagement_wo_*.gs) ──
+// Agen: workorder miliknya. Leader: semua + reassign. Evidence harus link (aturan sama klaim Rating/NPS).
+var ENG_PAGE_SIZE=50;
+var engWoData=[],engWoLoaded=false,engWoLoading=false,engWoError='';
+var engStatusFilter='Open',engActFilter='',engAgentFilter='',engDueFilter='',engSearch='',engPage=0;
+var ENG_OPT_METODE=['','WA','Call'];
+var ENG_OPT_KENDALA=['','Delivered','Dibalas','Tidak ada respon','Ada kendala'];
+var ENG_OPT_INTEREST=['','Akan membeli segera / butuh','Kendala dana','Belum membutuhkan'];
+var ENG_OPT_LAINNYA=['','Hardware','Renewal','Tidak ada'];
+function engEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function engTodayIso(){var d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);}
+function engLoad(force){
+  if(engWoLoading)return;
+  if(engWoLoaded&&!force)return;
+  engWoLoading=true;engWoError='';
+  _gasGet('engagementWo',90000).then(function(j){
+    if(j&&j.ok===false)throw new Error(j.error||'gagal');
+    engWoData=(j&&j.data)||[];engWoLoaded=true;
+  }).catch(function(err){engWoError=err.message||'gagal memuat';})
+  .then(function(){engWoLoading=false;if(currentTab==='engagement')renderEngagement();});
+}
+function engFiltered(){
+  var today=engTodayIso(),isSup=Auth.isSuperior();
+  var s=engSearch.toLowerCase();
+  return engWoData.filter(function(x){
+    if(engStatusFilter&&String(x['Status']||'Open')!==engStatusFilter)return false;
+    if(engActFilter&&x['Aktivitas']!==engActFilter)return false;
+    if(isSup&&engAgentFilter){
+      if(engAgentFilter==='__none__'){if(x['Agen'])return false;}else if(x['Agen']!==engAgentFilter)return false;
+    }
+    var due=String(x['Tgl Follow-up']||'').slice(0,10);
+    if(engDueFilter==='today'&&due!==today)return false;
+    if(engDueFilter==='overdue'&&!(due<today&&String(x['Status']||'Open')!=='Done'))return false;
+    if(engDueFilter==='upcoming'&&!(due>today))return false;
+    if(s){
+      var hay=(x['Kode']+' '+x['Nama Outlet']+' '+x['ID Outlet']+' '+x['Telepon']+' '+x['Owner']+' '+x['Agen']).toLowerCase();
+      if(hay.indexOf(s)<0)return false;
+    }
+    return true;
+  }).sort(function(a,b){
+    var da=String(a['Tgl Follow-up']),db=String(b['Tgl Follow-up']);
+    return da<db?-1:da>db?1:(a['Kode']<b['Kode']?-1:1);
+  });
+}
+function engRowsHtml(){
+  var isSup=Auth.isSuperior(),today=engTodayIso();
+  var recs=engFiltered();
+  var cnt=document.getElementById('eng-count');
+  if(cnt)cnt.textContent='Menampilkan '+recs.length+' dari '+engWoData.length+' workorder';
+  var colspan=isSup?9:8;
+  if(!recs.length)return'<tr><td colspan="'+colspan+'" class="empty">Tidak ada workorder</td></tr>';
+  var totalPages=Math.max(1,Math.ceil(recs.length/ENG_PAGE_SIZE));
+  engPage=Math.min(engPage,totalPages-1);
+  return recs.slice(engPage*ENG_PAGE_SIZE,(engPage+1)*ENG_PAGE_SIZE).map(function(x){
+    var due=String(x['Tgl Follow-up']||'').slice(0,10),done=String(x['Status']||'Open')==='Done';
+    var dueStyle=(!done&&due<today)?'color:var(--red);font-weight:600':(due===today?'font-weight:600':'');
+    var ph=String(x['Telepon']||'').replace(/\D/g,'');
+    var np=ph?normPhone(ph):'';
+    var gc=np&&gcFlagMap[np]?'<span class="badge badge-red" title="Nomor ada di Watchlist GC">GC</span>':'';
+    var phCell=ph?('<a href="https://wa.me/'+ph+'" target="_blank" rel="noopener">'+engEsc(x['Telepon'])+'</a> '+gc):'<span style="color:var(--tx3)">—</span>';
+    var st=done?'<span class="badge badge-grn">Done</span>':'<span class="badge badge-yel">Open</span>';
+    var nps=String(x['NPS Status']||'').trim();
+    var npsCell=nps?('<span class="badge badge-'+(nps==='Approved'?'grn':nps==='Rejected'?'red':'yel')+'">'+engEsc(nps)+'</span>'):'<span style="color:var(--tx3)">—</span>';
+    return'<tr>'
+      +'<td style="'+dueStyle+'">'+engEsc(due)+'</td>'
+      +'<td><span class="badge badge-gray">'+engEsc(x['Aktivitas'])+'</span><div style="font-size:10px;color:var(--tx3)">'+engEsc(x['Kode'])+'</div></td>'
+      +'<td>'+engEsc(x['Nama Outlet'])+'<div style="font-size:10px;color:var(--tx3)">'+engEsc(x['ID Outlet'])+'</div></td>'
+      +'<td style="font-size:12px">'+phCell+'</td>'
+      +(isSup?'<td>'+(engEsc(x['Agen'])||'<span style="color:var(--red)">—</span>')+'</td>':'')
+      +'<td>'+st+'</td>'
+      +'<td>'+npsCell+'</td>'
+      +'<td style="font-size:11px">'+engEsc(x['Metode'])+(x['Kendala']?' · '+engEsc(x['Kendala']):'')+'</td>'
+      +'<td><button class="action-btn ab-edit" data-act="eng-open" data-kode="'+engEsc(x['Kode'])+'">✏️ Update</button></td>'
+      +'</tr>';
+  }).join('')+pagerRow(colspan,engPage,totalPages,recs.length,'eng-prev-btn','eng-next-btn');
+}
+function refreshEngBody(){
+  engPage=0;
+  var tb=document.getElementById('eng-tbody');
+  if(tb)tb.innerHTML=engRowsHtml();
+}
+function renderEngagement(){
+  var isSup=Auth.isSuperior();
+  var el=document.getElementById('tab-content');
+  if(!engWoLoaded){
+    engLoad(false);
+    el.innerHTML='<div class="ov-section"><div class="ov-section-title">🗂️ Engagement</div></div><div class="card empty">'
+      +(engWoError?('Gagal memuat workorder: '+engEsc(engWoError)+' — <a href="#" data-act="eng-refresh">coba lagi</a>'):'⏳ Memuat workorder…')+'</div>';
+    return;
+  }
+  function opts(list,sel,allLabel){
+    return list.map(function(v){var val=Array.isArray(v)?v[0]:v,lb=Array.isArray(v)?v[1]:v;return'<option value="'+engEsc(val)+'"'+(val===sel?' selected':'')+'>'+engEsc(lb||allLabel)+'</option>';}).join('');
+  }
+  var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return a.name;});
+  var open=engWoData.filter(function(x){return String(x['Status']||'Open')!=='Done';}).length;
+  var today=engTodayIso();
+  var todayN=engWoData.filter(function(x){return String(x['Tgl Follow-up']||'').slice(0,10)===today;}).length;
+  var overdue=engWoData.filter(function(x){return String(x['Status']||'Open')!=='Done'&&String(x['Tgl Follow-up']||'').slice(0,10)<today;}).length;
+  el.innerHTML=
+    '<div class="ov-section"><div class="ov-section-title">🗂️ Engagement — '+(isSup?'Semua Agen':'Workorder Saya')+'</div></div>'
+    +'<div style="font-size:12px;color:var(--tx2);margin:6px 0">Open: <strong>'+open+'</strong> · Jatuh tempo hari ini: <strong>'+todayN+'</strong> · Terlambat: <strong style="color:var(--red)">'+overdue+'</strong></div>'
+    +'<div class="frow" style="margin-top:8px">'
+    +'<input class="fsearch" type="search" id="eng-search" placeholder="🔍 Cari outlet / kode / telepon…" value="'+engEsc(engSearch)+'">'
+    +'<select id="eng-status">'+opts([['','Semua status'],['Open','Open'],['Done','Done']],engStatusFilter,'Semua status')+'</select>'
+    +'<select id="eng-act">'+opts([['','Semua aktivitas'],['H14','H+14'],['M07','M+7']],engActFilter,'Semua aktivitas')+'</select>'
+    +'<select id="eng-due">'+opts([['','Semua tanggal'],['today','Jatuh tempo hari ini'],['overdue','Terlambat'],['upcoming','Mendatang']],engDueFilter,'Semua tanggal')+'</select>'
+    +(isSup?'<select id="eng-agent">'+opts([['','Semua agen'],['__none__','⚠️ Belum ada agen']].concat(agents.map(function(a){return[a,a];})),engAgentFilter,'Semua agen')+'</select>':'')
+    +'<button class="btn btn-sec" data-act="eng-refresh" style="padding:6px 10px;font-size:12px">🔄 Muat ulang</button>'
+    +'<span id="eng-count" style="font-size:12px;color:var(--tx3);white-space:nowrap;align-self:center"></span>'
+    +'</div>'
+    +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
+    +'<thead><tr><th>Jatuh Tempo</th><th>Aktivitas</th><th>Outlet</th><th>Telepon</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>NPS</th><th>Metode · Kendala</th><th>Aksi</th></tr></thead>'
+    +'<tbody id="eng-tbody">'+engRowsHtml()+'</tbody></table></div></div>';
+}
+var engEditKode=null;
+function openEngModal(kode){
+  var x=engWoData.find(function(r){return r['Kode']===kode;});
+  if(!x)return;
+  engEditKode=kode;
+  var isSup=Auth.isSuperior();
+  function sel(id,list,val){return'<select id="'+id+'">'+list.map(function(o){return'<option value="'+engEsc(o)+'"'+(o===val?' selected':'')+'>'+(engEsc(o)||'—')+'</option>';}).join('')+'</select>';}
+  var agents=AgentsConfig.getAll().filter(function(a){return a.role==='agent';}).map(function(a){return a.name;});
+  var agentSel=isSup?('<label style="margin-top:10px;display:block">Agen (leader bisa ganti)</label><select id="eng-f-agent"><option value="">— belum ada —</option>'
+    +agents.map(function(a){return'<option value="'+engEsc(a)+'"'+(a===x['Agen']?' selected':'')+'>'+engEsc(a)+'</option>';}).join('')+'</select>'):'';
+  var interest=function(id,label,val){return'<div style="flex:1;min-width:150px"><label>'+label+'</label>'+sel(id,ENG_OPT_INTEREST,val)+'</div>';};
+  document.getElementById('eng-body').innerHTML=
+    '<p style="margin-bottom:6px"><strong>'+engEsc(x['Nama Outlet'])+'</strong> <span style="color:var(--tx3);font-size:12px">· '+engEsc(x['ID Outlet'])+'</span></p>'
+    +'<p style="font-size:12px;color:var(--tx2);margin-bottom:8px">'+engEsc(x['Aktivitas'])+' · kode <code>'+engEsc(x['Kode'])+'</code> · jatuh tempo '+engEsc(String(x['Tgl Follow-up']).slice(0,10))
+    +' · owner '+engEsc(x['Owner']||'—')+' · '+engEsc(x['Telepon']||'—')+(x['Email']?(' · '+engEsc(x['Email'])):'')+'</p>'
+    +'<div id="eng-token-box" style="font-size:12px;margin:2px 0 10px;color:var(--tx3)">🔑 Token NPS: memuat…</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<div style="flex:1;min-width:130px"><label>Metode</label>'+sel('eng-f-metode',ENG_OPT_METODE,x['Metode']||'')+'</div>'
+    +'<div style="flex:1;min-width:170px"><label>Update Kendala Outlet</label>'+sel('eng-f-kendala',ENG_OPT_KENDALA,x['Kendala']||'')+'</div>'
+    +'<div style="flex:1;min-width:150px"><label>Nomor Tiket CC</label><input type="text" id="eng-f-tiket" value="'+engEsc(x['Tiket CC']||'')+'" placeholder="- jika tidak ada"></div>'
+    +'</div>'
+    +'<label>Detail Kendala</label><textarea id="eng-f-detail" rows="2">'+engEsc(x['Detail Kendala']||'')+'</textarea>'
+    +'<label>Upload Evidence (link) <span style="color:var(--tx3);font-weight:400">— wajib untuk Done, harus link (Drive/Chatwoot)</span></label>'
+    +'<input type="text" id="eng-f-evidence" value="'+engEsc(x['Evidence']||'')+'" placeholder="https://...">'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +interest('eng-f-upgrade','Tertarik Upgrade?',x['Upgrade']||'')
+    +interest('eng-f-training','Tertarik Training?',x['Training']||'')
+    +interest('eng-f-addon','Tertarik Add On?',x['Add On']||'')
+    +'<div style="flex:1;min-width:150px"><label>Ketertarikan lainnya</label>'+sel('eng-f-lainnya',ENG_OPT_LAINNYA,x['Lainnya']||'')+'</div>'
+    +'</div>'
+    +'<label>Status</label><select id="eng-f-status"><option value="Open"'+(x['Status']!=='Done'?' selected':'')+'>Open</option><option value="Done"'+(x['Status']==='Done'?' selected':'')+'>Done</option></select>'
+    +agentSel;
+  openModal('eng-modal');
+  var oid=String(x['ID Outlet']||'').trim();
+  _gasGet('npsToken&outletId='+encodeURIComponent(oid),60000).then(function(info){
+    renderRespTokenBox_(document.getElementById('eng-token-box'),oid,info);
+  }).catch(function(err){renderRespTokenBox_(document.getElementById('eng-token-box'),oid,{ok:false,error:err.message});});
+}
+function saveEngModal(){
+  if(!engEditKode)return;
+  var x=engWoData.find(function(r){return r['Kode']===engEditKode;});
+  if(!x)return;
+  function v(id){var e=document.getElementById(id);return e?String(e.value||'').trim():'';}
+  var fields={'Metode':v('eng-f-metode'),'Kendala':v('eng-f-kendala'),'Tiket CC':v('eng-f-tiket'),'Detail Kendala':v('eng-f-detail'),
+    'Evidence':v('eng-f-evidence'),'Upgrade':v('eng-f-upgrade'),'Training':v('eng-f-training'),'Add On':v('eng-f-addon'),
+    'Lainnya':v('eng-f-lainnya'),'Status':v('eng-f-status')};
+  if(fields['Evidence']&&!evidenceLooksLikeLink_(fields['Evidence'])){toast('⚠ '+EVIDENCE_LINK_MSG,6000);return;}
+  if(fields['Status']==='Done'&&!fields['Evidence']){toast('⚠ Done wajib punya evidence (link)',5000);return;}
+  var btn=document.getElementById('eng-save-btn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Menyimpan...';}
+  var newAgent=document.getElementById('eng-f-agent');
+  var chain=_gasPost({action:'updateEngagementWo',kode:engEditKode,fields:fields},RN_WRITE_OPTS).then(function(res){
+    if(res&&res.row)Object.keys(res.row).forEach(function(k){x[k]=res.row[k];});
+    if(Auth.isSuperior()&&newAgent&&newAgent.value!==(x['Agen']||'')){
+      return _gasPost({action:'reassignEngagementWo',kode:engEditKode,agent:newAgent.value},RN_WRITE_OPTS).then(function(){x['Agen']=newAgent.value;});
+    }
+  });
+  chain.then(function(){
+    closeModal('eng-modal');toast('Workorder disimpan');
+    if(currentTab==='engagement')renderEngagement();
+  }).catch(function(err){
+    if(err&&err.timedOut)toast('⏳ GAS lambat — hasil BELUM PASTI. Muat ulang daftar dulu sebelum menyimpan lagi.',8000);
+    else toast('Gagal menyimpan: '+(err.message||err),6000);
+  }).then(function(){if(btn){btn.disabled=false;btn.textContent='Simpan';}});
+}
+
 function openDetail(id){
   var d=Store.get();
   var r=d.records.find(function(x){return x.id===id;});
@@ -8939,9 +9133,9 @@ function renderRespTokenBox_(box,oid,info){
     ?'<span style="color:var(--tx2)">sudah di-take <strong>'+String(info.claim.by).replace(/</g,'&lt;')+'</strong> · '+respTokenFmtAt_(info.claim.at)+'</span>'
     :'<span style="color:var(--grn,#2e9e5b)">belum di-take</span>';
   box.innerHTML='🔑 Token NPS: <code style="font-size:11px">'+short+'</code> · '+claimTxt+' '
-    +'<button type="button" class="btn btn-sec" id="resp-token-take" style="padding:3px 10px;font-size:11px;margin-left:6px">'
+    +'<button type="button" class="btn btn-sec" id="'+box.id+'-take" style="padding:3px 10px;font-size:11px;margin-left:6px">'
     +(info.claim?'📋 Salin link':'📋 Take & salin link')+'</button>';
-  var btn=document.getElementById('resp-token-take');
+  var btn=document.getElementById(box.id+'-take');
   if(!btn)return;
   btn.addEventListener('click',function(){
     btn.disabled=true;
@@ -8954,7 +9148,7 @@ function renderRespTokenBox_(box,oid,info){
     _gasPost({action:'claimNpsToken',outletId:oid},RN_WRITE_OPTS).then(function(res){
       info.claim=res.claim||{by:'(kamu)',at:new Date().toISOString()};
       renderRespTokenBox_(box,oid,info);
-      var b2=document.getElementById('resp-token-take');
+      var b2=document.getElementById(box.id+'-take');
       respTokenCopy_(info.url).then(function(){
         toast(res.already?('Link disalin — token ini sudah di-take '+(res.claim&&res.claim.by||'orang lain')):'✓ Di-take & link NPS disalin'
           +(res.emailResolved===false?' (email kamu belum ada di lookup_users — Departement kosong di report)':''),6000);
@@ -11226,6 +11420,8 @@ tabContent.addEventListener('click',function(e){
       openRnEditModal(btn.dataset.type,btn.dataset.key);
     }
     else if(act==='rn-bulk'){if(!btn.disabled)rnBulkReview(btn.dataset.decision);} // 12 Okt: bulk approve/reject
+    else if(act==='eng-open'){openEngModal(btn.dataset.kode);}
+    else if(act==='eng-refresh'){engWoLoaded=false;renderEngagement();}
     else if(act==='del-target'){if(confirm('Hapus target ini?')){Targets.delete(id);toast('Target dihapus');renderTab(currentTab);}}
     else if(act==='toggle-wl'){
       // CLM-09: sheet-backed -- resolveOnly write, nutup/buka kolom "Resolved At" (L), nggak
@@ -11359,6 +11555,10 @@ tabContent.addEventListener('click',function(e){
     invPage=tgt.id==='inv-prev-btn'?Math.max(0,invPage-1):invPage+1;
     var tbi=document.getElementById('inv-tbody');if(tbi)tbi.innerHTML=invRows(invEnrichedRows(),Auth.getActive(),Auth.isSuperior());
   }
+  else if(tgt.id==='eng-prev-btn'||tgt.id==='eng-next-btn'){
+    engPage=tgt.id==='eng-prev-btn'?Math.max(0,engPage-1):engPage+1;
+    var tbe=document.getElementById('eng-tbody');if(tbe)tbe.innerHTML=engRowsHtml();
+  }
   else if(tgt.id==='ratingnps-prev-btn'||tgt.id==='ratingnps-next-btn'){
     ratingNpsPage=tgt.id==='ratingnps-prev-btn'?Math.max(0,ratingNpsPage-1):ratingNpsPage+1;
     ratingNpsSelected={}; // 12 Okt: pindah halaman -> pilihan bulk dibuang
@@ -11472,6 +11672,10 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='daily-view-mode-sel'){dailyViewSeriesMode=tgt.value;renderTab('overview');return;} // 25 Jul: dropdown kumulatif/harian
   if(tgt.id==='dv-compare-month-sel'){dvCompareMonth=tgt.value;renderTab('overview');return;} // 19 Agu: bulan pembanding Daily View bebas pilih
   if(tgt.id==='invsum-month'){invsumMonth=tgt.value;renderTab('invsummary');return;}
+  if(tgt.id==='eng-status'){engStatusFilter=tgt.value;refreshEngBody();return;}
+  if(tgt.id==='eng-act'){engActFilter=tgt.value;refreshEngBody();return;}
+  if(tgt.id==='eng-due'){engDueFilter=tgt.value;refreshEngBody();return;}
+  if(tgt.id==='eng-agent'){engAgentFilter=tgt.value;refreshEngBody();return;}
   if(tgt.id==='ratingnps-pagesize'){
     var rnPs=parseInt(tgt.value,10);
     if(RN_PAGE_SIZES.indexOf(rnPs)>=0){ratingNpsPageSize=rnPs;try{localStorage.setItem('clm_rn_pagesize',String(rnPs));}catch(e){}}
@@ -11575,6 +11779,7 @@ tabContent.addEventListener('input',function(e){
   if(tgt.id==='m-search'){mSearch=tgt.value;refreshMasterBody();}
   if(tgt.id==='inv-search'){invSearch=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='ratingnps-search'){ratingNpsSearch=tgt.value;refreshRatingNpsBody();}
+  if(tgt.id==='eng-search'){engSearch=tgt.value;refreshEngBody();}
   if(tgt.id==='loginlog-search'){loginLogSearch=tgt.value;refreshLoginLogBody();}
   if(tgt.id==='inv-day'){invDay=tgt.value;refreshInvoiceBody();}
   if(tgt.id==='inv-start-date'){invStartDate=tgt.value;refreshInvoiceBody();}
@@ -11628,6 +11833,7 @@ document.getElementById('resp-save-btn').addEventListener('click',saveResp);
 document.getElementById('gc-save-btn').addEventListener('click',saveGC);
 document.getElementById('invreassign-save-btn').addEventListener('click',saveInvReassign);
 document.getElementById('rnedit-save-btn').addEventListener('click',saveRnEdit);
+document.getElementById('eng-save-btn').addEventListener('click',saveEngModal);
 document.getElementById('tpl-save-btn').addEventListener('click',saveTpl);
 document.getElementById('agent-save-btn').addEventListener('click',saveAgent);
 document.getElementById('target-save-btn').addEventListener('click',saveTarget);
