@@ -8795,7 +8795,7 @@ function renderEngagement(){
     +'<div class="frow" style="margin-top:8px">'
     +'<input class="fsearch" type="search" id="eng-search" placeholder="🔍 Cari outlet / kode / telepon…" value="'+engEsc(engSearch)+'">'
     +'<select id="eng-status">'+opts([['','Semua status'],['Open','Open'],['Done','Done']],engStatusFilter,'Semua status')+'</select>'
-    +'<select id="eng-act">'+opts([['','Semua aktivitas'],['H14','H+14'],['M07','M+7']],engActFilter,'Semua aktivitas')+'</select>'
+    +'<select id="eng-act">'+opts([['','Semua aktivitas'],['H14','H+14'],['M07','M+7'],['INC','Inactive PoS']],engActFilter,'Semua aktivitas')+'</select>'
     +'<select id="eng-nps">'+opts([['','NPS: semua'],['backlog','Backlog NPS (belum terbukti)'],['pending','Pending review'],['approved','NPS Approved'],['taken','Token di-take, belum evidence'],['answered','Token sudah dijawab user']],engNpsFilter,'NPS: semua')+'</select>'
     +'<select id="eng-due">'+opts([['','Semua tanggal'],['today','Jatuh tempo hari ini'],['overdue','Terlambat'],['upcoming','Mendatang']],engDueFilter,'Semua tanggal')+'</select>'
     +(isSup?'<select id="eng-agent">'+opts([['','Semua agen'],['__none__','⚠️ Belum ada agen']].concat(agents.map(function(a){return[a,a];})),engAgentFilter,'Semua agen')+'</select>':'')
