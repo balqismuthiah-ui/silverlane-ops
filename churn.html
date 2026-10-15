@@ -3990,6 +3990,15 @@ var BLAST_FRESHNESS_KEY='klopos_blast_freshness_v1';
 function getKnownBlastFreshness(){var v=localStorage.getItem(BLAST_FRESHNESS_KEY);return v?parseInt(v,10):0;}
 function setKnownBlastFreshness(ts){localStorage.setItem(BLAST_FRESHNESS_KEY,String(ts));}
 var INVOICE_FRESHNESS_KEY='klopos_invoice_freshness_v1';
+// 15 Okt: store kosong tapi marker freshness sudah "terkini" (mis. storage lokal penuh / device baru) ->
+// auto-sync berbasis freshness nggak pernah jalan lagi, agen buntu (tombol sync cuma ada di Master & Assign).
+function invoiceTrackerEmpty_(){var d=InvoiceTrackerStore.get();return!(d.data&&d.data.length);}
+var _invAutoTried=false;
+function invoiceEmptyStateHtml_(){
+  if(!_invAutoTried){_invAutoTried=true;setTimeout(function(){syncInvoiceTrackerOnly({silent:true});},50);}
+  return'<div class="ov-section"><div class="card empty">Belum ada data — memuat Invoice Tracker otomatis…<br>'
+    +'<button class="btn btn-blu" id="sync-invoicetracker-btn" style="margin-top:10px;padding:5px 12px;font-size:12px">📥 Muat Invoice Tracker</button></div></div>';
+}
 function getKnownInvoiceFreshness(){var v=localStorage.getItem(INVOICE_FRESHNESS_KEY);return v?parseInt(v,10):0;}
 function setKnownInvoiceFreshness(ts){localStorage.setItem(INVOICE_FRESHNESS_KEY,String(ts));}
 var VISITTC_FRESHNESS_KEY='klopos_visittc_freshness_v1';
@@ -6533,7 +6542,7 @@ function renderInvoiceTracker(){
   var d=InvoiceTrackerStore.get();
 
   if(!d.data||!d.data.length){
-    document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="card empty">Belum ada data — klik "📥 Sync Invoice Tracker" di tab Master &amp; Assign</div></div>';
+    document.getElementById('tab-content').innerHTML=invoiceEmptyStateHtml_();
     return;
   }
 
@@ -6610,7 +6619,7 @@ function renderInvoiceSummary(){
   var isSup=Auth.isSuperior();
   var d=InvoiceTrackerStore.get();
   if(!d.data||!d.data.length){
-    document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="card empty">Belum ada data — klik "📥 Sync Invoice Tracker" di tab Master &amp; Assign</div></div>';
+    document.getElementById('tab-content').innerHTML=invoiceEmptyStateHtml_();
     return;
   }
   var enriched=invEnrichedRows();
@@ -8487,6 +8496,9 @@ function openTestPreview(){
 var kloposMonth=null;
 var kloposSection='all';
 var kloposBlock='total';
+var kloposHwcz='all';   // 15 Okt: filter Potensial Leads (all/Hot/Warm/Cold/Zombie)
+var kloposPaket='all';  // 15 Okt: filter Paket (bucket productPackage; 'all' = semua, '__none__' = tanpa paket dasar)
+var KLOPOS_PAKET_OPTS=['Starter Basic','Starter','Advance','Enterprise (Prime)','Prime Plus'];
 function renderKlopos(){
   var d=Store.get(),recs=d.records;
   // Bulan tersedia = cohortMonths yg beneran ada di data (sama pola _bulanSet di renderMaster/3545).
@@ -8498,15 +8510,36 @@ function renderKlopos(){
   if(!kloposMonth||availMonths.indexOf(kloposMonth)<0)kloposMonth=availMonths.indexOf(todayMonthKey)>=0?todayMonthKey:availMonths[availMonths.length-1];
   var section=KLOPOS_SECTIONS.filter(function(s){return s.key===kloposSection;})[0]||KLOPOS_SECTIONS[0];
   var block=KLOPOS_BLOCKS.filter(function(b){return b.key===kloposBlock;})[0]||KLOPOS_BLOCKS[0];
-  var data=computeKloposSection(recs,kloposMonth,section);
+  // 15 Okt (request operator): filter Paket + Potensial Leads. Paket = bucket productPackage (taksonomi yg sama
+  // dgn MRR per paket/My Journey). Potensial leads = tampilkan 1 grup HWCZ (header + 5 baris kategori) dan
+  // kartu/konversi ikut grup itu.
+  var recsF=recs;
+  if(kloposPaket!=='all')recsF=recs.filter(function(r){
+    var b=myJourneyNormalizePaket(r.productPackage);
+    return kloposPaket==='__none__'?!b:b===kloposPaket;
+  });
+  var data=computeKloposSection(recsF,kloposMonth,section);
   var days=data.days;
-  var totalRow=data.rows[0].row; // 'Total User' -- semua HWCZ gabung
+  var hIdx=KLOPOS_HWCZ.indexOf(kloposHwcz);
+  var shownRows=data.rows;
+  var focusRow=data.rows[0]; // 'Total User' -- semua HWCZ gabung
+  if(hIdx>=0){shownRows=data.rows.slice(1+hIdx*6,1+hIdx*6+6);focusRow=shownRows[0];}
+  var totalRow=focusRow.row;
 
   var monthBtns=availMonths.map(function(m){
     return'<button onclick="kloposMonth=\''+m+'\';renderKlopos()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--bdr);background:'+(m===kloposMonth?'var(--pri)':'var(--card)')+';color:'+(m===kloposMonth?'#fff':'var(--tx)')+';cursor:pointer;font-size:12px;font-weight:600">'+m+' 26</button>';
   }).join(' ');
   var sectionBtns=KLOPOS_SECTIONS.map(function(s){
     return'<button onclick="kloposSection=\''+s.key+'\';renderKlopos()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--bdr);background:'+(s.key===kloposSection?'var(--pri)':'var(--card)')+';color:'+(s.key===kloposSection?'#fff':'var(--tx)')+';cursor:pointer;font-size:12px;font-weight:600">'+s.label+'</button>';
+  }).join(' ');
+  function kBtn_(label,active,js){
+    return'<button onclick="'+js+'" style="padding:5px 12px;border-radius:6px;border:1px solid var(--bdr);background:'+(active?'var(--pri)':'var(--card)')+';color:'+(active?'#fff':'var(--tx)')+';cursor:pointer;font-size:12px;font-weight:600">'+label+'</button>';
+  }
+  var hwczBtns=[['all','Semua Potensi']].concat(KLOPOS_HWCZ.map(function(h){return[h,h];})).map(function(x){
+    return kBtn_(x[1],x[0]===kloposHwcz,"kloposHwcz='"+x[0]+"';renderKlopos()");
+  }).join(' ');
+  var paketBtns=[['all','Semua Paket']].concat(KLOPOS_PAKET_OPTS.map(function(x){return[x,x];})).concat([['__none__','Tanpa Paket Dasar']]).map(function(x){
+    return kBtn_(x[1],x[0]===kloposPaket,"kloposPaket='"+x[0].replace(/'/g,"\\'")+"';renderKlopos()");
   }).join(' ');
   var blockBtns=KLOPOS_BLOCKS.map(function(b){
     return'<button onclick="kloposBlock=\''+b.key+'\';renderKlopos()" style="padding:5px 12px;border-radius:6px;border:1px solid var(--bdr);background:'+(b.key===kloposBlock?'var(--pri)':'var(--card)')+';color:'+(b.key===kloposBlock?'#fff':'var(--tx)')+';cursor:pointer;font-size:12px;font-weight:600">'+b.label+'</button>';
@@ -8518,7 +8551,7 @@ function renderKlopos(){
   hdr+='<th style="min-width:54px;font-size:11px;font-weight:700">Total</th>';
   // Build data rows
   var clsMap={'sub':'color:var(--tx2);padding-left:16px','cat-hot':'color:var(--grn);font-weight:600','cat-warm':'color:var(--yel);font-weight:600','cat-cold':'color:var(--blu);font-weight:600','cat-zombie':'color:var(--tx3);font-weight:600','':'font-weight:700'};
-  var rows=data.rows.map(function(rowDef){
+  var rows=shownRows.map(function(rowDef){
     var r=rowDef.row[block.key];
     var tdStyle=clsMap[rowDef.cls]||'';
     var cells='<td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;white-space:nowrap;'+tdStyle+'">'+rowDef.label+'</td>';
@@ -8532,19 +8565,38 @@ function renderKlopos(){
   }).join('');
 
   var convPct=totalRow.total.total?Math.round(totalRow.moving.total/totalRow.total.total*100):0;
+  // 15 Okt (request operator): conversion HARIAN (moving/total per hari jatuh tempo) + KUMULATIF compounding
+  // (sum moving s.d. hari ke-d / sum total s.d. hari ke-d). Basis = baris fokus (Total User / grup HWCZ terpilih),
+  // tidak ikut blok Total/Moving/Remaining yg dipilih.
+  var convDailyCells='',convCumCells='',cumM=0,cumT=0;
+  for(var cd=0;cd<days;cd++){
+    var tD=totalRow.total.daily[cd]||0,mD=totalRow.moving.daily[cd]||0;
+    cumM+=mD;cumT+=tD;
+    var pD=tD?Math.round(mD/tD*100):null,pC=cumT?Math.round(cumM/cumT*100):null;
+    convDailyCells+='<td style="text-align:center;font-size:11px;color:var(--tx2)" title="'+mD+'/'+tD+'">'+(pD==null?'<span style="color:var(--tx3)">—</span>':pD+'%')+'</td>';
+    convCumCells+='<td style="text-align:center;font-size:11px;color:var(--tx2)" title="'+cumM+'/'+cumT+'">'+(pC==null?'<span style="color:var(--tx3)">—</span>':pC+'%')+'</td>';
+  }
+  var convRowsHtml=
+    '<tr style="border-top:2px solid var(--bdr)"><td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;font-weight:700;white-space:nowrap">Conversion harian</td>'
+      +convDailyCells+'<td style="text-align:center;font-size:12px;font-weight:700;color:var(--blu)">'+convPct+'%</td></tr>'
+    +'<tr><td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;font-weight:700;white-space:nowrap">Conversion kumulatif</td>'
+      +convCumCells+'<td style="text-align:center;font-size:12px;font-weight:700;color:var(--blu)">'+convPct+'%</td></tr>';
+  var filterLbl=(kloposHwcz!=='all'?' · '+kloposHwcz:'')+(kloposPaket!=='all'?' · '+(kloposPaket==='__none__'?'Tanpa Paket Dasar':kloposPaket):'');
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📅 KLOPOS Daily Assignment</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+monthBtns+'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+sectionBtns+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+hwczBtns+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+paketBtns+'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'+blockBtns+'</div>'
     +'<div class="grid4" style="margin-bottom:12px">'
-    +'<div class="stat"><div class="stat-val">'+totalRow.total.total+'</div><div class="stat-lbl">Total Pool ('+section.label+')</div></div>'
+    +'<div class="stat"><div class="stat-val">'+totalRow.total.total+'</div><div class="stat-lbl">Total Pool ('+section.label+filterLbl+')</div></div>'
     +'<div class="stat"><div class="stat-val" style="color:var(--grn)">'+totalRow.moving.total+'</div><div class="stat-lbl">Moving</div></div>'
     +'<div class="stat"><div class="stat-val" style="color:var(--tx3)">'+totalRow.remaining.total+'</div><div class="stat-lbl">Remaining</div></div>'
     +'<div class="stat"><div class="stat-val" style="color:var(--blu)">'+convPct+'%</div><div class="stat-lbl">Konversi Moving Bulan Ini</div></div>'
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table style="border-collapse:collapse;width:100%">'
-    +'<thead><tr style="background:var(--bkg)">'+hdr+'</tr></thead><tbody>'+rows+'</tbody>'
+    +'<thead><tr style="background:var(--bkg)">'+hdr+'</tr></thead><tbody>'+rows+convRowsHtml+'</tbody>'
     +'</table></div></div></div>';
 }
 
@@ -10305,6 +10357,7 @@ function checkFreshnessAndAutoSync(){
         {server:json.lastRefreshBlast,known:getKnownBlastFreshness,set:setKnownBlastFreshness,
           fn:function(done){syncBroadcastLogOnly({silent:true,onComplete:done});}},
         {server:json.lastRefreshInvoice,known:getKnownInvoiceFreshness,set:setKnownInvoiceFreshness,
+          empty:invoiceTrackerEmpty_,
           fn:function(done){syncInvoiceTrackerOnly({silent:true,onComplete:done});}},
         {server:json.lastRefreshVisitTC,known:getKnownVisitTCFreshness,set:setKnownVisitTCFreshness,
           fn:function(done){syncVisitTCOnly({silent:true,onComplete:done});}}
@@ -10312,7 +10365,7 @@ function checkFreshnessAndAutoSync(){
       var extraDelay=0;
       extras.forEach(function(ex){
         var srv=ex.server||0,kn=ex.known();
-        if(srv<=kn)return; // belum berubah sejak sync terakhir -- skip diam2
+        if(srv<=kn&&!(ex.empty&&ex.empty()))return; // belum berubah sejak sync terakhir -- skip diam2 (kecuali store-nya kosong)
         extraDelay+=800;
         setTimeout(function(){ex.fn(function(){ex.set(srv);});},extraDelay);
       });
