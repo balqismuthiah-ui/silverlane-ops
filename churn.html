@@ -8647,7 +8647,29 @@ function renderTab(tab){
 // Agen: workorder miliknya. Leader: semua + reassign. Evidence harus link (aturan sama klaim Rating/NPS).
 var ENG_PAGE_SIZE=50;
 var engWoData=[],engWoLoaded=false,engWoLoading=false,engWoError='';
-var engStatusFilter='Open',engActFilter='',engAgentFilter='',engDueFilter='',engSearch='',engPage=0;
+var engStatusFilter='Open',engActFilter='',engAgentFilter='',engDueFilter='',engSearch='',engPage=0,engNpsFilter='';
+// 15 Okt: status klaim NPS per workorder (join server-side lookup_claims + tab responses): 'answered' (token sudah
+// dijawab user) > 'claimed' (di-take) > 'none'. claimedByOther = di-take orang selain agen yang ditugaskan.
+function engNpsState(x){
+  if(x['_answered'])return'answered';
+  if(x['_claimBy'])return'claimed';
+  return'none';
+}
+function engClaimedByAssignee(x){
+  var by=String(x['_claimBy']||'').toLowerCase().split('@')[0],ag=String(x['Agen']||'').toLowerCase();
+  if(!by||!ag)return false;
+  var alias={elly:'eliyawati',sunarti:'sunarti',novianty:'novianty',fauziyah:'fauziyah',zharifah:'zharifah',shevtya:'shevtya',finne:'finne',erizka:'erizka',sarah:'sarah'};
+  return by.indexOf(alias[ag]||ag)===0;
+}
+// Backlog NPS = jatuh tempo <= hari ini, belum di-take, dalam jendela bulan berjalan + bulan lalu.
+function engBacklogCutoff(){
+  var d=new Date();d.setDate(1);d.setMonth(d.getMonth()-1);
+  return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+}
+function engIsBacklog(x){
+  var due=String(x['Tgl Follow-up']||'').slice(0,10);
+  return engNpsState(x)==='none'&&due<=engTodayIso()&&due>=engBacklogCutoff();
+}
 var ENG_OPT_METODE=['','WA','Call'];
 var ENG_OPT_KENDALA=['','Delivered','Dibalas','Tidak ada respon','Ada kendala'];
 var ENG_OPT_INTEREST=['','Akan membeli segera / butuh','Kendala dana','Belum membutuhkan'];
@@ -8670,6 +8692,10 @@ function engFiltered(){
   return engWoData.filter(function(x){
     if(engStatusFilter&&String(x['Status']||'Open')!==engStatusFilter)return false;
     if(engActFilter&&x['Aktivitas']!==engActFilter)return false;
+    if(engNpsFilter==='backlog'&&!engIsBacklog(x))return false;
+    if(engNpsFilter==='claimed'&&engNpsState(x)==='none')return false;
+    if(engNpsFilter==='answered'&&engNpsState(x)!=='answered')return false;
+    if(engNpsFilter==='none'&&engNpsState(x)!=='none')return false;
     if(isSup&&engAgentFilter){
       if(engAgentFilter==='__none__'){if(x['Agen'])return false;}else if(x['Agen']!==engAgentFilter)return false;
     }
@@ -8704,8 +8730,15 @@ function engRowsHtml(){
     var gc=np&&gcFlagMap[np]?'<span class="badge badge-red" title="Nomor ada di Watchlist GC">GC</span>':'';
     var phCell=ph?('<a href="https://wa.me/'+ph+'" target="_blank" rel="noopener">'+engEsc(x['Telepon'])+'</a> '+gc):'<span style="color:var(--tx3)">—</span>';
     var st=done?'<span class="badge badge-grn">Done</span>':'<span class="badge badge-yel">Open</span>';
-    var nps=String(x['NPS Status']||'').trim();
-    var npsCell=nps?('<span class="badge badge-'+(nps==='Approved'?'grn':nps==='Rejected'?'red':'yel')+'">'+engEsc(nps)+'</span>'):'<span style="color:var(--tx3)">—</span>';
+    var ns=engNpsState(x),npsCell;
+    if(ns==='answered')npsCell='<span class="badge badge-grn" title="Token sudah dijawab user">💬 Dijawab</span>';
+    else if(ns==='claimed'){
+      var mine=engClaimedByAssignee(x);
+      npsCell='<span class="badge badge-'+(mine?'grn':'yel')+'" title="Di-take '+engEsc(x['_claimBy'])+' · '+engEsc(String(x['_claimAt']).slice(0,16).replace('T',' '))+'">✓ Di-take'+(mine?'':' ('+engEsc(String(x['_claimBy']).split('@')[0])+')')+'</span>';
+    }else{
+      var age=Math.floor((new Date(today).getTime()-new Date(due).getTime())/86400000);
+      npsCell='<span class="badge badge-gray">Belum</span>'+(engIsBacklog(x)&&age>0?'<div style="font-size:10px;color:var(--red)">backlog '+age+' hr</div>':'');
+    }
     return'<tr>'
       +'<td style="'+dueStyle+'">'+engEsc(due)+'</td>'
       +'<td><span class="badge badge-gray">'+engEsc(x['Aktivitas'])+'</span><div style="font-size:10px;color:var(--tx3)">'+engEsc(x['Kode'])+'</div></td>'
@@ -8741,13 +8774,17 @@ function renderEngagement(){
   var today=engTodayIso();
   var todayN=engWoData.filter(function(x){return String(x['Tgl Follow-up']||'').slice(0,10)===today;}).length;
   var overdue=engWoData.filter(function(x){return String(x['Status']||'Open')!=='Done'&&String(x['Tgl Follow-up']||'').slice(0,10)<today;}).length;
+  var backlog=engWoData.filter(engIsBacklog).length;
+  var claimedN=engWoData.filter(function(x){return engNpsState(x)!=='none';}).length;
   el.innerHTML=
     '<div class="ov-section"><div class="ov-section-title">🗂️ Engagement — '+(isSup?'Semua Agen':'Workorder Saya')+'</div></div>'
-    +'<div style="font-size:12px;color:var(--tx2);margin:6px 0">Open: <strong>'+open+'</strong> · Jatuh tempo hari ini: <strong>'+todayN+'</strong> · Terlambat: <strong style="color:var(--red)">'+overdue+'</strong></div>'
+    +'<div style="font-size:12px;color:var(--tx2);margin:6px 0">Open: <strong>'+open+'</strong> · Jatuh tempo hari ini: <strong>'+todayN+'</strong> · Terlambat: <strong style="color:var(--red)">'+overdue+'</strong>'
+    +' · NPS di-take: <strong>'+claimedN+'</strong> · <strong style="color:var(--red)">Backlog NPS: '+backlog+'</strong></div>'
     +'<div class="frow" style="margin-top:8px">'
     +'<input class="fsearch" type="search" id="eng-search" placeholder="🔍 Cari outlet / kode / telepon…" value="'+engEsc(engSearch)+'">'
     +'<select id="eng-status">'+opts([['','Semua status'],['Open','Open'],['Done','Done']],engStatusFilter,'Semua status')+'</select>'
     +'<select id="eng-act">'+opts([['','Semua aktivitas'],['H14','H+14'],['M07','M+7']],engActFilter,'Semua aktivitas')+'</select>'
+    +'<select id="eng-nps">'+opts([['','NPS: semua'],['backlog','Backlog NPS (belum di-take)'],['none','Belum di-take'],['claimed','Sudah di-take'],['answered','Sudah dijawab']],engNpsFilter,'NPS: semua')+'</select>'
     +'<select id="eng-due">'+opts([['','Semua tanggal'],['today','Jatuh tempo hari ini'],['overdue','Terlambat'],['upcoming','Mendatang']],engDueFilter,'Semua tanggal')+'</select>'
     +(isSup?'<select id="eng-agent">'+opts([['','Semua agen'],['__none__','⚠️ Belum ada agen']].concat(agents.map(function(a){return[a,a];})),engAgentFilter,'Semua agen')+'</select>':'')
     +'<button class="btn btn-sec" data-act="eng-refresh" style="padding:6px 10px;font-size:12px">🔄 Muat ulang</button>'
@@ -8805,6 +8842,13 @@ function saveEngModal(){
     'Lainnya':v('eng-f-lainnya'),'Status':v('eng-f-status')};
   if(fields['Evidence']&&!evidenceLooksLikeLink_(fields['Evidence'])){toast('⚠ '+EVIDENCE_LINK_MSG,6000);return;}
   if(fields['Status']==='Done'&&!fields['Evidence']){toast('⚠ Done wajib punya evidence (link)',5000);return;}
+  // Report opsional, tapi kalau mulai diisi -> semua kolom detail wajib (Tiket CC boleh kosong / "-")
+  var repKeys=['Metode','Kendala','Detail Kendala','Evidence','Upgrade','Training','Add On','Lainnya'];
+  var anyRep=repKeys.some(function(k){return fields[k];});
+  if(anyRep){
+    var miss=repKeys.filter(function(k){return !fields[k];});
+    if(miss.length){toast('⚠ Report diisi → semua kolom wajib. Belum: '+miss.join(', '),7000);return;}
+  }
   var btn=document.getElementById('eng-save-btn');
   if(btn){btn.disabled=true;btn.textContent='⏳ Menyimpan...';}
   var newAgent=document.getElementById('eng-f-agent');
@@ -11675,6 +11719,7 @@ tabContent.addEventListener('change',function(e){
   if(tgt.id==='eng-status'){engStatusFilter=tgt.value;refreshEngBody();return;}
   if(tgt.id==='eng-act'){engActFilter=tgt.value;refreshEngBody();return;}
   if(tgt.id==='eng-due'){engDueFilter=tgt.value;refreshEngBody();return;}
+  if(tgt.id==='eng-nps'){engNpsFilter=tgt.value;refreshEngBody();return;}
   if(tgt.id==='eng-agent'){engAgentFilter=tgt.value;refreshEngBody();return;}
   if(tgt.id==='ratingnps-pagesize'){
     var rnPs=parseInt(tgt.value,10);
