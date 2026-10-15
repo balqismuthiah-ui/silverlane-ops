@@ -2352,10 +2352,12 @@ function computeTargetActual(target,allRecs,agentName){
     var cntNps=0;
     if(target.scope==='personal'&&agentName){
       allRecs.forEach(function(r){cntNps+=claimMonthRev?npsApprovedCountInMonth(r,agentName,claimMonthRev):npsApprovedCount(r,agentName);});
+      cntNps+=engNpsApprovedInMonth_(agentName,claimMonthRev||null);
       var ovrNps=target.personalOverrides||{};
       return{actual:cntNps,unit:'',denom:0,effectiveTarget:(ovrNps[agentName]!=null)?ovrNps[agentName]:target.targetValue};
     }
     allRecs.forEach(function(r){cntNps+=claimMonthRev?npsApprovedCountInMonth(r,null,claimMonthRev):npsApprovedCount(r);});
+    cntNps+=engNpsApprovedInMonth_(null,claimMonthRev||null);
     return{actual:cntNps,unit:'',denom:0,effectiveTarget:target.targetValue*nAgentsRev,effectiveTargetImproved:(target.targetValueImproved!=null)?target.targetValueImproved*nAgentsRev:null};
   }
   if(target.scope==='personal'){
@@ -2492,6 +2494,38 @@ function npsApprovedCountInMonth(r,agentName,monthStr){
   if(agentName&&credit!==agentName)return 0;
   if((r.nps.claimMonth||'')!==monthStr)return 0;
   return 1;
+}
+// 15 Okt (keputusan operator): klaim NPS dari workorder Engagement yang Approved ikut dihitung ke capaian NPS
+// (agen bisa bantu naikin NPS/paid 80%). 1 OUTLET = 1 NPS per bulan klaim: outlet yang sudah punya NPS Approved
+// di RESPONSES bulan itu TIDAK dihitung lagi (kredit ke agen siapa pun), dan 1 outlet cuma 1x walau punya >1
+// workorder Engagement. Sumber engWoData (lazy-load); belum termuat -> 0 (angka naik begitu data tiba).
+function engNpsOutletKey_(id){return String(id==null?'':id).trim().replace(/^0+(?=\d)/,'');}
+function engNpsApprovedList_(){
+  if(!engWoLoaded||!engWoData||!engWoData.length)return[];
+  var seen={};
+  ((Store.get().records)||[]).forEach(function(r){
+    if(r.nps&&r.nps.evidence&&ratingNpsStatusNorm_(r.nps.status)==='Approved'&&r.outletId)
+      seen[(r.nps.claimMonth||'')+'|'+engNpsOutletKey_(r.outletId)]=true;
+  });
+  var out=[];
+  engWoData.forEach(function(w){
+    if(!String(w['NPS Evidence']||'').trim())return;
+    if(String(w['NPS Status']||'').trim().toLowerCase()!=='approved')return;
+    var ym=String(w['Bulan Kode']||'').trim();
+    if(!/^\d{6}$/.test(ym))return;
+    var month=IDN_MONTHS_CLIENT[+ym.slice(4)-1]+' '+ym.slice(0,4);
+    var oid=engNpsOutletKey_(w['ID Outlet']);
+    var k=month+'|'+oid;
+    if(oid){if(seen[k])return;seen[k]=true;}
+    out.push({agent:String(w['Agen']||'').trim(),month:month,kode:w['Kode']});
+  });
+  return out;
+}
+// agentName null = semua agen; monthStr null = semua bulan.
+function engNpsApprovedInMonth_(agentName,monthStr){
+  return engNpsApprovedList_().filter(function(m){
+    return (!agentName||m.agent===agentName)&&(!monthStr||m.month===monthStr);
+  }).length;
 }
 function upsellIsPending(r){
   var u=r.upsell||{};
@@ -4556,6 +4590,8 @@ function buildCatDetailMap(recs,useEff){
 
 // ── TAB: OVERVIEW ──────────────────────────────────────────────────────────
 function renderOverview(){
+  // 15 Okt: capaian NPS ikut klaim Engagement -- muat workorder sekali (leader; jangan loop kalau gagal).
+  if(Auth.isSuperior()&&!engWoLoaded&&!engWoLoading&&!engWoError)engLoad(false);
   var d=Store.get();
   var recs=d.records;
   var isSup=Auth.isSuperior();
@@ -4688,7 +4724,7 @@ function renderOverview(){
       // all-time, mismatch sama REVIEW_TARGET_* yang udah period-scoped ke currentMonthKey.
       var aMaps=recs.reduce(function(s,r){return s+upsellApprovedCountInMonth(r,'maps',ag,CURRENT_CLAIM_MONTH_STR);},0);
       var aApps=recs.reduce(function(s,r){return s+upsellApprovedCountInMonth(r,'playstore',ag,CURRENT_CLAIM_MONTH_STR);},0);
-      var aNps=recs.reduce(function(s,r){return s+npsApprovedCountInMonth(r,ag,CURRENT_CLAIM_MONTH_STR);},0);
+      var aNps=recs.reduce(function(s,r){return s+npsApprovedCountInMonth(r,ag,CURRENT_CLAIM_MONTH_STR);},0)+engNpsApprovedInMonth_(ag,CURRENT_CLAIM_MONTH_STR); // + klaim Engagement (15 Okt)
       // 30 Sep: target per-agen computed (80% renewal paid - multioutlet, BEDA-BEDA tiap agen --
       // nggak bisa dibagi rata dari 1 angka team kayak Rating Maps/Apps).
       var aNpsTarget=computeNpsAutoTarget(currentMonthKey,ag);
@@ -4746,7 +4782,7 @@ function renderOverview(){
   var valApps=allRecs.reduce(function(sum,r){return sum+upsellApprovedCountInMonth(r,'playstore',null,CURRENT_CLAIM_MONTH_STR);},0);
   var claimedMaps=allRecs.reduce(function(sum,r){var line=r.upsell&&r.upsell.maps;return sum+((line&&line.claimMonth===CURRENT_CLAIM_MONTH_STR)?(line.count||0):0);},0);
   var claimedApps=allRecs.reduce(function(sum,r){var line=r.upsell&&r.upsell.playstore;return sum+((line&&line.claimMonth===CURRENT_CLAIM_MONTH_STR)?(line.count||0):0);},0);
-  var npsAchTeam=allRecs.reduce(function(sum,r){return sum+npsApprovedCountInMonth(r,null,CURRENT_CLAIM_MONTH_STR);},0);
+  var npsAchTeam=allRecs.reduce(function(sum,r){return sum+npsApprovedCountInMonth(r,null,CURRENT_CLAIM_MONTH_STR);},0)+engNpsApprovedInMonth_(null,CURRENT_CLAIM_MONTH_STR); // + klaim Engagement (15 Okt)
 
   // ── Renewal Revenue (Team) bulan berjalan — LIVE dari FinancialsStore, bukan hardcode.
   // MONTHLY_ACTUALS (dulu Jan-Jun 2026 hardcoded) DICABUT 6 Jul (keputusan Muthia: retire panel
@@ -5686,10 +5722,11 @@ function renderOverview(){
       var ratingApprByMonth={},npsApprByMonth={};
       rnAllMonthly.forEach(function(x){
         if(x.status!=='Approved'||!x.claimMonth)return;
-        if(x.type==='engnps')return; // klaim NPS Engagement belum dihitung ke target/ringkasan (keputusan terpisah)
+        if(x.type==='engnps')return; // dihitung terpisah di bawah (dedup 1 outlet = 1 NPS)
         var map=x.type==='nps'?npsApprByMonth:ratingApprByMonth;
         map[x.claimMonth]=(map[x.claimMonth]||0)+1;
       });
+      engNpsApprovedList_().forEach(function(m){npsApprByMonth[m.month]=(npsApprByMonth[m.month]||0)+1;});
       var monthRows=monthsSorted.map(function(m){
         var mRecs=recs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(m)>=0;});
         var mTotal=mRecs.length;
@@ -8723,6 +8760,7 @@ function engLoad(force){
     engWoLoading=false;
     if(currentTab==='engagement')renderEngagement();
     else if(currentTab==='ratingnps')renderRatingNps(); // klaim NPS Engagement baru tiba -> masuk list
+    else if(currentTab==='overview')renderOverview(); // capaian NPS ikut klaim Engagement
   });
 }
 function engFiltered(){
