@@ -8650,9 +8650,15 @@ var engWoData=[],engWoLoaded=false,engWoLoading=false,engWoError='';
 var engStatusFilter='Open',engActFilter='',engAgentFilter='',engDueFilter='',engSearch='',engPage=0,engNpsFilter='';
 // 15 Okt: status klaim NPS per workorder (join server-side lookup_claims + tab responses): 'answered' (token sudah
 // dijawab user) > 'claimed' (di-take) > 'none'. claimedByOther = di-take orang selain agen yang ditugaskan.
+// 15 Okt (koreksi operator): "Take it" cuma bukti TOKEN DIAMBIL, bukan bukti link NPS beneran terkirim.
+// Capaian NPS = KLAIM agen + evidence link yang di-review leader (NPS Status Pending/Approved/Rejected).
+// State: approved | pending | rejected | taken (token di-take, belum ada evidence) | none.
 function engNpsState(x){
-  if(x['_answered'])return'answered';
-  if(x['_claimBy'])return'claimed';
+  var st=String(x['NPS Status']||'').trim();
+  if(st==='Approved')return'approved';
+  if(st==='Pending')return'pending';
+  if(st==='Rejected')return'rejected';
+  if(x['_claimBy'])return'taken';
   return'none';
 }
 function engClaimedByAssignee(x){
@@ -8668,7 +8674,8 @@ function engBacklogCutoff(){
 }
 function engIsBacklog(x){
   var due=String(x['Tgl Follow-up']||'').slice(0,10);
-  return engNpsState(x)==='none'&&due<=engTodayIso()&&due>=engBacklogCutoff();
+  var st=engNpsState(x);
+  return(st==='none'||st==='taken'||st==='rejected')&&due<=engTodayIso()&&due>=engBacklogCutoff();
 }
 var ENG_OPT_METODE=['','WA','Call'];
 var ENG_OPT_KENDALA=['','Delivered','Dibalas','Tidak ada respon','Ada kendala'];
@@ -8693,9 +8700,10 @@ function engFiltered(){
     if(engStatusFilter&&String(x['Status']||'Open')!==engStatusFilter)return false;
     if(engActFilter&&x['Aktivitas']!==engActFilter)return false;
     if(engNpsFilter==='backlog'&&!engIsBacklog(x))return false;
-    if(engNpsFilter==='claimed'&&engNpsState(x)==='none')return false;
-    if(engNpsFilter==='answered'&&engNpsState(x)!=='answered')return false;
-    if(engNpsFilter==='none'&&engNpsState(x)!=='none')return false;
+    if(engNpsFilter==='pending'&&engNpsState(x)!=='pending')return false;
+    if(engNpsFilter==='approved'&&engNpsState(x)!=='approved')return false;
+    if(engNpsFilter==='taken'&&engNpsState(x)!=='taken')return false;
+    if(engNpsFilter==='answered'&&!x['_answered'])return false;
     if(isSup&&engAgentFilter){
       if(engAgentFilter==='__none__'){if(x['Agen'])return false;}else if(x['Agen']!==engAgentFilter)return false;
     }
@@ -8731,13 +8739,16 @@ function engRowsHtml(){
     var phCell=ph?('<a href="https://wa.me/'+ph+'" target="_blank" rel="noopener">'+engEsc(x['Telepon'])+'</a> '+gc):'<span style="color:var(--tx3)">—</span>';
     var st=done?'<span class="badge badge-grn">Done</span>':'<span class="badge badge-yel">Open</span>';
     var ns=engNpsState(x),npsCell;
-    if(ns==='answered')npsCell='<span class="badge badge-grn" title="Token sudah dijawab user">💬 Dijawab</span>';
-    else if(ns==='claimed'){
+    var ans=x['_answered']?' <span title="Token sudah dijawab user">💬</span>':'';
+    if(ns==='approved')npsCell='<span class="badge badge-grn">✓ NPS Approved</span>'+ans;
+    else if(ns==='pending')npsCell='<span class="badge badge-yel">⏳ Pending review</span>'+ans;
+    else if(ns==='rejected')npsCell='<span class="badge badge-red" title="'+engEsc(x['NPS Reject Reason']||'')+'">✕ Ditolak</span>'+ans;
+    else if(ns==='taken'){
       var mine=engClaimedByAssignee(x);
-      npsCell='<span class="badge badge-'+(mine?'grn':'yel')+'" title="Di-take '+engEsc(x['_claimBy'])+' · '+engEsc(String(x['_claimAt']).slice(0,16).replace('T',' '))+'">✓ Di-take'+(mine?'':' ('+engEsc(String(x['_claimBy']).split('@')[0])+')')+'</span>';
+      npsCell='<span class="badge badge-gray" title="Di-take '+engEsc(x['_claimBy'])+' · '+engEsc(String(x['_claimAt']).slice(0,16).replace('T',' '))+'">🔑 Token di-take'+(mine?'':' ('+engEsc(String(x['_claimBy']).split('@')[0])+')')+'</span><div style="font-size:10px;color:var(--tx3)">belum ada evidence</div>'+ans;
     }else{
       var age=Math.floor((new Date(today).getTime()-new Date(due).getTime())/86400000);
-      npsCell='<span class="badge badge-gray">Belum</span>'+(engIsBacklog(x)&&age>0?'<div style="font-size:10px;color:var(--red)">backlog '+age+' hr</div>':'');
+      npsCell='<span class="badge badge-gray">Belum</span>'+(engIsBacklog(x)&&age>0?'<div style="font-size:10px;color:var(--red)">backlog '+age+' hr</div>':'')+ans;
     }
     return'<tr>'
       +'<td style="'+dueStyle+'">'+engEsc(due)+'</td>'
@@ -8775,16 +8786,17 @@ function renderEngagement(){
   var todayN=engWoData.filter(function(x){return String(x['Tgl Follow-up']||'').slice(0,10)===today;}).length;
   var overdue=engWoData.filter(function(x){return String(x['Status']||'Open')!=='Done'&&String(x['Tgl Follow-up']||'').slice(0,10)<today;}).length;
   var backlog=engWoData.filter(engIsBacklog).length;
-  var claimedN=engWoData.filter(function(x){return engNpsState(x)!=='none';}).length;
+  var approvedN=engWoData.filter(function(x){return engNpsState(x)==='approved';}).length;
+  var pendingN=engWoData.filter(function(x){return engNpsState(x)==='pending';}).length;
   el.innerHTML=
     '<div class="ov-section"><div class="ov-section-title">🗂️ Engagement — '+(isSup?'Semua Agen':'Workorder Saya')+'</div></div>'
     +'<div style="font-size:12px;color:var(--tx2);margin:6px 0">Open: <strong>'+open+'</strong> · Jatuh tempo hari ini: <strong>'+todayN+'</strong> · Terlambat: <strong style="color:var(--red)">'+overdue+'</strong>'
-    +' · NPS di-take: <strong>'+claimedN+'</strong> · <strong style="color:var(--red)">Backlog NPS: '+backlog+'</strong></div>'
+    +' · NPS Approved: <strong>'+approvedN+'</strong> · Pending review: <strong>'+pendingN+'</strong> · <strong style="color:var(--red)">Backlog NPS: '+backlog+'</strong></div>'
     +'<div class="frow" style="margin-top:8px">'
     +'<input class="fsearch" type="search" id="eng-search" placeholder="🔍 Cari outlet / kode / telepon…" value="'+engEsc(engSearch)+'">'
     +'<select id="eng-status">'+opts([['','Semua status'],['Open','Open'],['Done','Done']],engStatusFilter,'Semua status')+'</select>'
     +'<select id="eng-act">'+opts([['','Semua aktivitas'],['H14','H+14'],['M07','M+7']],engActFilter,'Semua aktivitas')+'</select>'
-    +'<select id="eng-nps">'+opts([['','NPS: semua'],['backlog','Backlog NPS (belum di-take)'],['none','Belum di-take'],['claimed','Sudah di-take'],['answered','Sudah dijawab']],engNpsFilter,'NPS: semua')+'</select>'
+    +'<select id="eng-nps">'+opts([['','NPS: semua'],['backlog','Backlog NPS (belum terbukti)'],['pending','Pending review'],['approved','NPS Approved'],['taken','Token di-take, belum evidence'],['answered','Token sudah dijawab user']],engNpsFilter,'NPS: semua')+'</select>'
     +'<select id="eng-due">'+opts([['','Semua tanggal'],['today','Jatuh tempo hari ini'],['overdue','Terlambat'],['upcoming','Mendatang']],engDueFilter,'Semua tanggal')+'</select>'
     +(isSup?'<select id="eng-agent">'+opts([['','Semua agen'],['__none__','⚠️ Belum ada agen']].concat(agents.map(function(a){return[a,a];})),engAgentFilter,'Semua agen')+'</select>':'')
     +'<button class="btn btn-sec" data-act="eng-refresh" style="padding:6px 10px;font-size:12px">🔄 Muat ulang</button>'
@@ -8793,6 +8805,55 @@ function renderEngagement(){
     +'<div class="card" style="padding:0;margin-top:8px"><div class="tbl-wrap sticky-wrap"><table>'
     +'<thead><tr><th>Jatuh Tempo</th><th>Aktivitas</th><th>Outlet</th><th>Telepon</th>'+(isSup?'<th>Agen</th>':'')+'<th>Status</th><th>NPS</th><th>Metode · Kendala</th><th>Aksi</th></tr></thead>'
     +'<tbody id="eng-tbody">'+engRowsHtml()+'</tbody></table></div></div>';
+}
+function engRenderNpsLine(x){
+  var el=document.getElementById('eng-nps-line');if(!el)return;
+  var st=engNpsState(x);
+  var txt={
+    approved:'<span class="badge badge-grn">✓ Approved</span> oleh '+engEsc(x['NPS Reviewed By']||'—'),
+    pending:'<span class="badge badge-yel">⏳ Menunggu review leader</span>',
+    rejected:'<span class="badge badge-red">✕ Ditolak</span> '+engEsc(x['NPS Reject Reason']||''),
+    taken:'<span class="badge badge-gray">🔑 Token di-take oleh '+engEsc(String(x['_claimBy']).split('@')[0])+'</span> — belum ada evidence terkirim',
+    none:'<span class="badge badge-gray">Belum ada klaim</span>'
+  }[st];
+  el.innerHTML=txt+(x['_answered']?' · 💬 token sudah dijawab user':'');
+  var ap=document.getElementById('eng-nps-approve'),rj=document.getElementById('eng-nps-reject');
+  var has=!!String(x['NPS Evidence']||'').trim();
+  if(ap)ap.style.display=(has&&st!=='approved')?'':'none';
+  if(rj)rj.style.display=(has&&st!=='rejected')?'':'none';
+}
+function engApplyRow(x,row){
+  if(row)Object.keys(row).forEach(function(k){x[k]=row[k];});
+  engRenderNpsLine(x);
+  var ev=document.getElementById('eng-f-npsev');if(ev)ev.value=x['NPS Evidence']||'';
+  if(currentTab==='engagement')renderEngagement();
+}
+function engWireNpsButtons(x){
+  var kode=x['Kode'];
+  var sub=document.getElementById('eng-nps-submit');
+  if(sub)sub.addEventListener('click',function(){
+    var ev=String((document.getElementById('eng-f-npsev')||{}).value||'').trim();
+    if(!ev||!evidenceLooksLikeLink_(ev)){toast('⚠ '+EVIDENCE_LINK_MSG,6000);return;}
+    sub.disabled=true;
+    _gasPost({action:'submitEngagementNps',kode:kode,evidence:ev},RN_WRITE_OPTS).then(function(res){
+      engApplyRow(x,res.row);toast('Klaim NPS terkirim — menunggu review leader');
+    }).catch(function(err){
+      toast(err&&err.timedOut?'⏳ GAS lambat — klaim BELUM PASTI, muat ulang dulu':'Gagal kirim klaim: '+(err.message||err),6000);
+    }).then(function(){sub.disabled=false;});
+  });
+  var ap=document.getElementById('eng-nps-approve'),rj=document.getElementById('eng-nps-reject');
+  function review(decision){
+    var reason='';
+    if(decision==='rejected'){
+      reason=(prompt('Alasan reject klaim NPS:','')||'').trim();
+      if(!reason){toast('Alasan reject wajib diisi');return;}
+    }else if(x['NPS Status']==='Rejected'&&!confirm('Revisi: ubah klaim NPS ini jadi APPROVED?'))return;
+    _gasPost({action:'reviewEngagementNps',kode:kode,decision:decision,rejectReason:reason},RN_WRITE_OPTS).then(function(res){
+      engApplyRow(x,res.row);toast('Klaim NPS di-'+(decision==='rejected'?'reject':'approve'));
+    }).catch(function(err){toast(err&&err.timedOut?'⏳ GAS lambat — hasil BELUM PASTI':'Gagal review: '+(err.message||err),6000);});
+  }
+  if(ap)ap.addEventListener('click',function(){review('approved');});
+  if(rj)rj.addEventListener('click',function(){review('rejected');});
 }
 var engEditKode=null;
 function openEngModal(kode){
@@ -8810,6 +8871,13 @@ function openEngModal(kode){
     +'<p style="font-size:12px;color:var(--tx2);margin-bottom:8px">'+engEsc(x['Aktivitas'])+' · kode <code>'+engEsc(x['Kode'])+'</code> · jatuh tempo '+engEsc(String(x['Tgl Follow-up']).slice(0,10))
     +' · owner '+engEsc(x['Owner']||'—')+' · '+engEsc(x['Telepon']||'—')+(x['Email']?(' · '+engEsc(x['Email'])):'')+'</p>'
     +'<div id="eng-token-box" style="font-size:12px;margin:2px 0 10px;color:var(--tx3)">🔑 Token NPS: memuat…</div>'
+    +'<div style="font-weight:700;font-size:13px;margin:4px 0 4px">⭐ Klaim NPS <span style="font-weight:400;font-size:11px;color:var(--tx3)">— bukti link NPS benar-benar terkirim ke user</span></div>'
+    +'<div id="eng-nps-line" style="font-size:12px;margin-bottom:6px"></div>'
+    +'<input type="text" id="eng-f-npsev" value="'+engEsc(x['NPS Evidence']||'')+'" placeholder="https://… screenshot Drive / link chat bukti NPS terkirim">'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 12px">'
+    +'<button type="button" class="btn btn-pri" id="eng-nps-submit" style="padding:5px 12px;font-size:12px">📤 Kirim klaim NPS</button>'
+    +(isSup?'<button type="button" class="action-btn ab-ok" id="eng-nps-approve">✓ Approve</button><button type="button" class="action-btn ab-del" id="eng-nps-reject">✕ Reject</button>':'')
+    +'</div><div class="sep"></div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
     +'<div style="flex:1;min-width:130px"><label>Metode</label>'+sel('eng-f-metode',ENG_OPT_METODE,x['Metode']||'')+'</div>'
     +'<div style="flex:1;min-width:170px"><label>Update Kendala Outlet</label>'+sel('eng-f-kendala',ENG_OPT_KENDALA,x['Kendala']||'')+'</div>'
@@ -8827,6 +8895,8 @@ function openEngModal(kode){
     +'<label>Status</label><select id="eng-f-status"><option value="Open"'+(x['Status']!=='Done'?' selected':'')+'>Open</option><option value="Done"'+(x['Status']==='Done'?' selected':'')+'>Done</option></select>'
     +agentSel;
   openModal('eng-modal');
+  engRenderNpsLine(x);
+  engWireNpsButtons(x);
   var oid=String(x['ID Outlet']||'').trim();
   _gasGet('npsToken&outletId='+encodeURIComponent(oid),60000).then(function(info){
     renderRespTokenBox_(document.getElementById('eng-token-box'),oid,info);
