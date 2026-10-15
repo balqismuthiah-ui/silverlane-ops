@@ -4972,6 +4972,7 @@ function renderOverview(){
       +'<div class="prog-bar" style="margin-top:3px"><div class="prog-fill" style="width:'+Math.min(convTargetImp?myConvPct/convTargetImp*100:0,100)+'%;background:'+(myConvPct>=convTargetImp?'var(--grn)':'var(--org)')+'"></div></div>'
       +'</div>'
       +'<div style="font-size:11px;color:var(--tx2);margin-top:5px">'+myConv.moving+'/'+myConv.total+' Hot (expiry pindah)'+(myConv.total?'':' <span title="nol Hot bulan ini">—</span>')+'</div>'
+      +'<div style="font-size:10px;color:var(--tx3);margin-top:3px">Konversi <strong>bulan penuh</strong> (seluruh cohort '+currentMonthKey+'). Masih bergerak sampai bulan ditutup; lead yang jatuh tempo di akhir bulan belum matang.</div>'
       +'</div>'
       +'<div class="card">'
       +'<div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⭐ Target Review Saya</div>'
@@ -8497,6 +8498,7 @@ var kloposMonth=null;
 var kloposSection='all';
 var kloposBlock='total';
 var kloposHwcz='all';   // 15 Okt: filter Potensial Leads (all/Hot/Warm/Cold/Zombie)
+var kloposAgent='all';  // 15 Okt: filter Agen (assignedAgent), biar blok per-agen seperti di sheet bisa dilihat
 var kloposPaket='all';  // 15 Okt: filter Paket (bucket productPackage; 'all' = semua, '__none__' = tanpa paket dasar)
 var KLOPOS_PAKET_OPTS=['Starter Basic','Starter','Advance','Enterprise (Prime)','Prime Plus'];
 function renderKlopos(){
@@ -8514,7 +8516,8 @@ function renderKlopos(){
   // dgn MRR per paket/My Journey). Potensial leads = tampilkan 1 grup HWCZ (header + 5 baris kategori) dan
   // kartu/konversi ikut grup itu.
   var recsF=recs;
-  if(kloposPaket!=='all')recsF=recs.filter(function(r){
+  if(kloposAgent!=='all')recsF=recsF.filter(function(r){return r.assignedAgent===kloposAgent;});
+  if(kloposPaket!=='all')recsF=recsF.filter(function(r){
     var b=myJourneyNormalizePaket(r.productPackage);
     return kloposPaket==='__none__'?!b:b===kloposPaket;
   });
@@ -8537,6 +8540,9 @@ function renderKlopos(){
   }
   var hwczBtns=[['all','Semua Potensi']].concat(KLOPOS_HWCZ.map(function(h){return[h,h];})).map(function(x){
     return kBtn_(x[1],x[0]===kloposHwcz,"kloposHwcz='"+x[0]+"';renderKlopos()");
+  }).join(' ');
+  var agentBtns=[['all','Semua Agen']].concat(AGENTS.map(function(a){return[a,a];})).map(function(x){
+    return kBtn_(x[1],x[0]===kloposAgent,"kloposAgent='"+x[0].replace(/'/g,"\\'")+"';renderKlopos()");
   }).join(' ');
   var paketBtns=[['all','Semua Paket']].concat(KLOPOS_PAKET_OPTS.map(function(x){return[x,x];})).concat([['__none__','Tanpa Paket Dasar']]).map(function(x){
     return kBtn_(x[1],x[0]===kloposPaket,"kloposPaket='"+x[0].replace(/'/g,"\\'")+"';renderKlopos()");
@@ -8577,16 +8583,17 @@ function renderKlopos(){
     convCumCells+='<td style="text-align:center;font-size:11px;color:var(--tx2)" title="'+cumM+'/'+cumT+'">'+(pC==null?'<span style="color:var(--tx3)">—</span>':pC+'%')+'</td>';
   }
   var convRowsHtml=
-    '<tr style="border-top:2px solid var(--bdr)"><td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;font-weight:700;white-space:nowrap">Conversion harian</td>'
+    '<tr style="border-top:2px solid var(--bdr)"><td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;font-weight:700;white-space:nowrap" title="Moving ÷ total lead yang jatuh tempo di tanggal itu">Conversion harian</td>'
       +convDailyCells+'<td style="text-align:center;font-size:12px;font-weight:700;color:var(--blu)">'+convPct+'%</td></tr>'
-    +'<tr><td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;font-weight:700;white-space:nowrap">Conversion kumulatif</td>'
+    +'<tr><td style="position:sticky;left:0;z-index:1;background:var(--card);padding:5px 8px;font-size:11px;font-weight:700;white-space:nowrap" title="Akumulasi per TANGGAL JATUH TEMPO lead (bukan per waktu tercapai). Tren, bukan dasar insentif.">Conversion kumulatif<br><span style="font-weight:400;color:var(--tx3);font-size:10px">tren per tgl jatuh tempo</span></td>'
       +convCumCells+'<td style="text-align:center;font-size:12px;font-weight:700;color:var(--blu)">'+convPct+'%</td></tr>';
-  var filterLbl=(kloposHwcz!=='all'?' · '+kloposHwcz:'')+(kloposPaket!=='all'?' · '+(kloposPaket==='__none__'?'Tanpa Paket Dasar':kloposPaket):'');
+  var filterLbl=(kloposAgent!=='all'?' · '+kloposAgent:'')+(kloposHwcz!=='all'?' · '+kloposHwcz:'')+(kloposPaket!=='all'?' · '+(kloposPaket==='__none__'?'Tanpa Paket Dasar':kloposPaket):'');
   document.getElementById('tab-content').innerHTML=
     '<div class="ov-section"><div class="ov-section-title">📅 KLOPOS Daily Assignment</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+monthBtns+'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+sectionBtns+'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+hwczBtns+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+agentBtns+'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+paketBtns+'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'+blockBtns+'</div>'
     +'<div class="grid4" style="margin-bottom:12px">'
@@ -8597,7 +8604,14 @@ function renderKlopos(){
     +'</div>'
     +'<div class="card" style="padding:0"><div class="tbl-wrap"><table style="border-collapse:collapse;width:100%">'
     +'<thead><tr style="background:var(--bkg)">'+hdr+'</tr></thead><tbody>'+rows+convRowsHtml+'</tbody>'
-    +'</table></div></div></div>';
+    +'</table></div></div>'
+    +'<div class="card" style="margin-top:10px;padding:10px 14px;font-size:11px;line-height:1.6;color:var(--tx2)">'
+    +'<strong>Cara membaca baris Conversion.</strong> Kolom = <em>tanggal jatuh tempo lead</em>, bukan tanggal agen mencapai angka itu. '
+    +'<em>Harian</em> = moving ÷ total lead yang jatuh tempo hari itu. <em>Kumulatif</em> = akumulasi dari tanggal 1 s.d. hari itu (rata-rata tertimbang; hari-1 punya bobot terbesar), '
+    +'dan nilai di kolom <strong>Total = konversi bulan penuh</strong> (dasar target/insentif). '
+    +'Di bulan berjalan kumulatif akan turun karena lead yang jatuh tempo belakangan belum matang; di bulan yang sudah selesai kurvanya cenderung datar. '
+    +'Angka masih bergerak (renewal telat ikut menambah moving) sampai di-lock tanggal 1 bulan berikutnya.'
+    +'</div></div>';
 }
 
 // ── TAB: CHURN TREND ──────────────────────────────────────────────────────
