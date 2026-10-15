@@ -6810,7 +6810,12 @@ function ratingNpsRowsHtml(all,me,isSup){
           +(ratingNpsSelected[ck]&&bs.eligible?' checked':'')
           +(bs.eligible?'':' disabled title="'+rnAttr_(bs.reason)+'"')+'>';
       }else{
-        aksiCell='<span style="font-size:11px;color:var(--tx3)">'+(x.rejectReason?('Alasan: '+x.rejectReason):'—')+'</span>';
+        // 15 Okt (request operator, kasus Cangkingan Store): keputusan yang SUDAH final bisa direvisi
+        // (Approved -> Reject, Rejected -> Approve). Server (reviewNpsEvidenceV2/reviewUpsellClaimV2)
+        // nggak peduli status sebelumnya, jadi cukup tombol -- reject tetap wajib alasan.
+        var revTo=x.status==='Approved'?'rejected':'approved';
+        aksiCell='<button class="action-btn '+(revTo==='rejected'?'ab-del':'ab-ok')+'" data-act="review-claim" data-revise="1" data-decision="'+revTo+'" data-key="'+x.key+'" data-type="'+x.type+'" title="Ubah keputusan">↩ Revisi → '+(revTo==='rejected'?'Reject':'Approve')+'</button>'
+          +(x.rejectReason?'<div style="font-size:11px;color:var(--tx3);margin-top:3px">Alasan: '+x.rejectReason+'</div>':'');
       }
     }
     // 26 Sep (request operator): jumlah rating diklaim -- SEBELUMNYA nol muncul sama sekali di tab
@@ -11186,6 +11191,7 @@ tabContent.addEventListener('click',function(e){
     // "{recId}_{platform}" buat Rating, "{recId}" polos buat NPS (SAMA persis key server-side).
     else if(act==='review-claim'){
       var rnDecision=btn.dataset.decision,rnType=btn.dataset.type,rnKey=btn.dataset.key;
+      if(btn.dataset.revise==='1'&&!confirm('Revisi keputusan: ubah klaim ini jadi '+(rnDecision==='rejected'?'REJECTED':'APPROVED')+'?'))return;
       var rnRejectReason='';
       if(rnDecision==='rejected'){
         rnRejectReason=(prompt('Alasan reject:','')||'').trim();
