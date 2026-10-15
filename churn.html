@@ -2500,24 +2500,34 @@ function npsApprovedCountInMonth(r,agentName,monthStr){
 // di RESPONSES bulan itu TIDAK dihitung lagi (kredit ke agen siapa pun), dan 1 outlet cuma 1x walau punya >1
 // workorder Engagement. Sumber engWoData (lazy-load); belum termuat -> 0 (angka naik begitu data tiba).
 function engNpsOutletKey_(id){return String(id==null?'':id).trim().replace(/^0+(?=\d)/,'');}
+var engNpsApprovedAll=null; // ringkasan server: klaim NPS Approved SEMUA agen (agen cuma menerima workorder miliknya)
 function engNpsApprovedList_(){
-  if(!engWoLoaded||!engWoData||!engWoData.length)return[];
+  if(!engWoLoaded)return[];
+  var byKode={};
+  (engNpsApprovedAll||[]).forEach(function(m){
+    byKode[m.k]={kode:m.k,oid:m.o,agent:String(m.a||'').trim(),ym:String(m.m||'').trim()};
+  });
+  // baris workorder lokal lebih segar dari ringkasan server (habis approve/reject/revisi di sesi ini)
+  (engWoData||[]).forEach(function(w){
+    var k=w['Kode'];
+    if(String(w['NPS Evidence']||'').trim()&&String(w['NPS Status']||'').trim().toLowerCase()==='approved')
+      byKode[k]={kode:k,oid:w['ID Outlet'],agent:String(w['Agen']||'').trim(),ym:String(w['Bulan Kode']||'').trim()};
+    else delete byKode[k];
+  });
   var seen={};
   ((Store.get().records)||[]).forEach(function(r){
     if(r.nps&&r.nps.evidence&&ratingNpsStatusNorm_(r.nps.status)==='Approved'&&r.outletId)
       seen[(r.nps.claimMonth||'')+'|'+engNpsOutletKey_(r.outletId)]=true;
   });
   var out=[];
-  engWoData.forEach(function(w){
-    if(!String(w['NPS Evidence']||'').trim())return;
-    if(String(w['NPS Status']||'').trim().toLowerCase()!=='approved')return;
-    var ym=String(w['Bulan Kode']||'').trim();
-    if(!/^\d{6}$/.test(ym))return;
-    var month=IDN_MONTHS_CLIENT[+ym.slice(4)-1]+' '+ym.slice(0,4);
-    var oid=engNpsOutletKey_(w['ID Outlet']);
+  Object.keys(byKode).sort().forEach(function(kd){ // urut kode -> hasil dedup deterministik
+    var m=byKode[kd];
+    if(!/^\d{6}$/.test(m.ym))return;
+    var month=IDN_MONTHS_CLIENT[+m.ym.slice(4)-1]+' '+m.ym.slice(0,4);
+    var oid=engNpsOutletKey_(m.oid);
     var k=month+'|'+oid;
     if(oid){if(seen[k])return;seen[k]=true;}
-    out.push({agent:String(w['Agen']||'').trim(),month:month,kode:w['Kode']});
+    out.push({agent:m.agent,month:month,kode:m.kode});
   });
   return out;
 }
@@ -4591,7 +4601,7 @@ function buildCatDetailMap(recs,useEff){
 // ── TAB: OVERVIEW ──────────────────────────────────────────────────────────
 function renderOverview(){
   // 15 Okt: capaian NPS ikut klaim Engagement -- muat workorder sekali (leader; jangan loop kalau gagal).
-  if(Auth.isSuperior()&&!engWoLoaded&&!engWoLoading&&!engWoError)engLoad(false);
+  if(!engWoLoaded&&!engWoLoading&&!engWoError)engLoad(false); // agen: server cuma kirim workorder miliknya sendiri
   var d=Store.get();
   var recs=d.records;
   var isSup=Auth.isSuperior();
@@ -4694,7 +4704,10 @@ function renderOverview(){
   // 30 Sep: target NPS SEKARANG computed (80% renewal paid - multioutlet), BUKAN manual Kelola
   // Target lagi -- lihat computeNpsAutoTarget(). Team-wide dulu di sini; per-agen dihitung ULANG
   // di dalam loop agentRows di bawah (targetnya beda-beda per agen, nggak bisa 1 angka dibagi rata).
-  var REVIEW_TARGET_NPS=computeNpsAutoTarget(currentMonthKey,null)||null;
+  // 15 Okt (keputusan operator): target tim = JUMLAH target per agen (80% renewal paid CX - multioutlet tiap agen),
+  // sama dgn tabel Ringkasan per Agen + kartu agen. Dulu computeNpsAutoTarget(period,null) = 80% SEMUA renewal
+  // perusahaan (ikut deal non-CX) -> target ~2,9x terlalu besar vs penyebut "Paid CX".
+  var REVIEW_TARGET_NPS=AGENTS.reduce(function(s,ag){return s+computeNpsAutoTarget(currentMonthKey,ag);},0)||null;
   var PER_AGENT_RENEWAL_IMP=Math.round(RENEWAL_TARGET_IMP/N_AGENTS);
   var convTarget=convT.regular,convTargetImp=convT.improved;
 
@@ -4888,6 +4901,15 @@ function renderOverview(){
     // lihat COUNT (outlet renewal / deal), sekarang + Rp punya dia sendiri.
     var myRenewalRev=computeFinancialsMetric('renewal_revenue',myRecs,currentMonthKey);
     var myUpsellRev=computeUpsellRevenuePersonal(currentMonthKey,me);
+    // 15 Okt (request operator): agen juga lihat performa NPS pribadinya -- target SAMA persis yang dipakai
+    // "Ringkasan per Agen" leader (computeNpsAutoTarget per agen = 80% renewal paid CX - multioutlet),
+    // capaian = klaim RESPONSES + klaim Engagement Approved bulan klaim berjalan.
+    var myNps=allRecs.reduce(function(s,r){return s+npsApprovedCountInMonth(r,me,CURRENT_CLAIM_MONTH_STR);},0)+engNpsApprovedInMonth_(me,CURRENT_CLAIM_MONTH_STR);
+    var myNpsTarget=computeNpsAutoTarget(currentMonthKey,me);
+    var myPaidCx=computeRenewalPaidCxCount_(currentMonthKey,me);
+    var myNpsPct=myNpsTarget?Math.round(myNps/myNpsTarget*100):0;
+    var myNpsVsPaidPct=myPaidCx?Math.round(myNps/myPaidCx*100):0;
+    var myNpsClr=myNpsPct>=100?'var(--grn)':(myNpsPct>=70?'var(--yel)':'var(--red)');
     var myMapsPct=Math.min(PER_AGENT_REVIEW_MAPS?Math.round(myMaps/PER_AGENT_REVIEW_MAPS*100):0,100);
     var myAppsPct=Math.min(PER_AGENT_REVIEW_APPS?Math.round(myApps/PER_AGENT_REVIEW_APPS*100):0,100);
     var myConvPct=total?Math.round((renewal/total)*100):0;
@@ -4939,6 +4961,10 @@ function renderOverview(){
       +'<div style="font-size:12px;font-weight:600;color:var(--tx);margin-top:8px">📱 App Store</div>'
       +'<div style="font-size:11px;color:var(--tx2)"><strong>'+myApps+'</strong> / '+PER_AGENT_REVIEW_APPS+'</div>'
       +'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+myAppsPct+'%"></div></div>'
+      +'<div style="font-size:12px;font-weight:600;color:var(--tx);margin-top:8px">😊 NPS</div>'
+      +'<div style="font-size:11px;color:var(--tx2)"><strong>'+myNps+'</strong>'+(myNpsTarget?' / '+myNpsTarget+' <span style="color:'+myNpsClr+';font-weight:700">('+myNpsPct+'%)</span>':'')+' approved</div>'
+      +(myNpsTarget?'<div class="prog-bar" style="margin-top:4px"><div class="prog-fill" style="width:'+Math.min(myNpsPct,100)+'%;background:'+myNpsClr+'"></div></div>':'')
+      +'<div style="font-size:10px;color:var(--tx3);margin-top:3px">vs Paid CX: '+myNps+'/'+myPaidCx+(myPaidCx?' ('+myNpsVsPaidPct+'%)':'')+'</div>'
       +'</div>'
       +'</div></div>';
   }
@@ -8755,6 +8781,7 @@ function engLoad(force){
   _gasGet('engagementWo',90000).then(function(j){
     if(j&&j.ok===false)throw new Error(j.error||'gagal');
     engWoData=(j&&j.data)||[];engWoLoaded=true;
+    engNpsApprovedAll=(j&&j.npsApproved)||null;
   }).catch(function(err){engWoError=err.message||'gagal memuat';})
   .then(function(){
     engWoLoading=false;
