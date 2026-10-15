@@ -8838,6 +8838,7 @@ function openResp(id){
     +UPSELL_PLATFORMS.map(function(p){return buildUpsellFieldset(p,r.upsell&&r.upsell[p.key],isSup);}).join('')
     +'<label>Evidence ajakan isi NPS <span style="color:var(--tx3);font-weight:400">— tersimpan bareng tombol Simpan</span></label>'
     +'<input type="text" id="resp-nps-evidence" value="'+(nps.evidence||'')+'" placeholder="https://...">'
+    +'<div id="resp-token-box" style="font-size:12px;margin:6px 0 2px;color:var(--tx3)">🔑 Token NPS: memuat…</div>'
     +'<div style="font-size:11px;margin:4px 0 8px">Status NPS: '+npsStatusBadge+'</div>'
     +npsReviewHtml
     +auditHtml;
@@ -8894,6 +8895,86 @@ function openResp(id){
     updateKompetitorHint(e.target.value);
   });
   openModal('resp-modal');
+  loadRespTokenBox_(r.outletId||'');
+}
+
+// 15 Okt (request operator): token NPS outlet + "Take it" dari dashboard. Lookup = GET npsToken (baca tab
+// tokens + lookup_claims di spreadsheet NPS Responses); claim = POST claimNpsToken (nulis A-C + formula G
+// ke lookup_claims, format SAMA dgn app Take it, claim yang sudah ada TIDAK ditimpa). Link tetap bisa
+// disalin walau sudah di-take orang lain -- cuma ditampilkan siapa/kapan.
+function respTokenCopy_(text){
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText)return navigator.clipboard.writeText(text);
+  }catch(e){}
+  return new Promise(function(res,rej){
+    try{
+      var ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
+      document.body.appendChild(ta);ta.select();
+      var ok=document.execCommand('copy');document.body.removeChild(ta);
+      ok?res():rej(new Error('copy gagal'));
+    }catch(e2){rej(e2);}
+  });
+}
+function respTokenFmtAt_(iso){
+  var d=new Date(iso);if(isNaN(d.getTime()))return String(iso||'');
+  return d.toLocaleString('id-ID',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+}
+function renderRespTokenBox_(box,oid,info){
+  if(!box)return;
+  if(!info||info.ok===false){
+    box.innerHTML='🔑 Token NPS: <span style="color:var(--red)">tidak tersedia ('+String(info&&info.error||'gagal memuat').replace(/</g,'&lt;')+')</span>';
+    return;
+  }
+  if(!info.token){
+    box.innerHTML='🔑 Token NPS: <span>outlet ini belum punya token di sheet tokens</span>';
+    return;
+  }
+  var short=info.token.slice(0,8)+'…';
+  var claimTxt=info.claim
+    ?'<span style="color:var(--tx2)">sudah di-take <strong>'+String(info.claim.by).replace(/</g,'&lt;')+'</strong> · '+respTokenFmtAt_(info.claim.at)+'</span>'
+    :'<span style="color:var(--grn,#2e9e5b)">belum di-take</span>';
+  box.innerHTML='🔑 Token NPS: <code style="font-size:11px">'+short+'</code> · '+claimTxt+' '
+    +'<button type="button" class="btn btn-sec" id="resp-token-take" style="padding:3px 10px;font-size:11px;margin-left:6px">'
+    +(info.claim?'📋 Salin link':'📋 Take & salin link')+'</button>';
+  var btn=document.getElementById('resp-token-take');
+  if(!btn)return;
+  btn.addEventListener('click',function(){
+    btn.disabled=true;
+    function doCopy(msg){
+      respTokenCopy_(info.url).then(function(){toast(msg,4000);}).catch(function(){prompt('Salin link NPS ini:',info.url);});
+      btn.disabled=false;
+    }
+    if(info.claim){doCopy('Link NPS disalin (sudah di-take '+info.claim.by+')');return;}
+    btn.textContent='⏳ Mencatat…';
+    _gasPost({action:'claimNpsToken',outletId:oid},RN_WRITE_OPTS).then(function(res){
+      info.claim=res.claim||{by:'(kamu)',at:new Date().toISOString()};
+      renderRespTokenBox_(box,oid,info);
+      var b2=document.getElementById('resp-token-take');
+      respTokenCopy_(info.url).then(function(){
+        toast(res.already?('Link disalin — token ini sudah di-take '+(res.claim&&res.claim.by||'orang lain')):'✓ Di-take & link NPS disalin'
+          +(res.emailResolved===false?' (email kamu belum ada di lookup_users — Departement kosong di report)':''),6000);
+      }).catch(function(){prompt('Salin link NPS ini:',info.url);});
+      if(b2)b2.disabled=false;
+    }).catch(function(err){
+      btn.disabled=false;btn.textContent='📋 Take & salin link';
+      if(err&&err.timedOut){
+        toast('⏳ GAS lambat — claim BELUM PASTI. Link tetap disalin; jangan klik berulang.',8000);
+        respTokenCopy_(info.url).catch(function(){});
+      }else toast('Gagal take token: '+err.message,6000);
+    });
+  });
+}
+// lookup pertama bisa ~16dtk (TextFinder dingin di tab tokens 129rb baris) -> timeout 60dtk
+function loadRespTokenBox_(outletId){
+  var box=document.getElementById('resp-token-box');
+  var oid=String(outletId||'').trim();
+  if(!box)return;
+  if(!oid){box.innerHTML='🔑 Token NPS: <span>ID outlet tidak ada</span>';return;}
+  _gasGet('npsToken&outletId='+encodeURIComponent(oid),60000).then(function(info){
+    renderRespTokenBox_(document.getElementById('resp-token-box'),oid,info);
+  }).catch(function(err){
+    renderRespTokenBox_(document.getElementById('resp-token-box'),oid,{ok:false,error:err.message});
+  });
 }
 
 // 4 Agu (operator, revisi): submit Evidence NPS DILEBUR ke tombol Simpan utama (bukan tombol
