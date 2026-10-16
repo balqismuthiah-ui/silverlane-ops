@@ -4617,6 +4617,7 @@ function computePerfTable_(period,recs,ctx){
   var claimMonth=IDN_MONTHS_CLIENT[MONTH_KEYS.indexOf(period)]+' 2026';
   var terminMap=myJourneyOutletTerminMap(),recsByOutlet=myJourneyRecsByOutletId();
   var compTargets=Targets.getAll().filter(function(t){
+    if(ctx.agentView&&!t.visibleToAgent)return false; // agen cuma lihat komponen yang di-set visible
     return t.scope==='personal'&&t.period===period&&(t.metricKey.indexOf('sku:')===0||t.metricKey.indexOf('bundle:')===0||t.metricKey.indexOf('combo:')===0);
   }).sort(targetSortCmp);
   var cohortRecs=recs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(period)>=0;});
@@ -4730,7 +4731,8 @@ function perfTableHtml_(d){
   }else{
     comp='<div style="font-size:11px;color:var(--tx3);margin-top:10px">Belum ada target komponen upsell (SKU/Hardware/Combo) untuk bulan ini di Kelola Target.</div>';
   }
-  return'<div class="ov-section"><div class="ov-section-title">📋 Performa per Agen — '+d.period+' 26 <span style="font-weight:400;color:var(--tx3);font-size:11px">(live; kontribusi = porsi dari total tim)</span></div>'
+  var single=d.agents.length===1;
+  return'<div class="ov-section"><div class="ov-section-title">📋 '+(single?'Performa Saya':'Performa per Agen')+' — '+d.period+' 26 <span style="font-weight:400;color:var(--tx3);font-size:11px">(live; kontribusi = porsi dari total tim)</span></div>'
     +cards+main+comp+'</div>';
 }
 function renderOverview(){
@@ -5119,7 +5121,10 @@ function renderOverview(){
   // ── CLM-04: Progres vs Target Configurable (semua yg visible, periode bulan ini) ──
   // Team & Personal = scope INDEPENDEN (keputusan Muthia) — nggak ada logic total-personal-harus-match-team.
   var allTargetsNow=Targets.getAll();
-  var visibleTargets=allTargetsNow.filter(function(t){return(t.period===currentMonthKey)&&(isSup||t.visibleToAgent);});
+  // 16 Okt (request operator): komponen upsell (sku:/bundle:/combo:) SEKARANG tampil di tabel "Performa per Agen"
+  // (tabel komponen), bukan kartu satu-satu di grid ini -- dibuang dari sini biar tidak dobel.
+  function isComponentTarget_(t){var k=String(t.metricKey||'');return k.indexOf('sku:')===0||k.indexOf('bundle:')===0||k.indexOf('combo:')===0;}
+  var visibleTargets=allTargetsNow.filter(function(t){return(t.period===currentMonthKey)&&(isSup||t.visibleToAgent)&&!isComponentTarget_(t);});
   var configurableTargetSection='';
   // CLM-11 Fase C: dipakai bareng targetCard() DI SINI dan 3 kartu "Target Tim Bulan Ini" di bawah --
   // 1 tempat render 2-tier bar (Regular wajib, Improved opsional) biar konsisten, bukan duplikat markup.
@@ -5958,14 +5963,17 @@ function renderOverview(){
   // configurableTarget/upsellTeam), tapi funnel (blok "Ringkasan...") masih ke-render duluan
   // karena itu markup literal pertama di string, bukan variabel section yang ikut ke-reorder.
   var perfSection='';
-  if(isSup){
+  {
     try{
       var perfData=computePerfTable_(currentMonthKey,recs,{
         renewalAch:renewalAch,renewalTarget:RENEWAL_TARGET,
         upsellNat:upsellRevView.revenue,upsellTarget:upRevT.regular,
-        mapsTarget:PER_AGENT_REVIEW_MAPS,appsTarget:PER_AGENT_REVIEW_APPS
+        mapsTarget:PER_AGENT_REVIEW_MAPS,appsTarget:PER_AGENT_REVIEW_APPS,
+        agentView:!isSup
       });
-      window.lastPerfData_=perfData; // dipakai snapshot/rapor bulanan (tahap 2)
+      if(isSup)window.lastPerfData_=perfData; // dipakai snapshot/rapor bulanan (tahap 2)
+      // Agen: kartu tim + HANYA baris sendiri (kontribusi tetap dihitung terhadap total tim).
+      if(!isSup)perfData.agents=perfData.agents.filter(function(a){return a.name===me;});
       perfSection=perfTableHtml_(perfData);
     }catch(perfErr){
       try{console.warn('computePerfTable_ gagal',perfErr);}catch(e){}
