@@ -103,6 +103,8 @@ button{cursor:pointer;border:none}
 .tbl-wrap.sticky-wrap{overflow-y:auto;max-height:calc(100vh - 260px)}
 table{width:100%;border-collapse:collapse}
 th{background:var(--sur2);color:var(--tx2);font-size:12px;font-weight:700;padding:8px 12px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--bdr);position:sticky;top:0;z-index:2}
+.perf-tbl th{white-space:normal;line-height:1.25;vertical-align:bottom;padding:8px 8px}
+.perf-tbl td{padding:8px 8px}
 td{padding:8px 12px;border-bottom:1px solid var(--bdr);color:var(--tx);vertical-align:middle}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--sur2)}
@@ -4612,6 +4614,25 @@ function buildCatDetailMap(recs,useEff){
 // dipakai nanti untuk snapshot/rapor bulanan (beku). Semua angka dari fungsi yang sudah ada (nol logika hitung
 // baru): renewal/upsell revenue by creator (billing), konversi Hot moving, MRR+ARPU (My Journey), Maps/App,
 // NPS (RESPONSES+Engagement), komponen upsell dari Kelola Target (sku:/bundle:/combo:). Tanpa insentif.
+// Konteks (target tim + capaian nasional) untuk SATU periode, mandiri (tidak bergantung closure renderOverview) --
+// dipakai Overview DAN snapshot (bulan berjalan maupun bulan lalu). Semantik target sama persis dgn findTeamTarget
+// di renderOverview (fallback hanya kalau baris target belum pernah dibuat).
+function perfCtxForPeriod_(period){
+  var teamT=Targets.getAll().filter(function(t){return t.scope==='team'&&t.period===period;});
+  function ft(key,fb){var t=teamT.find(function(x){return x.metricKey===key;});return t?{regular:t.targetValue,found:true}:{regular:fb,found:false};}
+  var n=AGENTS.length||1;
+  var mapsT=ft('review_maps',400),appsT=ft('review_playstore',400);
+  var upv=computeUpsellTeamView(period,'CLM_CC');
+  return{
+    renewalAch:computeRenewalNasional(period).revenue,renewalTarget:ft('renewal_revenue',1500000000).regular,
+    upsellNat:upv.revenue,upsellTarget:ft('upsell_revenue_nasional',null).regular,
+    mapsTarget:mapsT.found?mapsT.regular:Math.round(mapsT.regular/n),appsTarget:appsT.found?appsT.regular:Math.round(appsT.regular/n)
+  };
+}
+function computePerfForPeriod_(period,agentView){
+  var ctx=perfCtxForPeriod_(period);ctx.agentView=!!agentView;
+  return computePerfTable_(period,Store.get().records,ctx);
+}
 function computePerfTable_(period,recs,ctx){
   ctx=ctx||{};
   var claimMonth=IDN_MONTHS_CLIENT[MONTH_KEYS.indexOf(period)]+' 2026';
@@ -4685,7 +4706,8 @@ function computePerfTable_(period,recs,ctx){
 function perfFindTeamTarget_(period,metricKey){
   return Targets.getAll().find(function(t){return t.scope==='team'&&t.period===period&&t.metricKey===metricKey;})||null;
 }
-function perfTableHtml_(d){
+function perfTableHtml_(d,opts){
+  opts=opts||{};
   function col(ok,warn){return ok?'var(--grn)':(warn?'var(--yel)':'var(--red)');}
   function pctOf(a,t){return t?Math.round(a/t*100):null;}
   function card(label,main,sub,clr){
@@ -4715,7 +4737,7 @@ function perfTableHtml_(d){
       +'<td style="text-align:right;color:'+col(a.apps>=d.appsTarget&&d.appsTarget>0,a.apps>0)+'">'+a.apps+' / '+d.appsTarget+'</td>'
       +'<td style="text-align:right;color:'+col(a.npsPct>=80,a.npsPct>=60)+';font-weight:700">'+a.nps+' / '+a.paidCx+'<div style="font-size:10px;font-weight:400">'+a.npsPct+'%</div></td></tr>';
   }).join('');
-  var main='<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+  var main='<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl perf-tbl">'
     +'<thead><tr><th>Agen</th><th style="text-align:right">Revenue renewal</th><th style="text-align:right" title="Merah &lt;20 jt · kuning ≥20 jt · hijau ≥30 jt">Revenue upsell</th><th style="text-align:right" title="Moving ÷ total Hot, target 80%">Konversi Hot</th><th style="text-align:right" title="MRR = Σ revenue ÷ Σ bulan paket (My Journey). Persen = porsi dari total tim">MRR</th><th style="text-align:right" title="Merah bila &lt; Rp 1.500.000">ARPU renewal</th><th style="text-align:right">Maps</th><th style="text-align:right">App</th><th style="text-align:right" title="Approved ÷ paid CX (multioutlet dikeluarkan), target 80%">NPS</th></tr></thead>'
     +'<tbody>'+rows+'</tbody></table></div></div>';
   var comp='';
@@ -4727,13 +4749,132 @@ function perfTableHtml_(d){
       }).join('')+'</tr>';
     }).join('');
     comp='<div style="font-size:12px;font-weight:700;color:var(--tx2);margin:14px 0 6px">Komponen upsell — capaian / target minimum (dari Kelola Target)</div>'
-      +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl"><thead><tr><th>Agen</th>'+ch+'</tr></thead><tbody>'+cr+'</tbody></table></div></div>';
+      +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl perf-tbl"><thead><tr><th>Agen</th>'+ch+'</tr></thead><tbody>'+cr+'</tbody></table></div></div>';
   }else{
     comp='<div style="font-size:11px;color:var(--tx3);margin-top:10px">Belum ada target komponen upsell (SKU/Hardware/Combo) untuk bulan ini di Kelola Target.</div>';
   }
   var single=d.agents.length===1;
-  return'<div class="ov-section"><div class="ov-section-title">📋 '+(single?'Performa Saya':'Performa per Agen')+' — '+d.period+' 26 <span style="font-weight:400;color:var(--tx3);font-size:11px">(live; kontribusi = porsi dari total tim)</span></div>'
-    +cards+main+comp+'</div>';
+  return'<div class="ov-section"><div class="ov-section-title">📋 '+(single?'Performa Saya':'Performa per Agen')+' — '+d.period+' 26 <span style="font-weight:400;color:var(--tx3);font-size:11px">'+(opts.subtitle||'(live; kontribusi = porsi dari total tim)')+'</span></div>'
+    +(opts.badgeHtml||'')+cards+main+comp+'</div>';
+}
+// ── SNAPSHOT PERFORMA (Tahap 2, 16 Okt) -- simpan hasil tabel di atas ke GAS (tab PERFORMANCE_SNAPSHOT) ──────────
+// Kebijakan: FINAL dikunci TANGGAL 1 bulan berikutnya (pertama kali leader membuka dashboard pada tgl 1-3).
+// Bulan lalu bisa diambil RETROAKTIF kapan saja (data SAAT INI, bukan per tgl 1) selama datanya ter-sync.
+var perfSnapList_=null,perfSnapBusy_=false;
+function perfPeriodKey_(abbr){return'2026'+String(MONTH_KEYS.indexOf(abbr)+1).padStart(2,'0');}
+function perfAbbrOfKey_(pk){return MONTH_KEYS[parseInt(String(pk).slice(4),10)-1]||pk;}
+function perfWibToday_(){return new Date(Date.now()+7*3600000).toISOString().slice(0,10);}
+function perfSnapIncomplete_(period,d){
+  return !UpsellTeamStore.getMonth(period)||d.agents.every(function(a){return!a.renewalSynced;});
+}
+function perfTakeSnapshot_(period,kind,opts){
+  opts=opts||{};
+  var d=computePerfForPeriod_(period,false);
+  var body={action:'savePerfSnapshot',period:perfPeriodKey_(period),kind:kind,payload:d,incomplete:perfSnapIncomplete_(period,d),note:opts.note||'',force:!!opts.force};
+  return _gasPost(body,RN_WRITE_OPTS);
+}
+function perfSnapControlsHtml_(){
+  var cur=new Date().getMonth();
+  var opts=MONTH_KEYS.slice(0,cur+1).map(function(m,i){return'<option value="'+m+'"'+(i===cur?' selected':'')+'>'+m+' 26'+(i===cur?' (berjalan)':'')+'</option>';}).join('');
+  return'<div class="card" style="margin-top:12px;padding:10px 14px">'
+    +'<div style="font-size:12px;font-weight:700;color:var(--tx2);margin-bottom:6px">📸 Snapshot performa <span style="font-weight:400;color:var(--tx3)">(angka beku; final dikunci tanggal 1 bulan berikutnya)</span></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<select id="perf-snap-period" style="font-size:12px;padding:4px 8px">'+opts+'</select>'
+    +'<button type="button" class="btn btn-blu" style="padding:5px 12px;font-size:12px" onclick="perfSnapshotUI(false)">📸 Ambil snapshot</button>'
+    +'<button type="button" class="btn btn-sec" style="padding:5px 12px;font-size:12px" onclick="perfSnapshotUI(true)" title="Hanya untuk bulan yang sudah berakhir. Tidak bisa ditimpa setelah dikunci.">🔒 Kunci final</button>'
+    +'<button type="button" class="btn btn-sec" style="padding:5px 12px;font-size:12px" onclick="perfSnapLoadList_()">📂 Riwayat snapshot</button>'
+    +'</div><div id="perf-snap-list" style="margin-top:8px"></div><div id="perf-snap-view" style="margin-top:8px"></div></div>';
+}
+function perfSnapshotUI(lockFinal){
+  if(!Auth.isSuperior()||perfSnapBusy_)return;
+  var sel=document.getElementById('perf-snap-period');
+  var cur=MONTH_KEYS[new Date().getMonth()];
+  var period=sel?sel.value:cur;
+  var isCur=period===cur;
+  var kind=lockFinal?'FINAL':(isCur?'DAILY':'RETRO');
+  if(lockFinal&&isCur){toast('Final hanya untuk bulan yang sudah berakhir (mulai tanggal 1 bulan berikutnya)',5000);return;}
+  var missing=!UpsellTeamStore.getMonth(period);
+  var msg=kind==='DAILY'?('Ambil snapshot harian '+period+' 26 sekarang?')
+    :kind==='RETRO'?('Ambil snapshot RETROAKTIF '+period+' 26?\n\nAngka dihitung dari data SAAT INI (bukan per tanggal 1): renewal telat dan konversi yang bergerak sesudahnya ikut terhitung.')
+    :('KUNCI FINAL '+period+' 26?\n\nSetelah dikunci, snapshot final tidak ditimpa lagi (koreksi hanya lewat langkah khusus). Angka diambil dari data saat ini.');
+  if(missing)msg+='\n\nPERINGATAN: data renewal/upsell '+period+' belum ter-sync di browser ini — kolom revenue/ARPU/MRR akan kosong. Sync bulan itu dulu di Master & Assign kalau mau lengkap. Tetap lanjut?';
+  if(!confirm(msg))return;
+  perfSnapBusy_=true;toast('⏳ Menyimpan snapshot…',20000);
+  perfTakeSnapshot_(period,kind).then(function(res){
+    if(res&&res.unchanged)toast('Final '+period+' 26 sudah pernah dikunci ('+res.snapshotDate+') — tidak ditimpa.',6000);
+    else toast('✓ Snapshot '+kind+' '+period+' 26 tersimpan',4000);
+    perfSnapLoadList_();
+  }).catch(function(err){
+    var m=String(err&&err.message||err);
+    if(/final_before_month_end/.test(m))toast('Bulan itu belum berakhir — final baru bisa dikunci mulai tanggal 1 bulan berikutnya.',6000);
+    else if(/daily_for_closed_month/.test(m))toast('Bulan itu sudah berakhir — pakai "Kunci final" atau snapshot retroaktif.',6000);
+    else toast(err&&err.timedOut?'⏳ GAS lambat — hasil BELUM PASTI. Cek Riwayat snapshot dulu.':'Gagal simpan snapshot: '+m,7000);
+  }).then(function(){perfSnapBusy_=false;});
+}
+var PERF_KIND_LABEL_={DAILY:'Harian',FINAL:'Final',RETRO:'Retroaktif'};
+function perfSnapLoadList_(){
+  var el=document.getElementById('perf-snap-list');
+  if(el)el.innerHTML='<span style="font-size:11px;color:var(--tx3)">⏳ memuat riwayat…</span>';
+  return _gasGet('perfSnapshots',60000).then(function(j){
+    perfSnapList_=j.data||[];
+    var el2=document.getElementById('perf-snap-list');if(!el2)return;
+    if(!perfSnapList_.length){el2.innerHTML='<span style="font-size:11px;color:var(--tx3)">Belum ada snapshot.</span>';return;}
+    var rows=perfSnapList_.slice(0,40).map(function(m){
+      var badge=m.final?'<span class="badge badge-grn" style="font-size:10px">🔒 Final</span>':'<span class="badge badge-gray" style="font-size:10px">'+(PERF_KIND_LABEL_[m.kind]||m.kind)+'</span>';
+      return'<tr><td>'+perfAbbrOfKey_(m.period)+' 26</td><td>'+badge+(m.incomplete?' <span title="Data belum lengkap saat diambil" style="color:var(--org)">⚠</span>':'')+'</td>'
+        +'<td>'+m.snapshotDate+(m.final&&m.lateDays?' <span style="color:var(--tx3);font-size:10px">(+'+m.lateDays+' hr)</span>':'')+'</td>'
+        +'<td style="font-size:11px;color:var(--tx3)">'+String(m.takenBy||'').split('@')[0]+'</td>'
+        +'<td><button type="button" class="action-btn ab-view" onclick="perfSnapView(\''+String(m.key).replace(/'/g,"\\'")+'\')">Lihat</button></td></tr>';
+    }).join('');
+    el2.innerHTML='<div class="tbl-wrap"><table class="summary-tbl perf-tbl"><thead><tr><th>Bulan</th><th>Jenis</th><th>Tanggal ambil</th><th>Oleh</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  }).catch(function(err){
+    var el3=document.getElementById('perf-snap-list');
+    if(el3)el3.innerHTML='<span style="font-size:11px;color:var(--red)">Gagal memuat riwayat: '+String(err&&err.message||err)+(/unknown|not.?found|invalid.?action/i.test(String(err&&err.message))?' (GAS belum di-deploy versi terbaru?)':'')+'</span>';
+  });
+}
+function perfSnapView(key){
+  var box=document.getElementById('perf-snap-view');
+  if(box)box.innerHTML='<span style="font-size:11px;color:var(--tx3)">⏳ memuat snapshot…</span>';
+  _gasGet('perfSnapshot&key='+encodeURIComponent(key),60000).then(function(j){
+    if(!j||!j.ok||!j.payload)throw new Error(j&&j.error||'snapshot kosong');
+    var m=j.meta||{};
+    var late=m.final&&m.lateDays?' (terlambat '+m.lateDays+' hari dari tanggal 1)':'';
+    var badge='<div style="margin:6px 0 10px">'
+      +(m.final?'<span class="badge badge-grn">🔒 Final, dikunci '+m.snapshotDate+late+'</span>'
+               :'<span class="badge badge-gray">'+(PERF_KIND_LABEL_[m.kind]||m.kind)+' · diambil '+m.snapshotDate+'</span>')
+      +(m.kind==='RETRO'?' <span style="font-size:11px;color:var(--tx3)">dihitung dari data saat diambil, bukan per tanggal 1</span>':'')
+      +(m.incomplete?' <span style="font-size:11px;color:var(--org)">⚠ data belum lengkap saat diambil</span>':'')
+      +' <button type="button" class="action-btn" style="margin-left:6px" onclick="document.getElementById(\'perf-snap-view\').innerHTML=\'\'">Tutup</button></div>';
+    var b2=document.getElementById('perf-snap-view');
+    if(b2)b2.innerHTML=perfTableHtml_(j.payload,{subtitle:'(snapshot beku)',badgeHtml:badge});
+  }).catch(function(err){
+    var b3=document.getElementById('perf-snap-view');
+    if(b3)b3.innerHTML='<span style="font-size:11px;color:var(--red)">Gagal memuat snapshot: '+String(err&&err.message||err)+'</span>';
+  });
+}
+// Otomatis (leader, sekali per hari): snapshot HARIAN bulan berjalan; pada tgl 1-3 juga KUNCI FINAL bulan lalu kalau
+// belum ada. Data belum siap (store belum ke-sync) -> coba lagi sampai 3x. Server idempotent (1 harian/hari; final 1x).
+function perfAutoSnapshot_(attempt){
+  attempt=attempt||0;
+  try{
+    if(!Auth.isLoggedIn()||!Auth.isSuperior())return;
+    var today=perfWibToday_();
+    var done=null;try{done=localStorage.getItem('clm_perf_auto');}catch(e){}
+    if(done===today)return;
+    var curIdx=new Date().getMonth(),cur=MONTH_KEYS[curIdx];
+    var ready=UpsellTeamStore.getMonth(cur)&&(Store.get().records||[]).length;
+    if(!ready){if(attempt<3)setTimeout(function(){perfAutoSnapshot_(attempt+1);},30000);return;}
+    perfTakeSnapshot_(cur,'DAILY',{note:'auto'}).then(function(){
+      var day=parseInt(today.slice(8,10),10);
+      if(day>3||curIdx===0)return;
+      var prev=MONTH_KEYS[curIdx-1];
+      return _gasGet('perfSnapshots',60000).then(function(j){
+        var has=(j.data||[]).some(function(m){return m.period===perfPeriodKey_(prev)&&m.kind==='FINAL';});
+        if(!has)return perfTakeSnapshot_(prev,'FINAL',{note:'auto, dikunci tgl '+day});
+      });
+    }).then(function(){try{localStorage.setItem('clm_perf_auto',today);}catch(e){}})
+    .catch(function(err){try{console.warn('perfAutoSnapshot_ gagal',err);}catch(e){}});
+  }catch(e){try{console.warn('perfAutoSnapshot_',e);}catch(e2){}}
 }
 function renderOverview(){
   // 15 Okt: capaian NPS ikut klaim Engagement -- muat workorder sekali (leader; jangan loop kalau gagal).
@@ -5965,16 +6106,11 @@ function renderOverview(){
   var perfSection='';
   {
     try{
-      var perfData=computePerfTable_(currentMonthKey,recs,{
-        renewalAch:renewalAch,renewalTarget:RENEWAL_TARGET,
-        upsellNat:upsellRevView.revenue,upsellTarget:upRevT.regular,
-        mapsTarget:PER_AGENT_REVIEW_MAPS,appsTarget:PER_AGENT_REVIEW_APPS,
-        agentView:!isSup
-      });
+      var perfData=computePerfForPeriod_(currentMonthKey,!isSup);
       if(isSup)window.lastPerfData_=perfData; // dipakai snapshot/rapor bulanan (tahap 2)
       // Agen: kartu tim + HANYA baris sendiri (kontribusi tetap dihitung terhadap total tim).
       if(!isSup)perfData.agents=perfData.agents.filter(function(a){return a.name===me;});
-      perfSection=perfTableHtml_(perfData);
+      perfSection=perfTableHtml_(perfData)+(isSup?perfSnapControlsHtml_():'');
     }catch(perfErr){
       try{console.warn('computePerfTable_ gagal',perfErr);}catch(e){}
       perfSection='<div class="ov-section"><div class="card empty">Tabel performa per agen gagal dihitung — buka Console untuk detail.</div></div>';
@@ -12422,6 +12558,8 @@ function startApp(){
   // piggyback on-load doang (bukan freshness-gated kayak KLOPOS -- sheet manually-curated, nggak
   // perlu presisi 3x/hari). Tombol manual "Sync GC Watchlist" tetap ada buat refresh kapan aja.
   setTimeout(syncGcWatchlist,jms(3200));
+  // 16 Okt: snapshot performa otomatis (leader, 1x/hari) -- lihat perfAutoSnapshot_
+  setTimeout(function(){perfAutoSnapshot_(0);},jms(12000));
   // 30 Sep: multioutlet list (dipakai formula target NPS auto-compute) -- sync-on-load silent,
   // sama filosofi GC Watchlist di atas (data hand-curated, jarang berubah, nol presisi real-time
   // dibutuhin).
