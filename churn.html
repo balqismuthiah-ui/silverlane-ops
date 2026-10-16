@@ -4608,6 +4608,131 @@ function buildCatDetailMap(recs,useEff){
 }
 
 // ── TAB: OVERVIEW ──────────────────────────────────────────────────────────
+// ── 15 Okt (request operator): TABEL PERFORMA PER AGEN -- satu tabel ringkas (Overview, live) yang SAMA persis
+// dipakai nanti untuk snapshot/rapor bulanan (beku). Semua angka dari fungsi yang sudah ada (nol logika hitung
+// baru): renewal/upsell revenue by creator (billing), konversi Hot moving, MRR+ARPU (My Journey), Maps/App,
+// NPS (RESPONSES+Engagement), komponen upsell dari Kelola Target (sku:/bundle:/combo:). Tanpa insentif.
+function computePerfTable_(period,recs,ctx){
+  ctx=ctx||{};
+  var claimMonth=IDN_MONTHS_CLIENT[MONTH_KEYS.indexOf(period)]+' 2026';
+  var terminMap=myJourneyOutletTerminMap(),recsByOutlet=myJourneyRecsByOutletId();
+  var compTargets=Targets.getAll().filter(function(t){
+    return t.scope==='personal'&&t.period===period&&(t.metricKey.indexOf('sku:')===0||t.metricKey.indexOf('bundle:')===0||t.metricKey.indexOf('combo:')===0);
+  }).sort(targetSortCmp);
+  var cohortRecs=recs.filter(function(r){return(r.cohortMonths||r.bulan||'').split(',').indexOf(period)>=0;});
+  var sum={ren:0,ups:0,mrr:0};
+  var rows=AGENTS.map(function(ag){
+    var ren=computeAgentMtdCompare('renewalsRaw',ag,period,null,null,null).cur;
+    var ups=computeUpsellRevenuePersonal(period,ag);
+    var arpu=computeRenewalArpuPersonal(period,ag);
+    var mj=null;
+    try{mj=computeMyJourneyPersonal(ag,'month',{monthKey:period},2026,terminMap,recsByOutlet);}catch(e){mj=null;}
+    var aRecs=cohortRecs.filter(function(r){return r.assignedAgent===ag;});
+    var conv=computeMovingConversion(convBaseFilter(aRecs,'Hot'),period);
+    var maps=recs.reduce(function(a,r){return a+upsellApprovedCountInMonth(r,'maps',ag,claimMonth);},0);
+    var apps=recs.reduce(function(a,r){return a+upsellApprovedCountInMonth(r,'playstore',ag,claimMonth);},0);
+    var nps=recs.reduce(function(a,r){return a+npsApprovedCountInMonth(r,ag,claimMonth);},0)+engNpsApprovedInMonth_(ag,claimMonth);
+    var paid=computeRenewalPaidCxCount_(period,ag);
+    var comps=compTargets.map(function(t){
+      var r;try{r=computeTargetActual(t,recs,ag);}catch(e){r={actual:0,effectiveTarget:0};}
+      var tgt=r.effectiveTarget||0;
+      return{actual:r.actual||0,target:tgt,achieved:r.achieved!=null?!!r.achieved:(tgt>0&&(r.actual||0)>=tgt)};
+    });
+    var row={
+      name:ag,
+      renewalRev:ren.revenue||0,renewalSynced:!!ren.synced,
+      upsellRev:ups.actual||0,upsellSynced:!!ups.synced,
+      convMoving:conv.moving||0,convTotal:conv.total||0,convPct:conv.actual||0,
+      mrr:mj?mj.renewal.mrr:0,mrrRevSum:mj?mj.renewal.mrrRevSum:0,
+      arpu:arpu.arpu||0,arpuSynced:!!arpu.synced,
+      maps:maps,apps:apps,
+      nps:nps,paidCx:paid,npsPct:paid?Math.round(nps/paid*100):0,
+      comps:comps
+    };
+    sum.ren+=row.renewalRev;sum.ups+=row.upsellRev;sum.mrr+=row.mrrRevSum;
+    return row;
+  });
+  rows.forEach(function(r){
+    r.renewalShare=sum.ren?Math.round(r.renewalRev/sum.ren*100):0;
+    r.upsellShare=sum.ups?Math.round(r.upsellRev/sum.ups*100):0;
+    r.mrrShare=sum.mrr?Math.round(r.mrrRevSum/sum.mrr*100):0;
+  });
+  var natConv=computeMovingConversion(convBaseFilter(cohortRecs,'Hot'),period);
+  var npsTeam=rows.reduce(function(a,r){return a+r.nps;},0),paidTeam=rows.reduce(function(a,r){return a+r.paidCx;},0);
+  var mrrT=perfFindTeamTarget_(period,'mrr_per_paket');
+  var mrrInfo=null;
+  if(mrrT){
+    try{
+      var rm=computeTargetActual(mrrT,recs);
+      var withT=MRR_PAKET_TIERS.filter(function(t){return(rm.targets[t]||0)>0;});
+      mrrInfo={achieved:withT.filter(function(t){return(rm.byPaket[t]||0)>=rm.targets[t];}).length,total:withT.length};
+    }catch(e){mrrInfo=null;}
+  }
+  return{
+    period:period,generatedAt:new Date().toISOString(),
+    team:{
+      renewalActual:ctx.renewalAch||0,renewalTarget:ctx.renewalTarget||null,
+      upsellActual:ctx.upsellNat||0,upsellTarget:ctx.upsellTarget||null,
+      convPct:natConv.actual||0,convMoving:natConv.moving||0,convTotal:natConv.total||0,
+      mrr:mrrInfo,nps:npsTeam,paidCx:paidTeam,npsPct:paidTeam?Math.round(npsTeam/paidTeam*100):0
+    },
+    mapsTarget:ctx.mapsTarget||0,appsTarget:ctx.appsTarget||0,
+    compCols:compTargets.map(function(t){return{key:t.metricKey,label:targetMetricMeta(t.metricKey).label.replace(/\s*\((SKU|Bundle|Combo)\)\s*$/,'')};}),
+    agents:rows
+  };
+}
+function perfFindTeamTarget_(period,metricKey){
+  return Targets.getAll().find(function(t){return t.scope==='team'&&t.period===period&&t.metricKey===metricKey;})||null;
+}
+function perfTableHtml_(d){
+  function col(ok,warn){return ok?'var(--grn)':(warn?'var(--yel)':'var(--red)');}
+  function pctOf(a,t){return t?Math.round(a/t*100):null;}
+  function card(label,main,sub,clr){
+    return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">'+label+'</div>'
+      +'<div style="font-size:18px;font-weight:800;color:'+(clr||'var(--tx)')+'">'+main+'</div>'
+      +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">'+sub+'</div></div>';
+  }
+  var t=d.team;
+  var rp=pctOf(t.renewalActual,t.renewalTarget),up=pctOf(t.upsellActual,t.upsellTarget);
+  var cards='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:10px">'
+    +card('Renewal tim',fmtRpShort(t.renewalActual),rp==null?'target belum diset':('prorate <strong>'+rp+'%</strong> dari '+fmtRpShort(t.renewalTarget)),rp==null?'':col(rp>=100,rp>=70))
+    +card('Upsell nasional CLM+CC',fmtRpShort(t.upsellActual),up==null?'target belum diset':('prorate <strong>'+up+'%</strong> dari '+fmtRpShort(t.upsellTarget)),up==null?'':col(up>=100,up>=70))
+    +card('MRR per paket (tim)',t.mrr?(t.mrr.achieved+' / '+t.mrr.total+' paket'):'—',t.mrr?'paket tercapai vs target':'target MRR belum diset',t.mrr&&t.mrr.total?col(t.mrr.achieved>=t.mrr.total,t.mrr.achieved>0):'')
+    +card('Konversi Hot (tim)',t.convPct+'%',t.convMoving+'/'+t.convTotal+' · target 80%',col(t.convPct>=80,t.convPct>=70))
+    +card('NPS vs paid CX',t.npsPct+'%',t.nps+'/'+t.paidCx+' · target 80%',col(t.npsPct>=80,t.npsPct>=60))
+    +'</div>';
+  function tdShare(v){return'<div style="font-size:10px;color:var(--tx3)">'+v+'% tim</div>';}
+  var rows=d.agents.map(function(a){
+    var upC=a.upsellRev>=30000000?'var(--grn)':(a.upsellRev>=20000000?'var(--yel)':'var(--red)');
+    return'<tr><td><strong>'+a.name+'</strong></td>'
+      +'<td style="text-align:right">'+(a.renewalSynced?fmtRpFull(a.renewalRev)+tdShare(a.renewalShare):'—')+'</td>'
+      +'<td style="text-align:right;color:'+upC+';font-weight:700">'+(a.upsellSynced?fmtRpFull(a.upsellRev)+tdShare(a.upsellShare):'—')+'</td>'
+      +'<td style="text-align:right;color:'+col(a.convPct>=80,a.convPct>=70)+';font-weight:700">'+a.convPct+'%<div style="font-size:10px;color:var(--tx3);font-weight:400">'+a.convMoving+'/'+a.convTotal+'</div></td>'
+      +'<td style="text-align:right">'+(a.mrr?fmtRpFull(a.mrr)+tdShare(a.mrrShare):'—')+'</td>'
+      +'<td style="text-align:right;color:'+(a.arpuSynced?(a.arpu>=1500000?'var(--grn)':'var(--red)'):'var(--tx3)')+'">'+(a.arpuSynced?fmtRpFull(a.arpu):'—')+'</td>'
+      +'<td style="text-align:right;color:'+col(a.maps>=d.mapsTarget&&d.mapsTarget>0,a.maps>0)+'">'+a.maps+' / '+d.mapsTarget+'</td>'
+      +'<td style="text-align:right;color:'+col(a.apps>=d.appsTarget&&d.appsTarget>0,a.apps>0)+'">'+a.apps+' / '+d.appsTarget+'</td>'
+      +'<td style="text-align:right;color:'+col(a.npsPct>=80,a.npsPct>=60)+';font-weight:700">'+a.nps+' / '+a.paidCx+'<div style="font-size:10px;font-weight:400">'+a.npsPct+'%</div></td></tr>';
+  }).join('');
+  var main='<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl">'
+    +'<thead><tr><th>Agen</th><th style="text-align:right">Revenue renewal</th><th style="text-align:right" title="Merah &lt;20 jt · kuning ≥20 jt · hijau ≥30 jt">Revenue upsell</th><th style="text-align:right" title="Moving ÷ total Hot, target 80%">Konversi Hot</th><th style="text-align:right" title="MRR = Σ revenue ÷ Σ bulan paket (My Journey). Persen = porsi dari total tim">MRR</th><th style="text-align:right" title="Merah bila &lt; Rp 1.500.000">ARPU renewal</th><th style="text-align:right">Maps</th><th style="text-align:right">App</th><th style="text-align:right" title="Approved ÷ paid CX (multioutlet dikeluarkan), target 80%">NPS</th></tr></thead>'
+    +'<tbody>'+rows+'</tbody></table></div></div>';
+  var comp='';
+  if(d.compCols.length){
+    var ch=d.compCols.map(function(c){return'<th style="text-align:right">'+c.label+'</th>';}).join('');
+    var cr=d.agents.map(function(a){
+      return'<tr><td><strong>'+a.name+'</strong></td>'+a.comps.map(function(c){
+        return'<td style="text-align:right;color:'+(c.target?(c.achieved?'var(--grn)':'var(--red)'):'var(--tx3)')+';font-weight:600">'+c.actual+' / '+(c.target||'—')+'</td>';
+      }).join('')+'</tr>';
+    }).join('');
+    comp='<div style="font-size:12px;font-weight:700;color:var(--tx2);margin:14px 0 6px">Komponen upsell — capaian / target minimum (dari Kelola Target)</div>'
+      +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl"><thead><tr><th>Agen</th>'+ch+'</tr></thead><tbody>'+cr+'</tbody></table></div></div>';
+  }else{
+    comp='<div style="font-size:11px;color:var(--tx3);margin-top:10px">Belum ada target komponen upsell (SKU/Hardware/Combo) untuk bulan ini di Kelola Target.</div>';
+  }
+  return'<div class="ov-section"><div class="ov-section-title">📋 Performa per Agen — '+d.period+' 26 <span style="font-weight:400;color:var(--tx3);font-size:11px">(live; kontribusi = porsi dari total tim)</span></div>'
+    +cards+main+comp+'</div>';
+}
 function renderOverview(){
   // 15 Okt: capaian NPS ikut klaim Engagement -- muat workorder sekali (leader; jangan loop kalau gagal).
   if(!engWoLoaded&&!engWoLoading&&!engWoError)engLoad(false); // agen: server cuma kirim workorder miliknya sendiri
@@ -5832,8 +5957,24 @@ function renderOverview(){
   // funnel juga -- semula targetsSection cuma dipindah ke depan section LAIN (agentTarget/
   // configurableTarget/upsellTeam), tapi funnel (blok "Ringkasan...") masih ke-render duluan
   // karena itu markup literal pertama di string, bukan variabel section yang ikut ke-reorder.
+  var perfSection='';
+  if(isSup){
+    try{
+      var perfData=computePerfTable_(currentMonthKey,recs,{
+        renewalAch:renewalAch,renewalTarget:RENEWAL_TARGET,
+        upsellNat:upsellRevView.revenue,upsellTarget:upRevT.regular,
+        mapsTarget:PER_AGENT_REVIEW_MAPS,appsTarget:PER_AGENT_REVIEW_APPS
+      });
+      window.lastPerfData_=perfData; // dipakai snapshot/rapor bulanan (tahap 2)
+      perfSection=perfTableHtml_(perfData);
+    }catch(perfErr){
+      try{console.warn('computePerfTable_ gagal',perfErr);}catch(e){}
+      perfSection='<div class="ov-section"><div class="card empty">Tabel performa per agen gagal dihitung — buka Console untuk detail.</div></div>';
+    }
+  }
   document.getElementById('tab-content').innerHTML=
     targetsSection
+    +perfSection
     +'<div class="ov-section"><div class="ov-section-title">📊 Ringkasan '+(isSup?'Semua Agen':'Saya — '+me)
     +(funnelHasCohortData?' — Cohort '+currentMonthKey+' 26':'')+'</div>'
     +'<div class="grid-funnel">'
