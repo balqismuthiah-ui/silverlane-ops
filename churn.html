@@ -4658,7 +4658,13 @@ function computePerfTable_(period,recs,ctx){
     var comps=compTargets.map(function(t){
       var r;try{r=computeTargetActual(t,recs,ag);}catch(e){r={actual:0,effectiveTarget:0};}
       var tgt=r.effectiveTarget||0;
-      return{actual:r.actual||0,target:tgt,achieved:r.achieved!=null?!!r.achieved:(tgt>0&&(r.actual||0)>=tgt)};
+      // Combo: actual/effectiveTarget = "jumlah KOMPONEN tercapai" (0/1) -- yang dibutuhkan agen adalah satuan per komponen
+      // (mis. Lisensi 6/10, jumlah dari semua sumber SKU-nya). Simpan rincian komponen di parts.
+      var parts=null;
+      if(String(t.metricKey).indexOf('combo:')===0&&r.components&&r.components.length){
+        parts=r.components.map(function(c){return{label:c.label,actual:c.actual||0,threshold:c.threshold||0,achieved:!!c.achieved};});
+      }
+      return{actual:r.actual||0,target:tgt,achieved:r.achieved!=null?!!r.achieved:(tgt>0&&(r.actual||0)>=tgt),parts:parts};
     });
     var row={
       name:ag,
@@ -4712,14 +4718,14 @@ function perfTableHtml_(d,opts){
   function pctOf(a,t){return t?Math.round(a/t*100):null;}
   function card(label,main,sub,clr){
     return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">'+label+'</div>'
-      +'<div style="font-size:18px;font-weight:800;color:'+(clr||'var(--tx)')+'">'+main+'</div>'
+      +'<div style="font-size:16px;font-weight:800;color:'+(clr||'var(--tx)')+'">'+main+'</div>'
       +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">'+sub+'</div></div>';
   }
   var t=d.team;
   var rp=pctOf(t.renewalActual,t.renewalTarget),up=pctOf(t.upsellActual,t.upsellTarget);
   var cards='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:10px">'
-    +card('Renewal tim',fmtRpShort(t.renewalActual),rp==null?'target belum diset':('prorate <strong>'+rp+'%</strong> dari '+fmtRpShort(t.renewalTarget)),rp==null?'':col(rp>=100,rp>=70))
-    +card('Upsell nasional CLM+CC',fmtRpShort(t.upsellActual),up==null?'target belum diset':('prorate <strong>'+up+'%</strong> dari '+fmtRpShort(t.upsellTarget)),up==null?'':col(up>=100,up>=70))
+    +card('Renewal tim',fmtRpFull(t.renewalActual),rp==null?'target belum diset':('prorate <strong>'+rp+'%</strong> dari '+fmtRpFull(t.renewalTarget)),rp==null?'':col(rp>=100,rp>=70))
+    +card('Upsell nasional CLM+CC',fmtRpFull(t.upsellActual),up==null?'target belum diset':('prorate <strong>'+up+'%</strong> dari '+fmtRpFull(t.upsellTarget)),up==null?'':col(up>=100,up>=70))
     +card('MRR per paket (tim)',t.mrr?(t.mrr.achieved+' / '+t.mrr.total+' paket'):'—',t.mrr?'paket tercapai vs target':'target MRR belum diset',t.mrr&&t.mrr.total?col(t.mrr.achieved>=t.mrr.total,t.mrr.achieved>0):'')
     +card('Konversi Hot (tim)',t.convPct+'%',t.convMoving+'/'+t.convTotal+' · target 80%',col(t.convPct>=80,t.convPct>=70))
     +card('NPS vs paid CX',t.npsPct+'%',t.nps+'/'+t.paidCx+' · target 80%',col(t.npsPct>=80,t.npsPct>=60))
@@ -4745,6 +4751,15 @@ function perfTableHtml_(d,opts){
     var ch=d.compCols.map(function(c){return'<th style="text-align:right">'+c.label+'</th>';}).join('');
     var cr=d.agents.map(function(a){
       return'<tr><td><strong>'+a.name+'</strong></td>'+a.comps.map(function(c){
+        if(c.parts&&c.parts.length===1){ // combo 1 komponen (mis. Lisensi) -> tampilkan satuan, bukan "0/1"
+          var p=c.parts[0];
+          return'<td style="text-align:right;color:'+(p.threshold?(p.achieved?'var(--grn)':'var(--red)'):'var(--tx3)')+';font-weight:600" title="'+String(p.label).replace(/"/g,'&quot;')+'">'+p.actual+' / '+(p.threshold||'—')+'</td>';
+        }
+        if(c.parts&&c.parts.length>1){ // combo multi-komponen: satu baris per komponen
+          return'<td style="text-align:right;font-weight:600;font-size:11px">'+c.parts.map(function(p){
+            return'<div style="color:'+(p.threshold?(p.achieved?'var(--grn)':'var(--red)'):'var(--tx3)')+'">'+p.label+' '+p.actual+'/'+(p.threshold||'—')+'</div>';
+          }).join('')+'</td>';
+        }
         return'<td style="text-align:right;color:'+(c.target?(c.achieved?'var(--grn)':'var(--red)'):'var(--tx3)')+';font-weight:600">'+c.actual+' / '+(c.target||'—')+'</td>';
       }).join('')+'</tr>';
     }).join('');
