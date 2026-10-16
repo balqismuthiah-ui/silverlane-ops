@@ -297,6 +297,7 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
 
   <div class="nav">
     <button class="ntab active" data-tab="overview">📊 Overview</button>
+    <button class="ntab" data-tab="rapor">📑 Rapor bulanan</button>
     <button class="ntab" data-tab="master">📋 Master &amp; Assign</button>
     <button class="ntab" data-tab="worksheet">📱 My Worksheet</button>
     <button class="ntab" data-tab="response">💬 Response Update</button>
@@ -548,6 +549,10 @@ bukan .summary-tbl global -- tabel lain (nama outlet dst) tetap boleh wrap norma
           <label style="margin-top:6px">Threshold Renewal ARPU di atas Tier 3 (Rp, opsional — kosongkan = selalu Hijau)</label>
           <input type="number" id="target-tier-arputhreshold-inp" min="0" placeholder="Contoh: 1500000">
         </div>
+      </div>
+      <div id="target-weight-wrap" style="display:none">
+        <label style="margin-top:6px">Bobot komponen (%) <span style="font-weight:400;color:var(--tx3)">— opsional; total bobot semua komponen upsell dalam sebulan idealnya 100%</span></label>
+        <input type="number" id="target-weight-inp" min="0" max="100" step="any" placeholder="Contoh: 10">
       </div>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">
         <input type="checkbox" id="target-visible-chk" style="width:auto;margin:0" checked>
@@ -4666,6 +4671,13 @@ function computePerfTable_(period,recs,ctx){
       }
       return{actual:r.actual||0,target:tgt,achieved:r.achieved!=null?!!r.achieved:(tgt>0&&(r.actual||0)>=tgt),parts:parts};
     });
+    // skor komponen = jumlah bobot komponen yang TERCAPAI (komponen di bawah target = 0%); null kalau belum ada bobot
+    var compScore=null;
+    if(compTargets.some(function(t){return t.weight!=null;})){
+      compScore=0;
+      comps.forEach(function(c,j){var w=compTargets[j].weight;if(w!=null&&c.achieved)compScore+=Number(w)||0;});
+      compScore=Math.round(compScore*100)/100;
+    }
     var row={
       name:ag,
       renewalRev:ren.revenue||0,renewalSynced:!!ren.synced,
@@ -4675,7 +4687,8 @@ function computePerfTable_(period,recs,ctx){
       arpu:arpu.arpu||0,arpuSynced:!!arpu.synced,
       maps:maps,apps:apps,
       nps:nps,paidCx:paid,npsPct:paid?Math.round(nps/paid*100):0,
-      comps:comps
+      comps:comps,compScore:compScore,
+      compAchieved:comps.filter(function(c){return c.achieved;}).length
     };
     sum.ren+=row.renewalRev;sum.ups+=row.upsellRev;sum.mrr+=row.mrrRevSum;
     return row;
@@ -4706,7 +4719,8 @@ function computePerfTable_(period,recs,ctx){
       mrr:mrrInfo,nps:npsTeam,paidCx:paidTeam,npsPct:paidTeam?Math.round(npsTeam/paidTeam*100):0
     },
     mapsTarget:ctx.mapsTarget||0,appsTarget:ctx.appsTarget||0,
-    compCols:compTargets.map(function(t){return{key:t.metricKey,label:targetMetricMeta(t.metricKey).label.replace(/\s*\((SKU|Bundle|Combo)\)\s*$/,'')};}),
+    compCols:compTargets.map(function(t){return{key:t.metricKey,label:targetMetricMeta(t.metricKey).label.replace(/\s*\((SKU|Bundle|Combo)\)\s*$/,''),weight:(t.weight!=null?Number(t.weight):null),visible:!!t.visibleToAgent};}),
+    compWeightTotal:Math.round(compTargets.reduce(function(a,t){return a+(Number(t.weight)||0);},0)*100)/100,
     agents:rows
   };
 }
@@ -4715,43 +4729,64 @@ function perfFindTeamTarget_(period,metricKey){
 }
 function perfTableHtml_(d,opts){
   opts=opts||{};
+  var live=opts.live||null; // pembanding data live (struktur sama) -- dipakai tab Rapor bulanan
   function col(ok,warn){return ok?'var(--grn)':(warn?'var(--yel)':'var(--red)');}
   function pctOf(a,t){return t?Math.round(a/t*100):null;}
-  function card(label,main,sub,clr){
+  function signRp(n){return(n<0?'-':'+')+fmtRpFull(Math.abs(n));}
+  // baris kecil "live X (±Δ)" di bawah angka beku -- hanya kalau opts.live ada
+  function cmp(liveVal,snapVal,fmt,dfmt){
+    if(!live||liveVal==null||snapVal==null)return'';
+    var dlt=liveVal-snapVal;
+    var dtxt=dlt===0?'sama':dfmt(dlt);
+    return'<div style="font-size:10px;font-weight:400;color:'+(dlt>0?'var(--grn)':(dlt<0?'var(--org)':'var(--tx3)'))+'">live '+fmt(liveVal)+' ('+dtxt+')</div>';
+  }
+  function dPlain(unit){return function(x){return(x>0?'+':'')+(Math.round(x*100)/100)+unit;};}
+  function card(label,main,sub,clr,extra){
     return'<div class="card"><div style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">'+label+'</div>'
       +'<div style="font-size:16px;font-weight:800;color:'+(clr||'var(--tx)')+'">'+main+'</div>'
-      +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">'+sub+'</div></div>';
+      +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">'+sub+'</div>'+(extra||'')+'</div>';
   }
-  var t=d.team;
+  var t=d.team,lt=live?live.team:null;
   var rp=pctOf(t.renewalActual,t.renewalTarget),up=pctOf(t.upsellActual,t.upsellTarget);
   var cards='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:10px">'
-    +card('Renewal tim',fmtRpFull(t.renewalActual),rp==null?'target belum diset':('prorate <strong>'+rp+'%</strong> dari '+fmtRpFull(t.renewalTarget)),rp==null?'':col(rp>=100,rp>=70))
-    +card('Upsell nasional CLM+CC',fmtRpFull(t.upsellActual),up==null?'target belum diset':('prorate <strong>'+up+'%</strong> dari '+fmtRpFull(t.upsellTarget)),up==null?'':col(up>=100,up>=70))
+    +card('Renewal tim',fmtRpFull(t.renewalActual),rp==null?'target belum diset':('prorate <strong>'+rp+'%</strong> dari '+fmtRpFull(t.renewalTarget)),rp==null?'':col(rp>=100,rp>=70),cmp(lt&&lt.renewalActual,t.renewalActual,fmtRpFull,signRp))
+    +card('Upsell nasional CLM+CC',fmtRpFull(t.upsellActual),up==null?'target belum diset':('prorate <strong>'+up+'%</strong> dari '+fmtRpFull(t.upsellTarget)),up==null?'':col(up>=100,up>=70),cmp(lt&&lt.upsellActual,t.upsellActual,fmtRpFull,signRp))
     +card('MRR per paket (tim)',t.mrr?(t.mrr.achieved+' / '+t.mrr.total+' paket'):'—',t.mrr?'paket tercapai vs target':'target MRR belum diset',t.mrr&&t.mrr.total?col(t.mrr.achieved>=t.mrr.total,t.mrr.achieved>0):'')
-    +card('Konversi Hot (tim)',t.convPct+'%',t.convMoving+'/'+t.convTotal+' · target 80%',col(t.convPct>=80,t.convPct>=70))
-    +card('NPS vs paid CX',t.npsPct+'%',t.nps+'/'+t.paidCx+' · target 80%',col(t.npsPct>=80,t.npsPct>=60))
+    +card('Konversi Hot (tim)',t.convPct+'%',t.convMoving+'/'+t.convTotal+' · target 80%',col(t.convPct>=80,t.convPct>=70),cmp(lt&&lt.convPct,t.convPct,function(x){return x+'%';},dPlain(' poin')))
+    +card('NPS vs paid CX',t.npsPct+'%',t.nps+'/'+t.paidCx+' · target 80%',col(t.npsPct>=80,t.npsPct>=60),cmp(lt&&lt.npsPct,t.npsPct,function(x){return x+'%';},dPlain(' poin')))
     +'</div>';
   function tdShare(v){return'<div style="font-size:10px;color:var(--tx3)">'+v+'% tim</div>';}
+  var hasW=d.compCols&&d.compCols.some(function(c){return c.weight!=null;});
+  var nComp=(d.compCols||[]).length;
   var rows=d.agents.map(function(a){
+    var la=live?live.agents.filter(function(x){return x.name===a.name;})[0]:null;
     var upC=a.upsellRev>=30000000?'var(--grn)':(a.upsellRev>=20000000?'var(--yel)':'var(--red)');
+    var ach=a.compAchieved!=null?a.compAchieved:(a.comps||[]).filter(function(c){return c.achieved;}).length;
+    var skorTxt,skorClr;
+    if(a.compScore!=null){skorTxt=a.compScore+'%';skorClr=(d.compWeightTotal&&a.compScore>=d.compWeightTotal)?'var(--grn)':(a.compScore>=70?'var(--yel)':'var(--red)');}
+    else{skorTxt=nComp?(ach+'/'+nComp+' lolos'):'—';skorClr=nComp&&ach===nComp?'var(--grn)':'var(--tx2)';}
     return'<tr><td><strong>'+a.name+'</strong></td>'
-      +'<td style="text-align:right">'+(a.renewalSynced?fmtRpFull(a.renewalRev)+tdShare(a.renewalShare):'—')+'</td>'
-      +'<td style="text-align:right;color:'+upC+';font-weight:700">'+(a.upsellSynced?fmtRpFull(a.upsellRev)+tdShare(a.upsellShare):'—')+'</td>'
-      +'<td style="text-align:right;color:'+col(a.convPct>=80,a.convPct>=70)+';font-weight:700">'+a.convPct+'%<div style="font-size:10px;color:var(--tx3);font-weight:400">'+a.convMoving+'/'+a.convTotal+'</div></td>'
+      +'<td style="text-align:right">'+(a.renewalSynced?fmtRpFull(a.renewalRev)+tdShare(a.renewalShare):'—')+cmp(la&&la.renewalRev,a.renewalRev,fmtRpFull,signRp)+'</td>'
+      +'<td style="text-align:right;color:'+upC+';font-weight:700">'+(a.upsellSynced?fmtRpFull(a.upsellRev)+tdShare(a.upsellShare):'—')+cmp(la&&la.upsellRev,a.upsellRev,fmtRpFull,signRp)+'</td>'
+      +'<td style="text-align:right;color:'+skorClr+';font-weight:700" title="Jumlah bobot komponen yang tercapai">'+skorTxt+'</td>'
+      +'<td style="text-align:right;color:'+col(a.convPct>=80,a.convPct>=70)+';font-weight:700">'+a.convPct+'%<div style="font-size:10px;color:var(--tx3);font-weight:400">'+a.convMoving+'/'+a.convTotal+'</div>'+cmp(la&&la.convPct,a.convPct,function(x){return x+'%';},dPlain(' poin'))+'</td>'
       +'<td style="text-align:right">'+(a.mrr?fmtRpFull(a.mrr)+tdShare(a.mrrShare):'—')+'</td>'
       +'<td style="text-align:right;color:'+(a.arpuSynced?(a.arpu>=1500000?'var(--grn)':'var(--red)'):'var(--tx3)')+'">'+(a.arpuSynced?fmtRpFull(a.arpu):'—')+'</td>'
-      +'<td style="text-align:right;color:'+col(a.maps>=d.mapsTarget&&d.mapsTarget>0,a.maps>0)+'">'+a.maps+' / '+d.mapsTarget+'</td>'
-      +'<td style="text-align:right;color:'+col(a.apps>=d.appsTarget&&d.appsTarget>0,a.apps>0)+'">'+a.apps+' / '+d.appsTarget+'</td>'
-      +'<td style="text-align:right;color:'+col(a.npsPct>=80,a.npsPct>=60)+';font-weight:700">'+a.nps+' / '+a.paidCx+'<div style="font-size:10px;font-weight:400">'+a.npsPct+'%</div></td></tr>';
+      +'<td style="text-align:right;color:'+col(a.maps>=d.mapsTarget&&d.mapsTarget>0,a.maps>0)+'">'+a.maps+' / '+d.mapsTarget+cmp(la&&la.maps,a.maps,String,dPlain(''))+'</td>'
+      +'<td style="text-align:right;color:'+col(a.apps>=d.appsTarget&&d.appsTarget>0,a.apps>0)+'">'+a.apps+' / '+d.appsTarget+cmp(la&&la.apps,a.apps,String,dPlain(''))+'</td>'
+      +'<td style="text-align:right;color:'+col(a.npsPct>=80,a.npsPct>=60)+';font-weight:700">'+a.nps+' / '+a.paidCx+'<div style="font-size:10px;font-weight:400">'+a.npsPct+'%</div>'+cmp(la&&la.nps,a.nps,String,dPlain(''))+'</td></tr>';
   }).join('');
   var main='<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl perf-tbl">'
-    +'<thead><tr><th>Agen</th><th style="text-align:right">Revenue renewal</th><th style="text-align:right" title="Merah &lt;20 jt · kuning ≥20 jt · hijau ≥30 jt">Revenue upsell</th><th style="text-align:right" title="Moving ÷ total Hot, target 80%">Konversi Hot</th><th style="text-align:right" title="MRR = Σ revenue ÷ Σ bulan paket (My Journey). Persen = porsi dari total tim">MRR</th><th style="text-align:right" title="Merah bila &lt; Rp 1.500.000">ARPU renewal</th><th style="text-align:right">Maps</th><th style="text-align:right">App</th><th style="text-align:right" title="Approved ÷ paid CX (multioutlet dikeluarkan), target 80%">NPS</th></tr></thead>'
+    +'<thead><tr><th>Agen</th><th style="text-align:right">Revenue renewal</th><th style="text-align:right" title="Merah &lt;20 jt · kuning ≥20 jt · hijau ≥30 jt">Revenue upsell</th>'
+    +'<th style="text-align:right" title="Jumlah bobot komponen upsell yang tercapai (komponen di bawah target = 0%). Tanpa bobot: jumlah komponen lolos.">Skor komponen</th>'
+    +'<th style="text-align:right" title="Moving ÷ total Hot, target 80%">Konversi Hot</th><th style="text-align:right" title="MRR = Σ revenue ÷ Σ bulan paket (My Journey). Persen = porsi dari total tim">MRR</th><th style="text-align:right" title="Merah bila &lt; Rp 1.500.000">ARPU renewal</th><th style="text-align:right">Maps</th><th style="text-align:right">App</th><th style="text-align:right" title="Approved ÷ paid CX (multioutlet dikeluarkan), target 80%">NPS</th></tr></thead>'
     +'<tbody>'+rows+'</tbody></table></div></div>';
   var comp='';
-  if(d.compCols.length){
-    var ch=d.compCols.map(function(c){return'<th style="text-align:right">'+c.label+'</th>';}).join('');
+  if(nComp){
+    var ch=d.compCols.map(function(c){return'<th style="text-align:right">'+c.label+(c.weight!=null?'<span style="display:block;font-weight:400;font-size:10px;color:var(--tx3)">bobot '+c.weight+'%</span>':'')+'</th>';}).join('')
+      +(hasW?'<th style="text-align:right">Skor</th>':'');
     var cr=d.agents.map(function(a){
-      return'<tr><td><strong>'+a.name+'</strong></td>'+a.comps.map(function(c){
+      var cells=a.comps.map(function(c){
         if(c.parts&&c.parts.length===1){ // combo 1 komponen (mis. Lisensi) -> tampilkan satuan, bukan "0/1"
           var p=c.parts[0];
           return'<td style="text-align:right;color:'+(p.threshold?(p.achieved?'var(--grn)':'var(--red)'):'var(--tx3)')+';font-weight:600" title="'+String(p.label).replace(/"/g,'&quot;')+'">'+p.actual+' / '+(p.threshold||'—')+'</td>';
@@ -4762,19 +4797,23 @@ function perfTableHtml_(d,opts){
           }).join('')+'</td>';
         }
         return'<td style="text-align:right;color:'+(c.target?(c.achieved?'var(--grn)':'var(--red)'):'var(--tx3)')+';font-weight:600">'+c.actual+' / '+(c.target||'—')+'</td>';
-      }).join('')+'</tr>';
+      }).join('');
+      var sk=hasW?('<td style="text-align:right;font-weight:700;color:'+((a.compScore!=null&&d.compWeightTotal&&a.compScore>=d.compWeightTotal)?'var(--grn)':'var(--red)')+'">'+(a.compScore!=null?a.compScore+'%':'—')+'</td>'):'';
+      return'<tr><td><strong>'+a.name+'</strong></td>'+cells+sk+'</tr>';
     }).join('');
-    comp='<div style="font-size:12px;font-weight:700;color:var(--tx2);margin:14px 0 6px">Komponen upsell — capaian / target minimum (dari Kelola Target)</div>'
-      +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl perf-tbl"><thead><tr><th>Agen</th>'+ch+'</tr></thead><tbody>'+cr+'</tbody></table></div></div>';
+    var wNote=(hasW&&d.agents.length!==1&&d.compWeightTotal!==100)
+      ?'<div style="font-size:11px;color:var(--org);margin-top:6px">Total bobot komponen '+d.compWeightTotal+'% — idealnya 100%. Atur di Kelola Target.</div>':'';
+    comp='<div style="font-size:12px;font-weight:700;color:var(--tx2);margin:14px 0 6px">Komponen upsell — capaian / target minimum'+(hasW?' dan skor berbobot':'')+'</div>'
+      +'<div class="card" style="padding:0"><div class="tbl-wrap"><table class="summary-tbl perf-tbl"><thead><tr><th>Agen</th>'+ch+'</tr></thead><tbody>'+cr+'</tbody></table></div></div>'+wNote;
   }else{
     comp='<div style="font-size:11px;color:var(--tx3);margin-top:10px">Belum ada target komponen upsell (SKU/Hardware/Combo) untuk bulan ini di Kelola Target.</div>';
   }
   var asOfIso=d.dataAsOf&&d.dataAsOf.upsellTeam;
   var asOfTxt=asOfIso?new Date(asOfIso).toLocaleString('id-ID',{timeZone:'Asia/Jakarta',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):null;
   var asOfAgeH=asOfIso?(Date.now()-Date.parse(asOfIso))/3600000:null;
-  var asOfHtml='<div style="font-size:11px;margin:-4px 0 8px;color:'+((asOfIso&&asOfAgeH<=24)?'var(--tx3)':'var(--org)')+'">Data renewal/upsell per sync '+(asOfTxt?(asOfTxt+' WIB'+(asOfAgeH>24?' — sudah lama, sync ulang bila perlu':'')):'— waktu sync tidak diketahui, sync ulang dulu sebelum dipakai')+'</div>';
+  var asOfHtml=opts.hideAsOf?'':'<div style="font-size:11px;margin:-4px 0 8px;color:'+((asOfIso&&asOfAgeH<=24)?'var(--tx3)':'var(--org)')+'">Data renewal/upsell per sync '+(asOfTxt?(asOfTxt+' WIB'+(asOfAgeH>24?' — sudah lama, sync ulang bila perlu':'')):'— waktu sync tidak diketahui, sync ulang dulu sebelum dipakai')+'</div>';
   var single=d.agents.length===1;
-  return'<div class="ov-section"><div class="ov-section-title">📋 '+(single?'Performa Saya':'Performa per Agen')+' — '+d.period+' 26 <span style="font-weight:400;color:var(--tx3);font-size:11px">'+(opts.subtitle||'(live; kontribusi = porsi dari total tim)')+'</span></div>'
+  return'<div class="ov-section">'+(opts.noTitle?'':'<div class="ov-section-title">📋 '+(single?'Performa Saya':'Performa per Agen')+' — '+d.period+' 26 <span style="font-weight:400;color:var(--tx3);font-size:11px">'+(opts.subtitle||'(live; kontribusi = porsi dari total tim)')+'</span></div>')
     +(opts.badgeHtml||'')+asOfHtml+cards+main+comp+'</div>';
 }
 // ── SNAPSHOT PERFORMA (Tahap 2, 16 Okt) -- simpan hasil tabel di atas ke GAS (tab PERFORMANCE_SNAPSHOT) ──────────
@@ -4888,6 +4927,136 @@ function perfSnapView(key){
     var b3=document.getElementById('perf-snap-view');
     if(b3)b3.innerHTML='<span style="font-size:11px;color:var(--red)">Gagal memuat snapshot: '+String(err&&err.message||err)+'</span>';
   });
+}
+// ── TAB: RAPOR BULANAN (Tahap 3, 16 Okt) -- tampilkan snapshot BEKU (tabel yang sama dgn Overview) + pembanding live ──
+// Leader: semua versi (Final/Harian/Retroaktif) dan semua agen. Agen: hanya snapshot FINAL dan HANYA baris sendiri --
+// difilter di SERVER (gas_perf_snapshot.gs), bukan di sini. Sumber: tab PERFORMANCE_SNAPSHOT.
+var raporMetas=null,raporLoading=false,raporError='',raporPeriod=null,raporKey=null,raporCompare=false,raporCache={},raporBodyState='';
+function raporLoadMetas_(force){
+  if(raporLoading)return;
+  if(raporMetas&&!force)return;
+  raporLoading=true;raporError='';
+  _gasGet('perfSnapshots',60000).then(function(j){
+    if(j&&j.ok===false)throw new Error(j.error||'gagal');
+    raporMetas=j.data||[];
+  }).catch(function(err){
+    var m=String(err&&err.message||err);
+    raporError=m+(/unknown|not.?found|invalid.?action/i.test(m)?' (GAS belum di-deploy versi terbaru?)':'');
+  }).then(function(){raporLoading=false;if(currentTab==='rapor')renderRapor();});
+}
+function raporPickDefaults_(){
+  var metas=raporMetas||[];
+  var periods={};metas.forEach(function(m){periods[m.period]=true;});
+  var list=Object.keys(periods).sort().reverse();
+  if(!raporPeriod||!periods[raporPeriod]){
+    var withFinal=list.filter(function(pk){return metas.some(function(m){return m.period===pk&&m.kind==='FINAL';});});
+    raporPeriod=(withFinal[0]||list[0]||null);
+    raporKey=null;
+  }
+  var ofPeriod=metas.filter(function(m){return m.period===raporPeriod;});
+  ofPeriod.sort(function(a,b){return(b.final?1:0)-(a.final?1:0)||(a.takenAt<b.takenAt?1:-1);});
+  if(!raporKey||!ofPeriod.some(function(m){return m.key===raporKey;}))raporKey=ofPeriod.length?ofPeriod[0].key:null;
+  return{periods:list,versions:ofPeriod};
+}
+function raporVersionLabel_(m){
+  var kind=m.final?('Final, dikunci '+m.snapshotDate+(m.lateDays?' (+'+m.lateDays+' hr)':'')):((PERF_KIND_LABEL_[m.kind]||m.kind)+', '+m.snapshotDate);
+  return kind+(m.incomplete?' ⚠':'');
+}
+function renderRapor(){
+  var isSup=Auth.isSuperior();
+  if(raporMetas===null){
+    document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="ov-section-title">📑 Rapor bulanan</div><div class="card empty">'
+      +(raporError?('Gagal memuat daftar rapor: '+raporError+'<br><button type="button" class="btn btn-sec" id="rapor-retry" style="margin-top:8px;padding:4px 10px;font-size:12px">Coba lagi</button>'):'⏳ Memuat daftar rapor…')+'</div></div>';
+    var rb=document.getElementById('rapor-retry');
+    if(rb)rb.addEventListener('click',function(){raporError='';renderRapor();});
+    else raporLoadMetas_(false); // jangan auto-retry saat error (cegah loop) -- user tekan "Coba lagi"
+    return;
+  }
+  var pick=raporPickDefaults_();
+  if(!pick.periods.length){
+    document.getElementById('tab-content').innerHTML='<div class="ov-section"><div class="ov-section-title">📑 Rapor bulanan</div><div class="card empty">'
+      +(isSup?'Belum ada snapshot. Ambil dari Overview → "📸 Snapshot performa".':'Belum ada rapor final yang dikunci.')+'</div></div>';
+    return;
+  }
+  var perOpts=pick.periods.map(function(pk){return'<option value="'+pk+'"'+(pk===raporPeriod?' selected':'')+'>'+perfAbbrOfKey_(pk)+' 26</option>';}).join('');
+  var verOpts=pick.versions.map(function(m){return'<option value="'+String(m.key).replace(/"/g,'&quot;')+'"'+(m.key===raporKey?' selected':'')+'>'+raporVersionLabel_(m)+'</option>';}).join('');
+  document.getElementById('tab-content').innerHTML=
+    '<div class="ov-section"><div class="ov-section-title">📑 Rapor bulanan <span style="font-weight:400;color:var(--tx3);font-size:11px">(angka beku saat snapshot'+(isSup?'':' · hanya baris Anda')+')</span></div>'
+    +'<div class="frow" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
+    +'<label style="font-size:12px;color:var(--tx3)">Bulan</label><select id="rapor-period" style="font-size:12px;padding:4px 8px">'+perOpts+'</select>'
+    +'<label style="font-size:12px;color:var(--tx3)">Versi</label><select id="rapor-ver" style="font-size:12px;padding:4px 8px;max-width:320px">'+verOpts+'</select>'
+    +'<label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="rapor-cmp" style="width:auto;margin:0"'+(raporCompare?' checked':'')+'>Bandingkan dengan data live</label>'
+    +'<button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:12px" id="rapor-refresh">↻ Muat ulang</button>'
+    +(isSup?'<button type="button" class="btn btn-sec" style="padding:4px 10px;font-size:12px" id="rapor-csv">⬇ Unduh CSV</button>':'')
+    +'</div><div id="rapor-body"><span style="font-size:11px;color:var(--tx3)">⏳ memuat rapor…</span></div></div>';
+  document.getElementById('rapor-period').addEventListener('change',function(){raporPeriod=this.value;raporKey=null;renderRapor();});
+  document.getElementById('rapor-ver').addEventListener('change',function(){raporKey=this.value;raporRenderBody_();});
+  document.getElementById('rapor-cmp').addEventListener('change',function(){raporCompare=this.checked;raporRenderBody_();});
+  document.getElementById('rapor-refresh').addEventListener('click',function(){raporMetas=null;raporCache={};renderRapor();});
+  var csvBtn=document.getElementById('rapor-csv');
+  if(csvBtn)csvBtn.addEventListener('click',raporDownloadCsv_);
+  raporRenderBody_();
+}
+function raporRenderBody_(){
+  var box=document.getElementById('rapor-body');if(!box||!raporKey)return;
+  var meta=(raporMetas||[]).filter(function(m){return m.key===raporKey;})[0]||{};
+  var cached=raporCache[raporKey];
+  if(!cached){
+    box.innerHTML='<span style="font-size:11px;color:var(--tx3)">⏳ memuat rapor…</span>';
+    var reqKey=raporKey;
+    _gasGet('perfSnapshot&key='+encodeURIComponent(reqKey),60000).then(function(j){
+      if(!j||!j.ok||!j.payload)throw new Error(j&&j.error||'rapor kosong');
+      raporCache[reqKey]={payload:j.payload,meta:j.meta||meta};
+      if(currentTab==='rapor'&&raporKey===reqKey)raporRenderBody_();
+    }).catch(function(err){
+      var b=document.getElementById('rapor-body');
+      if(b)b.innerHTML='<span style="font-size:11px;color:var(--red)">Gagal memuat rapor: '+String(err&&err.message||err)+'</span>';
+    });
+    return;
+  }
+  var m=cached.meta||meta,d=cached.payload;
+  var asOf=d.dataAsOf&&d.dataAsOf.upsellTeam?new Date(d.dataAsOf.upsellTeam).toLocaleString('id-ID',{timeZone:'Asia/Jakarta',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})+' WIB':null;
+  var badge='<div style="margin:6px 0 10px">'
+    +(m.final?'<span class="badge badge-grn">🔒 Final, dikunci '+m.snapshotDate+(m.lateDays?' (terlambat '+m.lateDays+' hari dari tanggal 1)':'')+'</span> <span style="font-size:11px;color:var(--tx3)">tidak berubah lagi</span>'
+             :'<span class="badge badge-gray">'+(PERF_KIND_LABEL_[m.kind]||m.kind)+' · diambil '+m.snapshotDate+'</span>'+(m.kind==='RETRO'?' <span style="font-size:11px;color:var(--tx3)">dihitung dari data saat diambil, bukan per tanggal 1</span>':''))
+    +(m.incomplete?' <span style="font-size:11px;color:var(--org)">⚠ data belum lengkap saat diambil</span>':'')
+    +(asOf?' <span style="font-size:11px;color:var(--tx3)">· data renewal/upsell per sync '+asOf+'</span>':'')+'</div>';
+  var live=null,liveNote='';
+  if(raporCompare){
+    var abbr=perfAbbrOfKey_(m.period||raporPeriod);
+    if(!UpsellTeamStore.getMonth(abbr)){liveNote='<div style="font-size:11px;color:var(--org);margin-bottom:6px">Data live '+abbr+' 26 belum ter-sync di browser ini — pembanding tidak tersedia. Sync dulu di Master & Assign.</div>';}
+    else{
+      try{
+        live=computePerfForPeriod_(abbr,!Auth.isSuperior());
+        if(!Auth.isSuperior()){var me=Auth.getActive();live.agents=live.agents.filter(function(a){return a.name===me;});}
+        liveNote='<div style="font-size:11px;color:var(--tx3);margin-bottom:6px">Baris kecil "live" = nilai SEKARANG dari data di browser ini; selisih terhadap angka beku (hijau naik, oranye turun).</div>';
+      }catch(e){live=null;liveNote='<div style="font-size:11px;color:var(--red);margin-bottom:6px">Gagal menghitung pembanding live: '+String(e&&e.message||e)+'</div>';}
+    }
+  }
+  box.innerHTML=perfTableHtml_(d,{subtitle:'(snapshot beku)',badgeHtml:badge+liveNote,live:live,hideAsOf:true});
+}
+function raporDownloadCsv_(){
+  var cached=raporCache[raporKey];
+  if(!cached){toast('Rapor belum termuat');return;}
+  var d=cached.payload;
+  function q(v){v=String(v==null?'':v);return'"'+v.replace(/"/g,'""')+'"';}
+  var head=['Agen','Revenue renewal','Kontribusi renewal %','Revenue upsell','Kontribusi upsell %','Skor komponen %','Konversi Hot %','Hot moving','Hot total','MRR','Kontribusi MRR %','ARPU renewal','Maps','App','NPS approved','Paid CX','NPS %'];
+  (d.compCols||[]).forEach(function(c){head.push(c.label+(c.weight!=null?' (bobot '+c.weight+'%)':''));});
+  var lines=[head.map(q).join(',')];
+  d.agents.forEach(function(a){
+    var r=[a.name,Math.round(a.renewalRev),a.renewalShare,Math.round(a.upsellRev),a.upsellShare,a.compScore!=null?a.compScore:'',a.convPct,a.convMoving,a.convTotal,Math.round(a.mrr),a.mrrShare,Math.round(a.arpu),a.maps,a.apps,a.nps,a.paidCx,a.npsPct];
+    (a.comps||[]).forEach(function(c){
+      if(c.parts&&c.parts.length===1)r.push(c.parts[0].actual+'/'+(c.parts[0].threshold||''));
+      else if(c.parts&&c.parts.length>1)r.push(c.parts.map(function(p){return p.label+' '+p.actual+'/'+(p.threshold||'');}).join(' | '));
+      else r.push(c.actual+'/'+(c.target||''));
+    });
+    lines.push(r.map(q).join(','));
+  });
+  var blob=new Blob(['﻿'+lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download='rapor_'+(cached.meta&&cached.meta.period||raporPeriod)+'_'+(cached.meta&&cached.meta.kind||'snapshot')+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
 }
 // Otomatis (leader, sekali per hari): snapshot HARIAN bulan berjalan; pada tgl 1-3 juga KUNCI FINAL bulan lalu kalau
 // belum ada. Data belum siap (store belum ke-sync) -> coba lagi sampai 3x. Server idempotent (1 harian/hari; final 1x).
@@ -6212,8 +6381,12 @@ function renderTargetsManage(){
     var isLastInPeriod=(mi===sortedMgmt.length-1)||(sortedMgmt[mi+1].period!==t.period);
     if(isFirstInPeriod){
       var collapsed=!!targetGroupCollapsed[t.period];
+      // total bobot komponen upsell bulan itu (sku:/bundle:/combo: yg punya bobot) -- idealnya 100%
+      var wList=sortedMgmt.filter(function(x){return x.period===t.period&&x.weight!=null&&(x.metricKey.indexOf('sku:')===0||x.metricKey.indexOf('bundle:')===0||x.metricKey.indexOf('combo:')===0);});
+      var wTot=Math.round(wList.reduce(function(a,x){return a+(Number(x.weight)||0);},0)*100)/100;
+      var wHtml=wList.length?(' <span style="font-weight:400;color:'+(wTot===100?'var(--grn)':'var(--org)')+'">· bobot komponen '+wTot+'%'+(wTot===100?' ✓':' (idealnya 100%)')+'</span>'):'';
       mgmtRowsArr.push('<tr class="tgt-grp-hdr" data-act="toggle-target-group" data-period="'+t.period+'" style="cursor:pointer;background:var(--sur2)">'
-        +'<td colspan="8" style="font-weight:600">'+(collapsed?'▶':'▼')+' '+t.period+' 26 <span style="font-weight:400;color:var(--tx3)">('+periodCounts[t.period]+' target)</span></td></tr>');
+        +'<td colspan="8" style="font-weight:600">'+(collapsed?'▶':'▼')+' '+t.period+' 26 <span style="font-weight:400;color:var(--tx3)">('+periodCounts[t.period]+' target)</span>'+wHtml+'</td></tr>');
     }
     if(targetGroupCollapsed[t.period])return; // grup lagi di-collapse -- skip baris datanya, header doang yg tampil
     var meta=targetMetricMeta(t.metricKey);
@@ -6262,6 +6435,7 @@ function renderTargetsManage(){
       if(resT.effectiveTargetImproved!=null)targetDisp+=' <span style="color:var(--tx3)">/ Improved '+fmtMetricVal(resT.effectiveTargetImproved,resT.unit)+'</span>';
       actualDisp=fmtMetricVal(resT.actual,resT.unit);
     }
+    if(t.weight!=null&&(t.metricKey.indexOf('sku:')===0||t.metricKey.indexOf('bundle:')===0||t.metricKey.indexOf('combo:')===0))targetDisp+=' <span style="color:var(--pri);font-weight:600">· bobot '+t.weight+'%</span>';
     mgmtRowsArr.push('<tr><td>'+meta.label+'</td><td>'+(meta.family==='activity'?'Activity':'Outcome')+'</td><td>'+scopeLabel+'</td><td>'+t.period+' 26</td>'
       +'<td>'+targetDisp+'</td>'
       +'<td>'+actualDisp+'</td>'
@@ -8529,6 +8703,7 @@ function openTargetModal(id){
   document.getElementById('target-value-improved-inp').value=(t&&t.targetValueImproved!=null)?t.targetValueImproved:'';
   document.getElementById('target-default-inp').value=t?t.targetValue:10;
   document.getElementById('target-visible-chk').checked=t?!!t.visibleToAgent:true;
+  document.getElementById('target-weight-inp').value=(t&&t.weight!=null)?t.weight:'';
   var scopeSel=document.getElementById('target-scope-sel');
   scopeSel.value=t?(t.scope||'team'):'team';
   renderTargetOverrideRows(t&&t.personalOverrides||{});
@@ -8671,6 +8846,7 @@ function toggleTargetScopeWrap(){
   document.getElementById('target-team-wrap').style.display=isPersonal?'none':'';
   document.getElementById('target-personal-wrap').style.display=isPersonal?'':'none';
   document.getElementById('target-sku-gate-wrap').style.display=isSku?'':'none';
+  document.getElementById('target-weight-wrap').style.display=(isSku||isBundle||isCombo)?'':'none'; // bobot cuma utk komponen upsell
   // CLM-11 Fase F2: tier pakai 3 threshold + 2 gate, BUKAN model "default+override" biasa -- sembunyiin
   // field flat itu pas tier-mode aktif (nggak relevan, threshold-nya beda konsep dari 1 angka target).
   // CLM-14: Combo sama alasannya -- "nilai target"-nya ada di threshold per-komponen (target-combo-wrap
@@ -8687,6 +8863,12 @@ function toggleTargetScopeWrap(){
   document.getElementById('target-value-label').textContent=showPeragentHint?'Nilai Target Per-Agen':'Nilai Target Regular (Team)';
   document.getElementById('target-value-peragent-hint').style.display=showPeragentHint?'':'none';
 }
+function readTargetWeight_(){
+  var raw=document.getElementById('target-weight-inp').value;
+  if(raw===''||raw==null)return null;
+  var n=parseFloat(raw);
+  return(isNaN(n)||n<0)?null:Math.min(n,100);
+}
 function saveTarget(){
   var period=document.getElementById('target-period-sel').value;
   var visibleToAgent=document.getElementById('target-visible-chk').checked;
@@ -8700,7 +8882,7 @@ function saveTarget(){
     if(!components.length){toast('Tambahkan minimal 1 komponen Combo');return;}
     var badComp=components.find(function(c){return!c.sources.length;});
     if(badComp){toast('Komponen "'+(badComp.label||'(tanpa nama)')+'" belum punya sumber angka -- pilih SKU/Upgrade Tier dulu');return;}
-    var comboPayload={metricKey:'combo:'+comboName,period:period,scope:'personal',visibleToAgent:visibleToAgent,components:components,personalOverrides:{}};
+    var comboPayload={metricKey:'combo:'+comboName,period:period,scope:'personal',visibleToAgent:visibleToAgent,components:components,personalOverrides:{},weight:readTargetWeight_()};
     if(targetEditId){
       var existingCombo=Targets.getAll().find(function(x){return x.id===targetEditId;});
       if(existingCombo&&existingCombo.sortOrder!=null)comboPayload.sortOrder=existingCombo.sortOrder;
@@ -8720,6 +8902,7 @@ function saveTarget(){
   var scope=document.getElementById('target-scope-sel').value;
   if(!metricKey){toast('Pilih metrik terlebih dahulu');return;}
   var payload={metricKey:metricKey,period:period,scope:scope,visibleToAgent:visibleToAgent};
+  if(metricKey.indexOf('sku:')===0||metricKey.indexOf('bundle:')===0)payload.weight=readTargetWeight_();
   if(scope==='personal'){
     payload.targetValue=parseFloat(document.getElementById('target-default-inp').value)||0;
     var overrides={};
@@ -9124,6 +9307,7 @@ function renderTab(tab){
     case 'invoice':renderInvoiceTracker();break;
     case 'invsummary':renderInvoiceSummary();break;
     case 'ratingnps':renderRatingNps();break;
+    case 'rapor':renderRapor();break;
     case 'engagement':renderEngagement();break;
     case 'targetsmanage':renderTargetsManage();break;
     case 'loginlog':renderLoginLog();break;
