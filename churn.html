@@ -8667,6 +8667,12 @@ function toggleAgentStatus(id){
 // CLM-07 break-glass (Opsi B1 LOCKED): Sekar trigger OTP darurat buat email yg mati total. Kode
 // ditampilin ke SEKAR doang -- user tetap WAJIB input sendiri di verifyOtp (no impersonation).
 // GAS-side juga cek ulang role===leader + tulis audit SEBELUM balikin (defense-in-depth).
+function emergencyErrMsg_(code,email){
+  return {forbidden:'Cuma Team Lead yang bisa akses ini',
+    email_not_in_allowlist:'Email <b>'+engEsc(email)+'</b> tidak ada di allowlist server (atau nonaktif). Daftar pilihan ini diambil dari roster browser kamu — cek emailnya di tabel Manage Team di atas, atau minta operator memeriksa allowlist.',
+    rate_limited:'Kena rate-limit (3 permintaan per 15 menit untuk email ini, termasuk permintaan OTP biasa). Tunggu sekitar 15 menit, atau minta operator mereset.',
+    unauthorized:'Sesi kamu tidak valid lagi — login ulang lalu coba lagi.'}[code]||'';
+}
 function triggerEmergencyOtp(){
   if(!Auth.isSuperior()){toast('Khusus Team Lead');return;}
   var sel=document.getElementById('emergency-otp-target');
@@ -8675,19 +8681,18 @@ function triggerEmergencyOtp(){
   var btn=document.getElementById('emergency-otp-btn');
   var resultEl=document.getElementById('emergency-otp-result');
   btn.disabled=true;btn.textContent='Memproses...';
+  // 20 Okt: _gasPostOnce MELEMPAR error utk respons {ok:false} (err.message = kode error server, err.serverRejected=true),
+  // jadi cabang `!j.ok` di .then tidak pernah jalan dan SEMUA penolakan server tampil sebagai "Gagal generate kode" generik
+  // (insiden OTP Elly 19 Okt: server bilang email_not_in_allowlist, layar cuma bilang coba lagi). Pesan dipetakan di .catch.
   _gasPost({action:'emergencyOtp',email:email}).then(function(j){
     if(!j.ok){
-      // 19 Okt: pesan lebih jelas -- daftar dropdown berasal dari roster BROWSER ini (bukan server). Kalau server bilang email
-      // tidak ada di allowlist, kemungkinan email di roster ini beda dari allowlist (mis. roster basi) atau akunnya memang belum didaftarkan.
-      var msg={forbidden:'Cuma Team Lead yang bisa akses ini',
-        email_not_in_allowlist:'Email <b>'+engEsc(email)+'</b> tidak ada di allowlist server (atau nonaktif). Daftar pilihan ini diambil dari roster browser kamu — cek emailnya di tabel Manage Team di atas, atau minta operator memeriksa allowlist.',
-        rate_limited:'Kena rate-limit (3 permintaan per 15 menit untuk email ini, termasuk permintaan OTP biasa). Tunggu sekitar 15 menit, atau minta operator mereset.'}[j.error]||'Gagal generate kode';
-      resultEl.innerHTML='<div class="pay-info" style="color:var(--red)">'+msg+'</div>';
+      resultEl.innerHTML='<div class="pay-info" style="color:var(--red)">'+(emergencyErrMsg_(j.error,email)||'Gagal generate kode')+'</div>';
       return;
     }
     resultEl.innerHTML='<div class="pay-info" style="background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:8px"><div style="font-size:11px;margin-bottom:2px">Kode untuk <b>'+engEsc(j.name||'')+'</b> ('+engEsc(email)+')</div><strong style="font-size:16px;letter-spacing:2px">'+j.otp+'</strong><br><span style="font-size:11px">'+j.note+'</span></div>';
-  }).catch(function(){
-    resultEl.innerHTML='<div class="pay-info" style="color:var(--red)">Gagal generate kode, coba lagi</div>';
+  }).catch(function(err){
+    var m=(err&&err.serverRejected)?emergencyErrMsg_(err.message,email):'';
+    resultEl.innerHTML='<div class="pay-info" style="color:var(--red)">'+(m||('Gagal generate kode ('+engEsc((err&&err.message)||'jaringan/server')+') — coba lagi'))+'</div>';
   }).then(function(){
     btn.disabled=false;btn.textContent='Generate Kode Darurat';
   });
@@ -12462,6 +12467,9 @@ tabContent.addEventListener('focusout',function(e){
       if(val&&!isAllowedEmailDomain(val)){toast('Email harus @majoo.id atau @majoo.com');t.value=a.email||'';return;}
       if(val&&all.some(function(x){return x.id!==a.id&&(x.email||'').toLowerCase()===val;})){toast('Email ini udah dipakai agen lain');t.value=a.email||'';return;}
     }
+    // 20 Okt: tidak ada perubahan nilai -> jangan simpan (save() menyinkron SELURUH roster browser ini ke allowlist server;
+    // cukup klik masuk-keluar kolom di browser dgn roster basi sudah bisa menimpa allowlist -- insiden OTP 19 Okt)
+    if(String(a[t.dataset.field]==null?'':a[t.dataset.field])===val)return;
     a[t.dataset.field]=val;
     AgentsConfig.save(all);
   }
