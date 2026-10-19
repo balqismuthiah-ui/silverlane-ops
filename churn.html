@@ -2995,8 +2995,34 @@ var AgentsConfig={
     // displayName 'Zharifah Bayti' (bukan 'Zharifah' doang) -- sheet KLOPOS nulis nama lengkap di
     // kolom assignment, _matchAgent() exact-match ke name/displayName/initials, kalau displayName
     // cuma 'Zharifah' match-nya gagal & raw string numpuk apa adanya (ketemu 10 Sep, dump 2 browser).
-    {id:'a12',name:'Zharifah',email:'zharifah.bayti@majoo.com',initials:'ZB',displayName:'Zharifah Bayti',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''}
+    {id:'a12',name:'Zharifah',email:'zharifah.bayti@majoo.com',initials:'ZB',displayName:'Zharifah Bayti',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
+    // 19 Okt: Yulita agen baru (cuma ada di allowlist server sebelumnya -> browser dgn roster tanpa dia, begitu menyimpan,
+    // bisa menghapusnya dari allowlist). Inisial YP = turunan dari nama (ganti di Manage Team kalau beda).
+    {id:'a13',name:'Yulita',email:'yulita.putri9886@majoo.com',initials:'YP',displayName:'Yulita Nurwidyanti Putri',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''}
   ],
+  // 19 Okt (insiden OTP): roster di localStorage per-browser TIDAK ikut migrasi domain 10 Sep. Browser leader dgn roster lama
+  // (agen masih @majoo.id) yang menyimpan perubahan APA PUN menyinkron email lama ke allowlist server (guard server cuma
+  // menghitung selisih jumlah entry, ganti 8 email sekaligus lolos) -> 8 agen tak bisa minta OTP. Sekarang: email agen
+  // @majoo.id dinormalkan ke email resmi saat roster dibaca (tanpa memicu sinkron), dan agen baru yg wajib ada ditambahkan
+  // kalau belum ada di roster browser itu.
+  EMAIL_FIX:{Erizka:'erizka.dewanty@majoo.com',Elly:'eliyawati.eli@majoo.com',Finne:'finne.fadhilla@majoo.com',Fauziyah:'fauziyah.nisa8086@majoo.com',
+    Novianty:'novianty.novianty@majoo.com',Sarah:'sarah.elizabeth@majoo.com',Sunarti:'sunarti.sunarti@majoo.com',Shevtya:'shevtya.rahma@majoo.com',
+    Zharifah:'zharifah.bayti@majoo.com',Yulita:'yulita.putri9886@majoo.com'},
+  ENSURE:['Zharifah','Yulita'],
+  _migrate:function(d){
+    var self=this,changed=false;
+    d.forEach(function(a){
+      var fix=self.EMAIL_FIX[a.name];
+      if(fix&&a.role!=='leader'&&/@majoo\.id$/i.test(String(a.email||'').trim())){a.email=fix;changed=true;}
+    });
+    self.ENSURE.forEach(function(n){
+      var has=d.some(function(a){return a.name===n||String(a.email||'').trim().toLowerCase()===String(self.EMAIL_FIX[n]).toLowerCase();});
+      if(has)return;
+      var def=self.DEFS.filter(function(x){return x.name===n;})[0];
+      if(def){d.push(JSON.parse(JSON.stringify(def)));changed=true;}
+    });
+    return changed;
+  },
   _cache:null,
   getAll:function(){
     if(this._cache)return this._cache;
@@ -3008,6 +3034,8 @@ var AgentsConfig={
         if(!a.role)a.role=(a.name==='Sekar'?'leader':'agent');
         if(!a.status)a.status='active';
       });
+      // simpan langsung ke localStorage TANPA save() (save() memicu sinkron ke server dari browser yg mungkin masih basi)
+      if(this._migrate(d)){try{localStorage.setItem(this.KEY,JSON.stringify(d));}catch(e2){}}
       this._cache=d;
       return d;
     }catch(e){return JSON.parse(JSON.stringify(this.DEFS));}
@@ -8649,11 +8677,15 @@ function triggerEmergencyOtp(){
   btn.disabled=true;btn.textContent='Memproses...';
   _gasPost({action:'emergencyOtp',email:email}).then(function(j){
     if(!j.ok){
-      var msg={forbidden:'Cuma Team Lead yang bisa akses ini',email_not_in_allowlist:'Email ini nggak ada di allowlist aktif',rate_limited:'Kena rate-limit, coba lagi beberapa menit lagi'}[j.error]||'Gagal generate kode';
+      // 19 Okt: pesan lebih jelas -- daftar dropdown berasal dari roster BROWSER ini (bukan server). Kalau server bilang email
+      // tidak ada di allowlist, kemungkinan email di roster ini beda dari allowlist (mis. roster basi) atau akunnya memang belum didaftarkan.
+      var msg={forbidden:'Cuma Team Lead yang bisa akses ini',
+        email_not_in_allowlist:'Email <b>'+engEsc(email)+'</b> tidak ada di allowlist server (atau nonaktif). Daftar pilihan ini diambil dari roster browser kamu — cek emailnya di tabel Manage Team di atas, atau minta operator memeriksa allowlist.',
+        rate_limited:'Kena rate-limit (3 permintaan per 15 menit untuk email ini, termasuk permintaan OTP biasa). Tunggu sekitar 15 menit, atau minta operator mereset.'}[j.error]||'Gagal generate kode';
       resultEl.innerHTML='<div class="pay-info" style="color:var(--red)">'+msg+'</div>';
       return;
     }
-    resultEl.innerHTML='<div class="pay-info" style="background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:8px"><strong style="font-size:16px;letter-spacing:2px">'+j.otp+'</strong><br><span style="font-size:11px">'+j.note+'</span></div>';
+    resultEl.innerHTML='<div class="pay-info" style="background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:8px"><div style="font-size:11px;margin-bottom:2px">Kode untuk <b>'+engEsc(j.name||'')+'</b> ('+engEsc(email)+')</div><strong style="font-size:16px;letter-spacing:2px">'+j.otp+'</strong><br><span style="font-size:11px">'+j.note+'</span></div>';
   }).catch(function(){
     resultEl.innerHTML='<div class="pay-info" style="color:var(--red)">Gagal generate kode, coba lagi</div>';
   }).then(function(){
