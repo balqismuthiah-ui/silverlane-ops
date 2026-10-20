@@ -4074,6 +4074,42 @@ function manualSyncAllowed(){
 var WB_QUEUE_KEY='klopos_wb_queue_v1';
 function wbQueueGet(){try{return JSON.parse(localStorage.getItem(WB_QUEUE_KEY)||'[]');}catch(e){return[];}}
 function wbQueueSet(q){try{localStorage.setItem(WB_QUEUE_KEY,JSON.stringify(q));}catch(e){}}
+// 18 Okt (temuan QA Ryry): antrean browser uji berisi 14.451 item auto-paid dgn hanya 6.132 key unik (rata-rata
+// 2,36 item per key). Penyebab: tiap muat ulang, record yg server-nya belum paid dihitung ulang -> di-enqueue lagi
+// TANPA cek key yg sudah ada, dan wbFlush hanya membuang 1 item per key. Sekarang: 1 item per (action,key), yang
+// terbaru menang; enqueue massal = 1 baca + 1 tulis localStorage (bukan per item, O(n^2) di antrean ribuan).
+function wbQueueKey_(p){return String(p&&p.action||'')+'|'+String(p&&p.key||'');}
+function wbEnqueueMany_(payloads){
+  if(!payloads||!payloads.length)return;
+  var q=wbQueueGet(),pos={};
+  q.forEach(function(x,i){pos[wbQueueKey_(x)]=i;});
+  payloads.forEach(function(p){
+    var k=wbQueueKey_(p);
+    if(pos[k]!==undefined)q[pos[k]]=p;else{pos[k]=q.length;q.push(p);}
+  });
+  wbQueueSet(q);
+}
+// Rapikan antrean lama yg sudah berduplikat: per (action,key) sisakan yang 'Last Edit At' paling baru.
+function wbQueueCompact_(){
+  var q=wbQueueGet();if(q.length<2)return q;
+  var best={},order=[];
+  q.forEach(function(x){
+    var k=wbQueueKey_(x),cur=best[k];
+    if(!cur){best[k]=x;order.push(k);}
+    else if(String(x['Last Edit At']||'')>=String(cur['Last Edit At']||''))best[k]=x;
+  });
+  if(order.length===q.length)return q;
+  var out=order.map(function(k){return best[k];});
+  wbQueueSet(out);
+  return out;
+}
+// Buang dari antrean semua item (action,key) yg sama dgn item yg BARU terkirim dan tidak lebih baru darinya
+// (item yg di-enqueue ulang selagi flush berjalan dan lebih baru tetap dipertahankan).
+function wbQueueRemoveSent_(item){
+  var k=wbQueueKey_(item),t=String(item['Last Edit At']||'');
+  var cur=wbQueueGet().filter(function(x){return !(wbQueueKey_(x)===k&&String(x['Last Edit At']||'')<=t);});
+  wbQueueSet(cur);
+}
 // CLM-07: SEMUA call GAS (kecuali requestOtp/verifyOtp/logout) wajib bawa token -- _gasPost/_gasGet
 // jadi 2 choke point yg nyisipin otomatis, biar nggak ada request yg "lupa" (brief Section D).
 // 1 attempt write. WAJIB cek j.ok/body (bukan cuma HTTP 200) -- Ubay 17 Jul: false-200 (GAS balikin
@@ -4218,7 +4254,7 @@ function _wbHandleFail(err,payload,queueLabel){
     toast('❌ Gagal disimpan ke server ('+(err.message||'unknown')+') — perubahan TIDAK tersimpan, cek data lalu coba lagi.',7000);
     return;
   }
-  var q=wbQueueGet();q.push(payload);wbQueueSet(q);
+  wbEnqueueMany_([payload]);
   if(!_wbWarned){ // warning cukup sekali per sesi biar tak mengganggu -- CUMA buat transient/network
     _wbWarned=true;
     toast('⚠ Write-back ke Sheets belum aktif — '+queueLabel+' disimpan lokal & diantre, dikirim otomatis saat GAS siap',4500);
@@ -4344,7 +4380,7 @@ var WB_FLUSH_GAP_MS=400,WB_FLUSH_MAX_CONSEC_FAIL=5;
 // (BUKAN reference-equality/indexOf(item) -- wbQueueGet() re-read localStorage tiap kali, objeknya
 // SELALU instance baru walau isinya sama, jadi indexOf bakal SELALU -1, ketauan pas desain fix ini).
 function wbFlush(){
-  var q=wbQueueGet();if(!q.length)return;
+  var q=wbQueueCompact_();if(!q.length)return;
   var i=0;var consecFail=0;
   (function next(){
     if(i>=q.length||consecFail>=WB_FLUSH_MAX_CONSEC_FAIL){
@@ -4355,10 +4391,7 @@ function wbFlush(){
     var item=q[i];
     _gasPost(item).then(function(){
       i++;consecFail=0;
-      var cur=wbQueueGet();
-      var idx=cur.findIndex(function(x){return x.key===item.key;});
-      if(idx>=0)cur.splice(idx,1);
-      wbQueueSet(cur);
+      wbQueueRemoveSent_(item);
       setTimeout(next,WB_FLUSH_GAP_MS);
     }).catch(function(err){
       i++;
@@ -4368,10 +4401,7 @@ function wbFlush(){
       // circuit-breaker buat item LAIN yang genuinely masih bisa retry. Sekarang: dikeluarin dari
       // antrean + disurface (bukan diem2), bukan dihitung sebagai "gagal transient".
       if(err&&err.serverRejected){
-        var cur2=wbQueueGet();
-        var idx2=cur2.findIndex(function(x){return x.key===item.key;});
-        if(idx2>=0)cur2.splice(idx2,1);
-        wbQueueSet(cur2);
+        wbQueueRemoveSent_(item);
         toast('❌ 1 item antrean ditolak server ('+(err.message||'unknown')+') — dikeluarkan dari antrean, TIDAK tersimpan.',7000);
       }else{
         consecFail++;
@@ -4396,25 +4426,29 @@ function wbFlush(){
 // sama bareng-bareng.
 var WB_AUTOPAID_IMMEDIATE_CAP=5,WB_AUTOPAID_STAGGER_MS=2500;
 function writeBackAutoPaidBatch(list){
+  var toQueue=[];
   list.forEach(function(r,i){
     if(i<WB_AUTOPAID_IMMEDIATE_CAP){
       setTimeout(function(){writeBackResponse(r,'Sistem (Auto-Paid)');},i*WB_AUTOPAID_STAGGER_MS);
     }else{
-      var q=wbQueueGet();q.push(buildWbPayload(r,'Sistem (Auto-Paid)'));wbQueueSet(q);
+      toQueue.push(buildWbPayload(r,'Sistem (Auto-Paid)'));
     }
   });
+  wbEnqueueMany_(toQueue);
 }
 // 22 Agu (operator): varian mixed-label buat batch yang atribusinya BEDA per-record (mis. sync Visit TC
 // -- sebagian keubah krn TC, sebagian keubah krn paid-override yang nempel di atasnya). items:[{r,by}].
 // Nggak ngutak-atik writeBackAutoPaidBatch existing sama sekali (nol resiko ke jalur auto-paid lama).
 function writeBackAutoMixedBatch(items){
+  var toQueue=[];
   items.forEach(function(item,i){
     if(i<WB_AUTOPAID_IMMEDIATE_CAP){
       setTimeout(function(){writeBackResponse(item.r,item.by);},i*WB_AUTOPAID_STAGGER_MS);
     }else{
-      var q=wbQueueGet();q.push(buildWbPayload(item.r,item.by));wbQueueSet(q);
+      toQueue.push(buildWbPayload(item.r,item.by));
     }
   });
+  wbEnqueueMany_(toQueue);
 }
 
 // ── RENDER HELPERS ─────────────────────────────────────────────────────────
