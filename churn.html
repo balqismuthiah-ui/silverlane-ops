@@ -4073,23 +4073,70 @@ function manualSyncAllowed(){
 //   Balas JSON { ok:true } bila sukses; { ok:false, error } bila gagal.
 var WB_QUEUE_KEY='klopos_wb_queue_v1';
 function wbQueueGet(){try{return JSON.parse(localStorage.getItem(WB_QUEUE_KEY)||'[]');}catch(e){return[];}}
-function wbQueueSet(q){try{localStorage.setItem(WB_QUEUE_KEY,JSON.stringify(q));}catch(e){}}
+// 20 Okt (QA Ryry + review Ubay): wbQueueSet SEBELUMNYA menelan semua error (catch kosong) -> kalau localStorage penuh, penulisan gagal
+// tanpa suara dan edit manual agen bisa hilang sementara UI bilang berhasil. Sekarang mengembalikan true/false.
+function wbQueueSet(q){try{localStorage.setItem(WB_QUEUE_KEY,JSON.stringify(q));return true;}catch(e){return false;}}
 // 18 Okt (temuan QA Ryry): antrean browser uji berisi 14.451 item auto-paid dgn hanya 6.132 key unik (rata-rata
 // 2,36 item per key). Penyebab: tiap muat ulang, record yg server-nya belum paid dihitung ulang -> di-enqueue lagi
 // TANPA cek key yg sudah ada, dan wbFlush hanya membuang 1 item per key. Sekarang: 1 item per (action,key), yang
 // terbaru menang; enqueue massal = 1 baca + 1 tulis localStorage (bukan per item, O(n^2) di antrean ribuan).
 function wbQueueKey_(p){return String(p&&p.action||'')+'|'+String(p&&p.key||'');}
+// 20 Okt (keputusan Ubay): dua jenis item. SISTEM = turunan data (auto-paid, auto-TC visit; 'Last Edit By' berawalan "Sistem"),
+// bisa dihitung ulang kapan saja -> boleh dibuang (tertua dulu) bila melebihi WB_SYS_CAP atau penyimpanan penuh. MANUAL = edit agen
+// -> TIDAK PERNAH dibuang diam-diam; peringatan terlihat bila > WB_MANUAL_WARN menunggu.
+var WB_SYS_CAP=2000,WB_MANUAL_WARN=100,_wbManualWarnAt=0;
+function wbIsSystem_(p){return String(p&&p['Last Edit By']||'').indexOf('Sistem')===0;}
+function wbApplySysCap_(q){
+  var sys=[];
+  q.forEach(function(x,i){if(wbIsSystem_(x))sys.push(i);});
+  if(sys.length<=WB_SYS_CAP)return{q:q,dropped:0};
+  sys.sort(function(a,b){var ta=String(q[a]['Last Edit At']||''),tb=String(q[b]['Last Edit At']||'');return ta<tb?-1:(ta>tb?1:a-b);});
+  var n=sys.length-WB_SYS_CAP,drop={};
+  sys.slice(0,n).forEach(function(i){drop[i]=1;});
+  return{q:q.filter(function(x,i){return !drop[i];}),dropped:n};
+}
+function wbWarnManualBacklog_(q){
+  var n=0;q.forEach(function(x){if(!wbIsSystem_(x))n++;});
+  if(n>WB_MANUAL_WARN&&Date.now()-_wbManualWarnAt>10*60*1000){
+    _wbManualWarnAt=Date.now();
+    toast('⚠ '+n+' perubahan manual masih menunggu terkirim ke server — jangan tutup/bersihkan browser ini; hubungi leader kalau berlangsung lama',9000);
+  }
+}
+// Return true bila SEMUA payload manual dalam `payloads` aman (ada di antrean atau sudah digantikan yang lebih baru); false bila ada yg
+// gagal disimpan. Payload sistem yang tak muat tidak dihitung gagal (dihitung ulang saat muat berikutnya).
 function wbEnqueueMany_(payloads){
-  if(!payloads||!payloads.length)return;
+  if(!payloads||!payloads.length)return true;
   var q=wbQueueGet(),pos={};
   q.forEach(function(x,i){pos[wbQueueKey_(x)]=i;});
   payloads.forEach(function(p){
     var k=wbQueueKey_(p);
-    if(pos[k]!==undefined)q[pos[k]]=p;else{pos[k]=q.length;q.push(p);}
+    if(pos[k]!==undefined){
+      // S1 (QA Ryry): item yg SUDAH di antrean dan lebih baru tidak boleh diganti payload yg lebih lama (mis. _wbHandleFail untuk POST
+      // lama yg gagal belakangan). Timestamp sama -> yg masuk belakangan menang (selaras wbQueueCompact_).
+      if(String(p['Last Edit At']||'')>=String(q[pos[k]]['Last Edit At']||''))q[pos[k]]=p;
+    }else{pos[k]=q.length;q.push(p);}
   });
-  wbQueueSet(q);
+  var cap=wbApplySysCap_(q);
+  if(cap.dropped)console.warn('[wb-queue] '+cap.dropped+' item sistem tertua dibuang (batas '+WB_SYS_CAP+'); dihitung ulang saat muat berikutnya');
+  q=cap.q;
+  var ok=wbQueueSet(q);
+  if(!ok){
+    // penyimpanan penuh: korbankan item sistem (bisa dihitung ulang), pertahankan item manual
+    var manualOnly=q.filter(function(x){return !wbIsSystem_(x);});
+    if(manualOnly.length<q.length){
+      console.warn('[wb-queue] penyimpanan penuh: '+(q.length-manualOnly.length)+' item sistem dibuang agar item manual muat');
+      q=manualOnly;ok=wbQueueSet(q);
+    }
+  }
+  if(!ok){
+    var anyManualIncoming=payloads.some(function(p){return !wbIsSystem_(p);});
+    if(!anyManualIncoming)console.warn('[wb-queue] item sistem tak muat di antrean (penyimpanan penuh); dihitung ulang nanti');
+    return !anyManualIncoming;
+  }
+  wbWarnManualBacklog_(q);
+  return true;
 }
-// Rapikan antrean lama yg sudah berduplikat: per (action,key) sisakan yang 'Last Edit At' paling baru.
+// Rapikan antrean lama yg sudah berduplikat: per (action,key) sisakan yang 'Last Edit At' paling baru; lalu terapkan batas item sistem.
 function wbQueueCompact_(){
   var q=wbQueueGet();if(q.length<2)return q;
   var best={},order=[];
@@ -4098,8 +4145,11 @@ function wbQueueCompact_(){
     if(!cur){best[k]=x;order.push(k);}
     else if(String(x['Last Edit At']||'')>=String(cur['Last Edit At']||''))best[k]=x;
   });
-  if(order.length===q.length)return q;
-  var out=order.map(function(k){return best[k];});
+  var out=order.length===q.length?q:order.map(function(k){return best[k];});
+  var cap=wbApplySysCap_(out);
+  if(cap.dropped)console.warn('[wb-queue] '+cap.dropped+' item sistem tertua dibuang (batas '+WB_SYS_CAP+'); dihitung ulang saat muat berikutnya');
+  out=cap.q;
+  if(out.length===q.length)return q;
   wbQueueSet(out);
   return out;
 }
@@ -4254,7 +4304,12 @@ function _wbHandleFail(err,payload,queueLabel){
     toast('❌ Gagal disimpan ke server ('+(err.message||'unknown')+') — perubahan TIDAK tersimpan, cek data lalu coba lagi.',7000);
     return;
   }
-  wbEnqueueMany_([payload]);
+  var enqOk=wbEnqueueMany_([payload]);
+  if(!enqOk){
+    // 20 Okt: antrean tak bisa menyimpan (penyimpanan browser penuh). Item MANUAL = edit agen -> jangan senyap, jangan seolah tersimpan.
+    toast('❌ Perubahan BELUM tersimpan: gagal dikirim ke server dan penyimpanan browser penuh. Simpan ulang nanti atau hubungi leader — jangan anggap sudah tersimpan.',10000);
+    return;
+  }
   if(!_wbWarned){ // warning cukup sekali per sesi biar tak mengganggu -- CUMA buat transient/network
     _wbWarned=true;
     toast('⚠ Write-back ke Sheets belum aktif — '+queueLabel+' disimpan lokal & diantre, dikirim otomatis saat GAS siap',4500);
