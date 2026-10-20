@@ -3083,8 +3083,10 @@ function refreshUserLists(){
 var SYNC_ALLOWLIST_ERR_MSG={
   would_remove_all_leaders:'⚠ Ditolak server: sync ini bakal ngilangin SEMUA Team Lead aktif — nggak ada yg bisa kelola akses lagi. Pastiin minimal 1 leader tetap aktif.',
   would_lock_out_caller:'⚠ Ditolak server: sync ini bakal ngunci akses KAMU sendiri. Nggak jadi disimpan — cek lagi status/role akun kamu.',
-  invalid_payload:'⚠ Ditolak server: ada data agen yg nggak lengkap (nama tanpa email atau sebaliknya). Cek lagi input di Manage Team.',
-  too_many_removals:'⚠ Ditolak server: kedeteksi lebih dari 1 agen ilang sekaligus dalam 1 sync (nggak biasa). Refresh dulu, coba lagi satu-satu.'
+  invalid_payload:'⚠ Ditolak server: ada data agen yg nggak lengkap (nama tanpa email atau sebaliknya) atau email/nama ganda. Cek lagi input di Manage Team.',
+  too_many_removals:'⚠ Ditolak server: kedeteksi lebih dari 1 agen ilang/diganti emailnya sekaligus dalam 1 sync (nggak biasa) — kemungkinan roster browser ini basi. Muat ulang keras (Cmd+Shift+R), lalu coba satu perubahan saja.',
+  too_many_changes:'⚠ Ditolak server: lebih dari satu perubahan roster (tambah/ubah status/role/nama) dalam 1 sync — satu aksi di Manage Team seharusnya hanya satu perubahan. Kemungkinan roster browser ini basi. Muat ulang keras (Cmd+Shift+R), lalu coba satu perubahan saja; kalau masih ditolak hubungi operator.',
+  forbidden:'⚠ Ditolak server: hanya Team Lead yang boleh mengubah roster.'
 };
 function syncAllowlistToServer(){
   if(typeof Auth==='undefined'||!Auth.isLoggedIn())return; // belum ada sesi/token (mis. state awal sblm login)
@@ -4480,7 +4482,54 @@ function wbFlush(){
 // (kemungkinan besar) udah kelar SEBELUM yang berikutnya nembak, ketimbang numpuk nunggu lock yang
 // sama bareng-bareng.
 var WB_AUTOPAID_IMMEDIATE_CAP=5,WB_AUTOPAID_STAGGER_MS=2500;
+// 20 Okt (akar auto-paid, review Ubay butir 1): browser BARU / profil bersih menjalankan sync KLOPOS (applyAutoPaidResponse pada record
+// yang baru dibuat dan belum punya response) SEBELUM sync responses pertama selesai. Semua record paid terlihat "belum ditandai paid"
+// -> ribuan write-back diantrekan padahal server sudah menandainya (QA Ryry: 14.451 item / 6.132 key; server punya 20.350 penanda PAID,
+// hanya ±145 key baru per hari). Payload dibangun dari record lokal yg belum memuat respons server, jadi field milik dashboard lain
+// (Note, Link Evidence, Nama PIC, ...) ikut terkirim kosong. Sekarang: selama browser ini belum PERNAH menggabungkan respons server,
+// write-back auto-paid DITUNDA (record tetap diterapkan lokal utk tampilan). Setelah sync responses pertama selesai, hanya record yg
+// server-nya BELUM paid yang ditulis. Browser yg sudah punya riwayat respons (penanda) tidak terpengaruh.
+var RESP_MERGED_KEY='klopos_resp_merged_v1';
+var _respMergedSession=false,_apDeferred=[],_srvPaidIds={};
+function respEverMerged_(){
+  if(_respMergedSession)return true;
+  try{
+    if(localStorage.getItem(RESP_MERGED_KEY)==='1'){_respMergedSession=true;return true;}
+    // browser lama yg sudah punya respons server di Store (resp.summary hanya diisi sync respons server, bukan auto-paid) -> beri penanda
+    var recs=Store.get().records||[],n=0;
+    for(var i=0;i<recs.length&&n<200;i++){if(recs[i].response&&recs[i].response.summary)n++;}
+    if(n>=200){localStorage.setItem(RESP_MERGED_KEY,'1');_respMergedSession=true;return true;}
+  }catch(e){}
+  return false;
+}
+// true bila server SUDAH menyimpan penanda paid yg sama dengan yg akan ditulis auto-paid utk record ini (tulis ulang = tak mengubah apa pun)
+function apServerAlready_(r){
+  var tgt=computeAutoPaidResponse(r);
+  return !!(tgt&&_srvPaidIds[r.id]&&_srvPaidIds[r.id]===String(tgt.detail).toUpperCase());
+}
+function flushApDeferred_(){
+  if(!_apDeferred.length)return;
+  var seen={},auto=[],mixed=[];
+  var cur={};try{Store.get().records.forEach(function(r){cur[r.id]=r;});}catch(e){}
+  _apDeferred.forEach(function(it){
+    var id=it.r&&it.r.id;if(!id||seen[id+'|'+it.by])return;seen[id+'|'+it.by]=1;
+    var rec=cur[id]||it.r; // pakai record TERBARU di Store (sudah menggabungkan respons server)
+    if(it.by==='Sistem (Auto-Paid)')auto.push(rec);else mixed.push({r:rec,by:it.by});
+  });
+  _apDeferred=[];
+  console.log('[auto-paid] sync responses pertama selesai: '+auto.length+' auto-paid + '+mixed.length+' item sistem lain dievaluasi (yang server-nya sudah paid dilewati)');
+  if(auto.length)writeBackAutoPaidBatch(auto);
+  if(mixed.length)writeBackAutoMixedBatch(mixed);
+}
 function writeBackAutoPaidBatch(list){
+  if(!respEverMerged_()){
+    list.forEach(function(r){_apDeferred.push({r:r,by:'Sistem (Auto-Paid)'});});
+    console.log('[auto-paid] '+list.length+' write-back DITUNDA sampai sync responses pertama selesai di browser ini');
+    return;
+  }
+  var before=list.length;
+  list=list.filter(function(r){return !apServerAlready_(r);});
+  if(list.length<before)console.log('[auto-paid] '+(before-list.length)+' write-back dilewati: server sudah menyimpan penanda paid yang sama');
   var toQueue=[];
   list.forEach(function(r,i){
     if(i<WB_AUTOPAID_IMMEDIATE_CAP){
@@ -4495,6 +4544,12 @@ function writeBackAutoPaidBatch(list){
 // -- sebagian keubah krn TC, sebagian keubah krn paid-override yang nempel di atasnya). items:[{r,by}].
 // Nggak ngutak-atik writeBackAutoPaidBatch existing sama sekali (nol resiko ke jalur auto-paid lama).
 function writeBackAutoMixedBatch(items){
+  if(!respEverMerged_()){
+    items.forEach(function(it){_apDeferred.push(it);});
+    console.log('[auto-mixed] '+items.length+' write-back DITUNDA sampai sync responses pertama selesai di browser ini');
+    return;
+  }
+  items=items.filter(function(it){return !(it.by==='Sistem (Auto-Paid)'&&apServerAlready_(it.r));});
   var toQueue=[];
   items.forEach(function(item,i){
     if(i<WB_AUTOPAID_IMMEDIATE_CAP){
@@ -12190,6 +12245,9 @@ function syncResponsesOnly(opts){
       // kemonitor, bukan invisible ("no silent caps"). ~23% respons yatim (join key outletID+expiry
       // nggak match krn expiry geser/arsip) — diagnostic: 3.991 recoverable, 1.756 benign. Rescue
       // remedy NGGAK dibangun sekarang (cycle-aware, nunggu keputusan); ini cuma bikin VISIBLE.
+      // 20 Okt: catat SEMUA baris yg di SERVER sudah bertanda paid (nilai = detail, mis. 'PAID CRM'), juga utk record yang baru dibuat
+      // SESUDAH sync ini (bulan yg di-sync belakangan): writeBackAutoPaidBatch melewati write-back yang tak akan mengubah apa pun.
+      if(String(row['SUMMARY']||'').trim()==='RESPON POSITIF'){var _kd=String(row['KETERANGAN']||'').trim().toUpperCase();if(_kd==='PAID CRM'||_kd==='PAID SELF ONBOARD')_srvPaidIds[jc]=_kd;}
       var rec=idx[jc];if(!rec){unmatched++;return;}
       var bm=_mapBlast(row['STATUS BLAST']);
       if(bm)rec.blastStatus=bm;
@@ -12255,6 +12313,10 @@ function syncResponsesOnly(opts){
       }
     });
     Store.set(d);renderMaster();
+    // 20 Okt: browser ini kini PUNYA respons server -> penanda permanen + lepas write-back auto-paid yg ditunda (hanya yg server-nya belum paid)
+    try{localStorage.setItem(RESP_MERGED_KEY,'1');}catch(e0){}
+    _respMergedSession=true;
+    try{flushApDeferred_();}catch(e1){console.log('[auto-paid] flush tertunda gagal: '+e1.message);}
     var pctUnmatched=rows.length?Math.round(unmatched/rows.length*100):0;
     console.log('[sync respons] '+n+' updated · '+unmatched+' unmatched ('+pctUnmatched+'% — di luar tracking, ~expiry geser/arsip) dari '+rows.length+' baris server');
     if(!silent)toast(n+' respons diimport dari '+rows.length+' baris'+(unmatched?' · '+unmatched+' di luar periode tracking':''));
