@@ -9974,14 +9974,14 @@ function openResp(id){
   if(resp.detail&&!_dknown){
     detailOpts+='<option value="'+resp.detail+'" selected>'+resp.detail+' (nilai lama)</option>';
   }
-  // Dropdown dulu cuma daftar AGENTS -- kalau r.assignedAgent kosong (Unassigned) atau nilai khusus dari
-  // sheet (mis. "Akun Internal"/"Bukan renewal", nggak ada di AGENTS), select nggak punya opsi yang match
-  // -> browser default ke opsi pertama (Erizka), lalu ke-save diam-diam sebagai reassignment nyata.
   var curAgentVal=r.assignedAgent||'';
   // 22 Okt (request operator): Agen TIDAK bisa diubah dari modal Update Respons -- menyimpan dari sini ikut kena validasi field wajib
-  // respons (nomor HP aktif dll). Tampilan sama utk leader dan agen: read-only + petunjuk di mana Team Lead mengganti agen.
-  var agentField='<div style="font-size:12px;margin-bottom:10px"><span style="color:var(--tx3)">Agen:</span> <strong>'+engEsc(curAgentVal||'— Unassigned —')+'</strong>'
-    +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">Agen tidak bisa diubah dari sini — Team Lead bisa mengganti dari tab Master &amp; Assign.</div></div>';
+  // respons (nomor HP aktif dll). Leader: read-only + petunjuk di mana Team Lead mengganti agen. Agen: baris info biasa seperti sebelumnya
+  // (agen memang tidak pernah punya opsi ganti agen, jadi tidak perlu petunjuk).
+  var agentField=isSup
+    ?'<div style="font-size:12px;margin-bottom:10px"><span style="color:var(--tx3)">Agen:</span> <strong>'+engEsc(curAgentVal||'— Unassigned —')+'</strong>'
+      +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">Agen tidak bisa diubah dari sini — Team Lead bisa mengganti dari tab Master &amp; Assign.</div></div>'
+    :'<div style="font-size:11px;color:var(--tx3);margin-bottom:10px">Agen: '+engEsc(r.assignedAgent||'—')+'</div>';
   // P1-1: render riwayat audit (siapa · dari → ke · kapan), terbaru dulu
   var auditHtml='';
   if(r.responseAudit&&r.responseAudit.length){
