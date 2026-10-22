@@ -9978,14 +9978,10 @@ function openResp(id){
   // sheet (mis. "Akun Internal"/"Bukan renewal", nggak ada di AGENTS), select nggak punya opsi yang match
   // -> browser default ke opsi pertama (Erizka), lalu ke-save diam-diam sebagai reassignment nyata.
   var curAgentVal=r.assignedAgent||'';
-  var specialAgentOpt=(curAgentVal&&AGENTS.indexOf(curAgentVal)<0)?'<option value="'+curAgentVal+'" selected>'+curAgentVal+' (dari sheet)</option>':'';
-  var agentField=isSup
-    ?'<label>Agen (Team Lead bisa ganti)</label><select id="resp-agent">'
-      +'<option value=""'+(!curAgentVal?' selected':'')+'>— Unassigned —</option>'
-      +specialAgentOpt
-      +AGENTS.map(function(a){return'<option value="'+a+'"'+(curAgentVal===a?' selected':'')+'>'+a+'</option>';}).join('')
-      +'</select>'
-    :'<div style="font-size:11px;color:var(--tx3);margin-bottom:10px">Agen: '+(r.assignedAgent||'—')+'</div>';
+  // 22 Okt (request operator): Agen TIDAK bisa diubah dari modal Update Respons -- menyimpan dari sini ikut kena validasi field wajib
+  // respons (nomor HP aktif dll). Tampilan sama utk leader dan agen: read-only + petunjuk di mana Team Lead mengganti agen.
+  var agentField='<div style="font-size:12px;margin-bottom:10px"><span style="color:var(--tx3)">Agen:</span> <strong>'+engEsc(curAgentVal||'— Unassigned —')+'</strong>'
+    +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">Agen tidak bisa diubah dari sini — Team Lead bisa mengganti dari tab Master &amp; Assign.</div></div>';
   // P1-1: render riwayat audit (siapa · dari → ke · kapan), terbaru dulu
   var auditHtml='';
   if(r.responseAudit&&r.responseAudit.length){
@@ -10295,15 +10291,7 @@ function saveResp(){
     });
   }
 
-  // AC-C2/AC-F3: Sekar bisa ganti agen langsung dari modal respon, tercatat di audit
-  // "" (Unassigned) sekarang pilihan sah -- jangan pakai truthy check di value, itu yg bikin
-  // record unassigned/nilai khusus sheet ke-reassign diam-diam ke opsi pertama dropdown.
-  var agentEl2=document.getElementById('resp-agent');
-  if(isSup&&agentEl2&&agentEl2.value!==(r.assignedAgent||'')){
-    r.responseAudit=r.responseAudit||[];
-    r.responseAudit.push({by:me,at:new Date().toISOString(),field:'agen',from:r.assignedAgent||'—',to:agentEl2.value||'—'});
-    r.assignedAgent=agentEl2.value;
-  }
+  // 22 Okt: penggantian agen dari modal respon DIHAPUS (lihat agentField di atas) -- r.assignedAgent tidak diubah di jalur simpan ini.
 
   // P1-2: auto-sync status bayar dari taksonomi baku (PAID CRM / PAID SELF ONBOARD)
   if(detailFinal&&PAID_DETAILS.indexOf(detailFinal)>=0)r.paymentStatus='paid';
