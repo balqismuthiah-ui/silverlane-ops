@@ -2956,6 +2956,7 @@ var Store={
     toast('Storage tetap penuh walau udah dikecilin drastis. Hapus data lama via Reset dulu.',5000);
   },
   reset:function(){
+    if(typeof resetRespMergeState_==='function')resetRespMergeState_();
     _storeCache=initData();
     if(_idbUsable)_idbSet(STORE_KEY,_storeCache).catch(function(){});
     localStorage.removeItem(STORE_KEY);
@@ -4509,17 +4510,30 @@ function apServerAlready_(r){
 }
 function flushApDeferred_(){
   if(!_apDeferred.length)return;
-  var seen={},auto=[],mixed=[];
+  var seen={},auto=[],mixed=[],evaluated=0;
   var cur={};try{Store.get().records.forEach(function(r){cur[r.id]=r;});}catch(e){}
   _apDeferred.forEach(function(it){
-    var id=it.r&&it.r.id;if(!id||seen[id+'|'+it.by])return;seen[id+'|'+it.by]=1;
-    var rec=cur[id]||it.r; // pakai record TERBARU di Store (sudah menggabungkan respons server)
-    if(it.by==='Sistem (Auto-Paid)')auto.push(rec);else mixed.push({r:rec,by:it.by});
+    var id=it.r&&it.r.id;if(!id||seen[id])return;seen[id]=1;evaluated++;
+    var rec=cur[id]||it.r; // record TERBARU di Store (sudah menggabungkan respons server)
+    // 20 Okt (review Ubay): EVALUASI ULANG pada record hasil gabungan. Penggabungan menimpa resp.category/detail lokal dgn nilai server,
+    // jadi keputusan sebelum penggabungan tidak berlaku lagi. Hanya yang MASIH perlu diubah (server belum paid / belum ber-override TC) ditulis.
+    if(computeAutoPaidResponse(rec)){
+      if(applyAutoPaidResponse(rec))auto.push(rec);
+    }else if(it.by==='Sistem (Auto-TC Visit)'){
+      if(applyAutoTcResponse(rec))mixed.push({r:rec,by:'Sistem (Auto-TC Visit)'});
+    }
   });
   _apDeferred=[];
-  console.log('[auto-paid] sync responses pertama selesai: '+auto.length+' auto-paid + '+mixed.length+' item sistem lain dievaluasi (yang server-nya sudah paid dilewati)');
+  if(auto.length||mixed.length){try{Store.set(Store.get());}catch(e2){}}
+  console.log('[auto-paid] sync responses pertama selesai: '+evaluated+' record dievaluasi ulang pada data gabungan -> '+auto.length+' auto-paid + '+mixed.length+' auto-TC perlu ditulis (sisanya sudah sesuai di server)');
   if(auto.length)writeBackAutoPaidBatch(auto);
   if(mixed.length)writeBackAutoMixedBatch(mixed);
+}
+// Dipanggil saat Store dikosongkan (Reset Records / Store.reset): penanda "sudah pernah menggabungkan respons" harus ikut hilang, kalau tidak
+// record yang dibuat ulang (tanpa respons) melewati penundaan dan skenario penimpaan field terulang.
+function resetRespMergeState_(){
+  try{localStorage.removeItem(RESP_MERGED_KEY);}catch(e){}
+  _respMergedSession=false;_apDeferred=[];_srvPaidIds={};
 }
 function writeBackAutoPaidBatch(list){
   if(!respEverMerged_()){
@@ -12483,6 +12497,7 @@ tabContent.addEventListener('click',function(e){
     var d=Store.get();
     d.records=[];
     Store.set(d);
+    resetRespMergeState_();
     renderMaster();
     toast('Semua records dihapus. Silakan sync ulang dari Sheets.');
   }
