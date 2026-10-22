@@ -5020,8 +5020,22 @@ var perfSnapList_=null,perfSnapBusy_=false;
 function perfPeriodKey_(abbr){return'2026'+String(MONTH_KEYS.indexOf(abbr)+1).padStart(2,'0');}
 function perfAbbrOfKey_(pk){return MONTH_KEYS[parseInt(String(pk).slice(4),10)-1]||pk;}
 function perfWibToday_(){return new Date(Date.now()+7*3600000).toISOString().slice(0,10);}
-function perfSnapIncomplete_(period,d){
-  return !UpsellTeamStore.getMonth(period)||d.agents.every(function(a){return!a.renewalSynced;});
+function perfSnapIncomplete_(period,d,kind){
+  // 22 Okt (review Ubay): untuk FINAL, 'lengkap' juga berarti Store browser ini memuat respons server dan kohor bulan itu. Sebelumnya hanya Upsell Tim yang
+  // dicek, sehingga FINAL bisa dikunci dari Store parsial (kolom konversi/NPS/Maps-App nol atau salah) tanpa tanda. Server menolak mengunci FINAL bila incomplete.
+  if(!UpsellTeamStore.getMonth(period)||d.agents.every(function(a){return!a.renewalSynced;}))return true;
+  if(kind==='FINAL'&&!perfStoreReadyForFinal_(period).ok)return true;
+  return false;
+}
+// Store lengkap utk menghitung FINAL bulan `period` (singkatan, mis. 'Oct')? (a) respons server pernah digabung di browser ini, (b) kohor bulan itu termuat.
+// Ambang kohor sengaja konservatif (kohor bulanan nyata ±2-3 rb record): tujuannya menangkap Store kosong/bulan-berjalan-saja, bukan memeriksa kelengkapan penuh.
+var PERF_FINAL_MIN_COHORT_=200;
+function perfStoreReadyForFinal_(period){
+  if(!respEverMerged_())return{ok:false,why:'respons server belum digabung di browser ini (sync respons belum selesai / baru Reset Records)'};
+  var recs=Store.get().records||[],n=0;
+  for(var i=0;i<recs.length;i++){var r=recs[i];if(((r.cohortMonths||r.bulan||'')+'').split(',').indexOf(period)>=0)n++;}
+  if(n<PERF_FINAL_MIN_COHORT_)return{ok:false,why:'kohor '+period+' belum termuat di browser ini ('+n+' record; minimal '+PERF_FINAL_MIN_COHORT_+')',n:n};
+  return{ok:true,n:n};
 }
 // Snapshot HARUS dari data segar: refresh Upsell Tim bulan itu dari server kalau sync terakhirnya > 20 menit (atau tidak
 // tercatat). FINAL tidak dikunci kalau refresh gagal -- nilai final tidak bisa ditimpa, jangan dikunci dari data basi.
@@ -5041,7 +5055,7 @@ function perfTakeSnapshot_(period,kind,opts){
   return perfEnsureFresh_(period).then(function(fresh){
     if(!fresh&&kind==='FINAL')throw new Error('Data '+period+' gagal di-refresh dari server — final TIDAK dikunci. Coba lagi sebentar lagi.');
     var d=computePerfForPeriod_(period,false);
-    var body={action:'savePerfSnapshot',period:perfPeriodKey_(period),kind:kind,payload:d,incomplete:perfSnapIncomplete_(period,d),
+    var body={action:'savePerfSnapshot',period:perfPeriodKey_(period),kind:kind,payload:d,incomplete:perfSnapIncomplete_(period,d,kind),
       note:(opts.note||'')+(fresh?'':' [data tidak di-refresh dari server]'),force:!!opts.force};
     return _gasPost(body,RN_WRITE_OPTS);
   });
@@ -5070,6 +5084,7 @@ function perfSnapshotUI(lockFinal){
   var msg=kind==='DAILY'?('Ambil snapshot harian '+period+' 26 sekarang?')
     :kind==='RETRO'?('Ambil snapshot RETROAKTIF '+period+' 26?\n\nAngka dihitung dari data SAAT INI (bukan per tanggal 1): renewal telat dan konversi yang bergerak sesudahnya ikut terhitung.')
     :('KUNCI FINAL '+period+' 26?\n\nSetelah dikunci, snapshot final tidak ditimpa lagi (koreksi hanya lewat langkah khusus). Angka diambil dari data saat ini.');
+  if(lockFinal){var _chk=perfStoreReadyForFinal_(period);if(!_chk.ok)msg+='\n\nPERINGATAN: '+_chk.why+'. Server akan MENOLAK mengunci final dari data seperti ini; sync penuh dulu.';}
   if(missing)msg+='\n\nPERINGATAN: data renewal/upsell '+period+' belum ter-sync di browser ini — kolom revenue/ARPU/MRR akan kosong. Sync bulan itu dulu di Master & Assign kalau mau lengkap. Tetap lanjut?';
   if(!confirm(msg))return;
   perfSnapBusy_=true;toast('⏳ Menyimpan snapshot…',20000);
@@ -5080,6 +5095,7 @@ function perfSnapshotUI(lockFinal){
   }).catch(function(err){
     var m=String(err&&err.message||err);
     if(/final_before_month_end/.test(m))toast('Bulan itu belum berakhir — final baru bisa dikunci mulai tanggal 1 bulan berikutnya.',6000);
+    else if(/final_incomplete_not_locked/.test(m))toast('Final TIDAK dikunci: data bulan itu belum lengkap di browser ini (respons/kohor/Upsell Tim belum termuat). Sync penuh dulu, lalu coba lagi.',9000);
     else if(/daily_for_closed_month/.test(m))toast('Bulan itu sudah berakhir — pakai "Kunci final" atau snapshot retroaktif.',6000);
     else toast(err&&err.timedOut?'⏳ GAS lambat — hasil BELUM PASTI. Cek Riwayat snapshot dulu.':'Gagal simpan snapshot: '+m,7000);
   }).then(function(){perfSnapBusy_=false;});
@@ -5262,21 +5278,36 @@ function perfAutoSnapshot_(attempt){
   try{
     if(!Auth.isLoggedIn()||!Auth.isSuperior())return;
     var today=perfWibToday_();
-    var done=null;try{done=localStorage.getItem('clm_perf_auto');}catch(e){}
-    if(done===today)return;
+    var doneDaily=null;try{doneDaily=localStorage.getItem('clm_perf_auto');}catch(e){}
     var curIdx=new Date().getMonth(),cur=MONTH_KEYS[curIdx];
+    var day=parseInt(today.slice(8,10),10);
+    // 22 Okt (review Ubay): FINAL punya jalur & penanda SENDIRI. Sebelumnya satu penanda harian ('clm_perf_auto') menutup juga percobaan FINAL, jadi browser yang
+    // belum sync penuh pada tgl 1 tidak mencoba lagi pada hari yang sama dan -- lebih buruk -- FINAL bisa dikunci dari Store parsial.
+    var prevAbbr=(day<=3&&curIdx>0)?MONTH_KEYS[curIdx-1]:null;
+    var finalOk=null;if(prevAbbr){try{finalOk=localStorage.getItem('clm_perf_final_ok_'+perfPeriodKey_(prevAbbr));}catch(e){}}
+    var wantFinal=!!prevAbbr&&!finalOk;
+    if(doneDaily===today&&!wantFinal)return;
     var ready=UpsellTeamStore.getMonth(cur)&&(Store.get().records||[]).length;
     if(!ready){if(attempt<3)setTimeout(function(){perfAutoSnapshot_(attempt+1);},30000);return;}
-    perfTakeSnapshot_(cur,'DAILY',{note:'auto'}).then(function(){
-      var day=parseInt(today.slice(8,10),10);
-      if(day>3||curIdx===0)return;
-      var prev=MONTH_KEYS[curIdx-1];
+    var chain=doneDaily===today?Promise.resolve():perfTakeSnapshot_(cur,'DAILY',{note:'auto'}).then(function(){try{localStorage.setItem('clm_perf_auto',today);}catch(e){}});
+    chain.then(function(){
+      if(!wantFinal)return;
+      var chk=perfStoreReadyForFinal_(prevAbbr);
+      if(!chk.ok){
+        // JANGAN mengunci. Beri tahu leader sekali per hari per browser; coba lagi pada pembukaan berikutnya (tgl 1-3) setelah sync penuh.
+        var warned=null;try{warned=localStorage.getItem('clm_perf_final_warn');}catch(e){}
+        if(warned!==today){try{localStorage.setItem('clm_perf_final_warn',today);}catch(e){}
+          toast('Rapor '+prevAbbr+' belum bisa dikunci otomatis: '+chk.why+'. Buka dari browser yang sudah sync penuh atau pakai "🔒 Kunci final" di Overview setelah sync.',12000);}
+        return;
+      }
       return _gasGet('perfSnapshots',60000).then(function(j){
-        var has=(j.data||[]).some(function(m){return m.period===perfPeriodKey_(prev)&&m.kind==='FINAL';});
-        if(!has)return perfTakeSnapshot_(prev,'FINAL',{note:'auto, dikunci tgl '+day});
+        var has=(j.data||[]).some(function(m){return m.period===perfPeriodKey_(prevAbbr)&&m.kind==='FINAL';});
+        if(has){try{localStorage.setItem('clm_perf_final_ok_'+perfPeriodKey_(prevAbbr),'1');}catch(e){}return;}
+        return perfTakeSnapshot_(prevAbbr,'FINAL',{note:'auto, dikunci tgl '+day}).then(function(res){
+          if(res&&(res.unchanged||res.ok)){try{localStorage.setItem('clm_perf_final_ok_'+perfPeriodKey_(prevAbbr),'1');}catch(e){}}
+        });
       });
-    }).then(function(){try{localStorage.setItem('clm_perf_auto',today);}catch(e){}})
-    .catch(function(err){try{console.warn('perfAutoSnapshot_ gagal',err);}catch(e){}});
+    }).catch(function(err){try{console.warn('perfAutoSnapshot_ gagal',err);}catch(e){}});
   }catch(e){try{console.warn('perfAutoSnapshot_',e);}catch(e2){}}
 }
 function renderOverview(){
