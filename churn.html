@@ -2998,8 +2998,8 @@ var AgentsConfig={
     // cuma 'Zharifah' match-nya gagal & raw string numpuk apa adanya (ketemu 10 Sep, dump 2 browser).
     {id:'a12',name:'Zharifah',email:'zharifah.bayti@majoo.com',initials:'ZB',displayName:'Zharifah Bayti',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''},
     // 19 Okt: Yulita agen baru (cuma ada di allowlist server sebelumnya -> browser dgn roster tanpa dia, begitu menyimpan,
-    // bisa menghapusnya dari allowlist). Inisial YP = turunan dari nama (ganti di Manage Team kalau beda).
-    {id:'a13',name:'Yulita',email:'yulita.putri9886@majoo.com',initials:'YP',displayName:'Yulita Nurwidyanti Putri',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''}
+    // bisa menghapusnya dari allowlist). Inisial YN dan nama tampilan 'Yulita' = konfirmasi Muthia (22 Okt).
+    {id:'a13',name:'Yulita',email:'yulita.putri9886@majoo.com',initials:'YN',displayName:'Yulita',role:'agent',status:'active',nip:'',joinDate:'',resignDate:''}
   ],
   // 19 Okt (insiden OTP): roster di localStorage per-browser TIDAK ikut migrasi domain 10 Sep. Browser leader dgn roster lama
   // (agen masih @majoo.id) yang menyimpan perubahan APA PUN menyinkron email lama ke allowlist server (guard server cuma
@@ -4179,6 +4179,17 @@ function wbQueueRemoveSent_(item){
 // yang bisa >20dtk; client nyerah duluan tapi server TETAP nyelesaiin write -> dashboard "Pending",
 // sheet "Approved" (kasus 63005946290). Error timeout di-tag `timedOut` biar caller bisa bedain
 // "status nggak pasti" dari penolakan beneran.
+// 22 Okt (QA Ryry + Ubay 3.3): SEBELUMNYA setiap {ok:false} diberi retriable=(retry===true) DAN serverRejected=true sekaligus. Untuk
+// {ok:false,error:'busy_lock_timeout',retry:true} yang tetap gagal setelah 3x percobaan ulang, wbFlush/_wbHandleFail memeriksa serverRejected
+// LEBIH DULU dan MEMBUANG item dari antrean dgn toast "TIDAK tersimpan" -- padahal kegagalannya sementara (kontensi kunci GAS), termasuk
+// edit manual agen. Sekarang serverRejected hanya utk penolakan PERMANEN (retry !== true, mis. key_not_found); penolakan sementara
+// (retry:true) tetap retriable dan TETAP di antrean.
+function gasServerError_(j){
+  var eb=new Error(j.error||'write gagal');
+  eb.retriable=(j.retry===true);
+  eb.serverRejected=(j.retry!==true);
+  return eb;
+}
 function _gasPostOnce(payload,o){
   o=o||{};
   var withToken=Object.assign({},payload,{token:Auth.getToken()});
@@ -4198,7 +4209,7 @@ function _gasPostOnce(payload,o){
       // business-rule (mis. key_not_found) ke-surface ke user SELALU, bukan diem2 masuk antrean retry
       // yang nggak akan pernah sukses (root cause insiden Damparan Seafood: klaim ke-reject server tapi
       // UI nunjukin sukses).
-      if(j&&j.ok===false){var eb=new Error(j.error||'write gagal');eb.retriable=(j.retry===true);eb.serverRejected=true;throw eb;}
+      if(j&&j.ok===false)throw gasServerError_(j);
       return j;
     });})
     .catch(function(err){
