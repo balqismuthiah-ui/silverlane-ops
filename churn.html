@@ -4450,16 +4450,17 @@ var WB_FLUSH_GAP_MS=400,WB_FLUSH_MAX_CONSEC_FAIL=5;
 // SELALU instance baru walau isinya sama, jadi indexOf bakal SELALU -1, ketauan pas desain fix ini).
 function wbFlush(){
   var q=wbQueueCompact_();if(!q.length)return;
-  var i=0;var consecFail=0;
+  var i=0;var consecFail=0;var sentOk=0;
   (function next(){
     if(i>=q.length||consecFail>=WB_FLUSH_MAX_CONSEC_FAIL){
       var remaining=wbQueueGet();
-      if(remaining.length===0)toast('✓ Antrean write-back terkirim');
+      // 22 Okt (QA Ryry): toast sukses hanya bila ADA item yang benar-benar terkirim (sebelumnya muncul juga saat semua item ditolak server dan antrean kosong).
+      if(remaining.length===0&&sentOk>0)toast('✓ Antrean write-back terkirim');
       return;
     }
     var item=q[i];
     _gasPost(item).then(function(){
-      i++;consecFail=0;
+      i++;consecFail=0;sentOk++;
       wbQueueRemoveSent_(item);
       setTimeout(next,WB_FLUSH_GAP_MS);
     }).catch(function(err){
@@ -5028,8 +5029,10 @@ function perfSnapIncomplete_(period,d,kind){
   return false;
 }
 // Store lengkap utk menghitung FINAL bulan `period` (singkatan, mis. 'Oct')? (a) respons server pernah digabung di browser ini, (b) kohor bulan itu termuat.
-// Ambang kohor sengaja konservatif (kohor bulanan nyata ±2-3 rb record): tujuannya menangkap Store kosong/bulan-berjalan-saja, bukan memeriksa kelengkapan penuh.
-var PERF_FINAL_MIN_COHORT_=200;
+// Ambang kohor (22 Okt, QA Ryry): kohor nyata per bulan di browser sync-penuh Jan 3.340, Feb 3.502, Mar 3.614, Apr 3.386, May 3.427, Jun 2.963, Jul 3.376, Aug 4.058,
+// Sep 4.152, Oct 3.279. Ambang awal 200 (tebakan) hanya 6,7% dari bulan terkecil dan meloloskan Store sebagian. Sekarang 2600 (≈88% dari bulan terkecil Jun 2.963,
+// ≈79% dari Oct): menangkap Store kosong/sebagian, tetap longgar bagi Store lengkap. Keputusan Ubay: ≈90% angka nyata; lebih kuat = bandingkan dgn jumlah baris server.
+var PERF_FINAL_MIN_COHORT_=2600;
 function perfStoreReadyForFinal_(period){
   if(!respEverMerged_())return{ok:false,why:'respons server belum digabung di browser ini (sync respons belum selesai / baru Reset Records)'};
   var recs=Store.get().records||[],n=0;
@@ -5056,7 +5059,8 @@ function perfTakeSnapshot_(period,kind,opts){
     if(!fresh&&kind==='FINAL')throw new Error('Data '+period+' gagal di-refresh dari server — final TIDAK dikunci. Coba lagi sebentar lagi.');
     var d=computePerfForPeriod_(period,false);
     var body={action:'savePerfSnapshot',period:perfPeriodKey_(period),kind:kind,payload:d,incomplete:perfSnapIncomplete_(period,d,kind),
-      note:(opts.note||'')+(fresh?'':' [data tidak di-refresh dari server]'),force:!!opts.force};
+      note:(opts.note||'')+(fresh?'':' [data tidak di-refresh dari server]'),force:!!opts.force,
+      acceptIncomplete:!!opts.acceptIncomplete,acceptReason:opts.acceptReason||''};
     return _gasPost(body,RN_WRITE_OPTS);
   });
 }
@@ -5095,7 +5099,19 @@ function perfSnapshotUI(lockFinal){
   }).catch(function(err){
     var m=String(err&&err.message||err);
     if(/final_before_month_end/.test(m))toast('Bulan itu belum berakhir — final baru bisa dikunci mulai tanggal 1 bulan berikutnya.',6000);
+    else if(/final_incomplete_not_locked/.test(m)&&lockFinal){
+      // Keputusan Ubay 22 Okt: jalan keluar SADAR bila satu sumber data bulan itu memang rusak. Hanya lewat tombol manual ini, alasan wajib, tersimpan Incomplete=Y + lencana.
+      var why=prompt('Final '+period+' 26 DITOLAK server karena data tidak lengkap di browser ini.\n\nSebaiknya sync penuh lalu coba lagi. Bila final HARUS dikunci dengan data tidak lengkap (mis. satu sumber data bulan itu memang rusak), tulis alasannya (min 10 karakter). Final akan ditandai "TIDAK LENGKAP" di Rapor dan tidak bisa ditimpa. Kosongkan/Batal untuk membatalkan.');
+      if(why&&String(why).trim().length>=10){
+        return perfTakeSnapshot_(period,'FINAL',{acceptIncomplete:true,acceptReason:String(why).trim()}).then(function(res2){
+          toast(res2&&res2.unchanged?'Final '+period+' 26 sudah pernah dikunci — tidak ditimpa.':'✓ Final '+period+' 26 dikunci sebagai TIDAK LENGKAP (alasan tersimpan)',6000);
+          perfSnapLoadList_();
+        }).catch(function(e2){toast('Gagal mengunci final tidak lengkap: '+String(e2&&e2.message||e2),8000);});
+      }
+      toast('Final TIDAK dikunci. Sync penuh dulu (respons, kohor, Upsell Tim), lalu coba lagi.',7000);
+    }
     else if(/final_incomplete_not_locked/.test(m))toast('Final TIDAK dikunci: data bulan itu belum lengkap di browser ini (respons/kohor/Upsell Tim belum termuat). Sync penuh dulu, lalu coba lagi.',9000);
+    else if(/final_incomplete_reason_required/.test(m))toast('Alasan wajib (min 10 karakter) untuk mengunci final tidak lengkap.',6000);
     else if(/daily_for_closed_month/.test(m))toast('Bulan itu sudah berakhir — pakai "Kunci final" atau snapshot retroaktif.',6000);
     else toast(err&&err.timedOut?'⏳ GAS lambat — hasil BELUM PASTI. Cek Riwayat snapshot dulu.':'Gagal simpan snapshot: '+m,7000);
   }).then(function(){perfSnapBusy_=false;});
@@ -5132,7 +5148,7 @@ function perfSnapView(key){
       +(m.final?'<span class="badge badge-grn">🔒 Final, dikunci '+m.snapshotDate+late+'</span>'
                :'<span class="badge badge-gray">'+(PERF_KIND_LABEL_[m.kind]||m.kind)+' · diambil '+m.snapshotDate+'</span>')
       +(m.kind==='RETRO'?' <span style="font-size:11px;color:var(--tx3)">dihitung dari data saat diambil, bukan per tanggal 1</span>':'')
-      +(m.incomplete?' <span style="font-size:11px;color:var(--org)">⚠ data belum lengkap saat diambil</span>':'')
+      +(m.incomplete?(m.final?' <span class="badge badge-red" title="'+String(m.note||'').replace(/"/g,'&quot;')+'">⚠ TIDAK LENGKAP</span>':' <span style="font-size:11px;color:var(--org)">⚠ data belum lengkap saat diambil</span>'):'')
       +' <button type="button" class="action-btn" style="margin-left:6px" onclick="document.getElementById(\'perf-snap-view\').innerHTML=\'\'">Tutup</button></div>';
     var b2=document.getElementById('perf-snap-view');
     if(b2)b2.innerHTML=perfTableHtml_(j.payload,{subtitle:'(snapshot beku)',badgeHtml:badge});
@@ -5232,7 +5248,7 @@ function raporRenderBody_(){
   var badge='<div style="margin:6px 0 10px">'
     +(m.final?'<span class="badge badge-grn">🔒 Final, dikunci '+m.snapshotDate+(m.lateDays?' (terlambat '+m.lateDays+' hari dari tanggal 1)':'')+'</span> <span style="font-size:11px;color:var(--tx3)">tidak berubah lagi</span>'
              :'<span class="badge badge-gray">'+(PERF_KIND_LABEL_[m.kind]||m.kind)+' · diambil '+m.snapshotDate+'</span>'+(m.kind==='RETRO'?' <span style="font-size:11px;color:var(--tx3)">dihitung dari data saat diambil, bukan per tanggal 1</span>':''))
-    +(m.incomplete?' <span style="font-size:11px;color:var(--org)">⚠ data belum lengkap saat diambil</span>':'')
+    +(m.incomplete?(m.final?' <span class="badge badge-red" title="'+String(m.note||'').replace(/"/g,'&quot;')+'">⚠ TIDAK LENGKAP</span>':' <span style="font-size:11px;color:var(--org)">⚠ data belum lengkap saat diambil</span>'):'')
     +(asOf?' <span style="font-size:11px;color:var(--tx3)">· data renewal/upsell per sync '+asOf+'</span>':'')+'</div>';
   var live=null,liveNote='';
   if(raporCompare){
@@ -5279,7 +5295,8 @@ function perfAutoSnapshot_(attempt){
     if(!Auth.isLoggedIn()||!Auth.isSuperior())return;
     var today=perfWibToday_();
     var doneDaily=null;try{doneDaily=localStorage.getItem('clm_perf_auto');}catch(e){}
-    var curIdx=new Date().getMonth(),cur=MONTH_KEYS[curIdx];
+    // 22 Okt (QA Ryry): bulan SEBELUMNYA dari jam perangkat (new Date().getMonth()) padahal tanggal dari WIB -> perangkat non-WIB di sekitar pergantian bulan bisa memilih bulan keliru.
+    var curIdx=parseInt(today.slice(5,7),10)-1,cur=MONTH_KEYS[curIdx];
     var day=parseInt(today.slice(8,10),10);
     // 22 Okt (review Ubay): FINAL punya jalur & penanda SENDIRI. Sebelumnya satu penanda harian ('clm_perf_auto') menutup juga percobaan FINAL, jadi browser yang
     // belum sync penuh pada tgl 1 tidak mencoba lagi pada hari yang sama dan -- lebih buruk -- FINAL bisa dikunci dari Store parsial.
