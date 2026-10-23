@@ -8264,6 +8264,7 @@ function renderBlast(){
       +'<td><button class="action-btn" data-act="tpl-vis" data-id="'+t.id+'" title="'+(vis?'Tampil ke agen — klik buat sembunyiin':'Leader-only — klik buat tampilin ke agen')+'" style="background:'+(vis?'var(--grnl)':'transparent')+'">'+(vis?'👁️':'🔒')+'</button></td>'
       +'<td><div class="row-tools">'
       +'<button class="action-btn ab-edit" data-act="edit-tpl" data-id="'+t.id+'">✏</button>'
+      +'<button class="action-btn ab-view" data-act="dup-tpl" data-id="'+t.id+'" title="Duplikat template — salinan baru (leader-only), tinggal ganti nama/isinya">⎘</button>'
       +'<button class="action-btn ab-wl" data-act="del-tpl" data-id="'+t.id+'">✕</button>'
       +'</div></td></tr>';
   }).join('');
@@ -12433,6 +12434,27 @@ tabContent.addEventListener('click',function(e){
     else if(act==='batch-rename')batchRename(id); // CLM-13 v56
     else if(act==='batch-del')batchDelete(id);   // CLM-13 v56
     else if(act==='edit-tpl')openTplModal(id);
+    // 23 Okt (request operator, urgent): duplikat template WABA -- pola sama dup-target. Salinan: semua field APA ADANYA (bahasa, variableMap, isi pesan), id BARU (Templates.add),
+    // nama diberi akhiran "(salinan)" yang unik, visibleToAgent SELALU false (default aman: salinan tidak langsung tampil ke agen; leader menyalakannya sengaja). Dipush ke server
+    // (upsertTemplate) seperti Simpan biasa, lalu modal Edit dibuka supaya nama/isi bisa langsung diganti.
+    else if(act==='dup-tpl'){
+      if(!Auth.isSuperior()){toast('Khusus Team Lead');return;}
+      var srcTpl=Templates.getAll().find(function(t){return t.id===id;});
+      if(!srcTpl)return;
+      var cloneTpl=JSON.parse(JSON.stringify(srcTpl));
+      delete cloneTpl.id;
+      var baseName=String(srcTpl.name||'template').replace(/\s*\(salinan(?:\s*\d+)?\)\s*$/i,'').trim()||'template';
+      var usedNames={};Templates.getAll().forEach(function(t){usedNames[String(t.name||'').trim().toLowerCase()]=1;});
+      var newName=baseName+' (salinan)',nn=2;
+      while(usedNames[newName.toLowerCase()]){newName=baseName+' (salinan '+nn+')';nn++;}
+      cloneTpl.name=newName;
+      cloneTpl.visibleToAgent=false;
+      var savedTpl=Templates.add(cloneTpl);
+      _gasPost({action:'upsertTemplate',template:savedTpl}).catch(function(){toast('Salinan tersimpan lokal — gagal sync ke server, buka ✏ lalu Simpan lagi',5000);});
+      toast('Template diduplikat sebagai "'+newName+'" (leader-only) — ganti nama/isinya lalu Simpan');
+      renderBlast();
+      openTplModal(savedTpl.id);
+    }
     else if(act==='tpl-vis'){
       // CLM-12: toggle visible-to-agen langsung dari daftar + push GAS. Leader-only.
       if(!Auth.isSuperior()){toast('Khusus Team Lead');return;}
