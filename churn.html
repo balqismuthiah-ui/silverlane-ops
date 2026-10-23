@@ -3934,6 +3934,7 @@ var blastExpHistFrom='',blastExpHistTo='';
 // CLM-05 (operator 14 Jul): filter Respon (mis. saring/kecualiin RESPON NEGATIF) + Last Blast
 // (belum pernah vs udah pernah diblast) -- biar bisa jeda blast & nggak nge-spam outlet yg sama.
 var blastRespFilter=[],blastLastBlastFilter=[];
+var blastPaketFilter=[]; // 23 Okt (request operator, urgent): filter Paket (paket AKTIF outlet = packageTier / kolom 'Support Name Historical'; nilai = key uppercase)
 var respSearch='',respCatFilter=[],respAgentFilter=[]; // CLM-08 (e): multi-select
 var respUpsellFilter=[]; // CLM-08 (4a): work-order queue -- filter klaim upsell by status
 // Pagination -- render SEMUA baris sekaligus (tanpa batas) bikin browser freeze pas data >~10rb
@@ -8148,6 +8149,8 @@ function blastFilteredRows(){
     return true;
   });
   if(blastHwczFilter.length)recs=recs.filter(function(r){return blastHwczFilter.indexOf(String(r.hwcz||'').trim())>=0;});
+  // 23 Okt (request operator, urgent): filter Paket (paket aktif). Tersedia agen+leader seperti Termin/HWCZ; ikut tabel + Pilih Semua + CSV lewat blastFilteredRows.
+  if(blastPaketFilter.length)recs=recs.filter(function(r){return blastPaketFilter.indexOf(blastPaketKey(r)||'__none__')>=0;});
   // CLM-05 (operator 14 Jul): filter Respon -- '__none__' = belum ada respon sama sekali. Kepake buat
   // nyaring/ngecualiin RESPON NEGATIF biar nggak diblast lagi (udah nolak, jangan di-spam).
   if(blastRespFilter.length)recs=recs.filter(function(r){
@@ -8391,6 +8394,7 @@ function renderBlast(){
     +renderMultiSelect('blastTerminFilter','Termin',[{value:'Bulanan',label:'Bulanan'},{value:'Tahunan',label:'Tahunan'}],blastTerminFilter)
     +renderMultiSelect('blastExpMonthFilter','Bln Expired',MONTH_KEYS.map(function(m){return{value:m,label:m+' 26'};}),blastExpMonthFilter)
     +renderMultiSelect('blastHwczFilter','Potensi (HWCZ)',blastHwczOpts(),blastHwczFilter)
+    +renderMultiSelect('blastPaketFilter','Paket',blastPaketOpts(),blastPaketFilter)
     +renderMultiSelect('blastRespFilter','Respon',Object.keys(RESP_CATS).map(function(c){return{value:c,label:c};}).concat([{value:'__none__',label:'(Belum ada respon)'}]),blastRespFilter)
     +renderMultiSelect('blastLastBlastFilter','Last Blast',[{value:'blank',label:'Belum pernah diblast'},{value:'ada',label:'Sudah pernah diblast'}],blastLastBlastFilter)
     +'<span style="font-size:11px;color:var(--tx3);align-self:center">Termin · Bln Expired = bulan langganan habis · Potensi = segmen lead Hot/Warm/Cold/Zombie · Respon = hasil follow-up (mis. kecualiin RESPON NEGATIF) · Last Blast = belum/udah pernah keblast (biar bisa dijeda, nggak spam).</span>'
@@ -11731,6 +11735,17 @@ function blastHwczOpts(){
   var set={};Store.get().records.forEach(function(r){var h=String(r.hwcz||'').trim();if(h)set[h]=1;});
   return Object.keys(set).sort(function(a,b){var ia=HWCZ_ORDER.indexOf(a),ib=HWCZ_ORDER.indexOf(b);if(ia<0)ia=99;if(ib<0)ib=99;return ia-ib||a.localeCompare(b);}).map(function(h){return{value:h,label:h};});
 }
+// 23 Okt (request operator, urgent): opsi filter Paket di Blast WABA = nilai DISTINCT paket AKTIF outlet (r.packageTier, kolom "Support Name Historical": STARTER/ADVANCE/ENTERPRISE/...)
+// yang BENERAN ada di data (bukan daftar hardcoded). Bukan productPackage ("Jenis Paket (yang dibayar)"): untuk target blast yang belum bayar kolom itu kosong (lihat catatan mapping record).
+// Key = uppercase+trim supaya 'Starter'/'STARTER'/' starter ' jadi satu opsi; label = tulisan pertama yang ketemu. '__none__' = outlet tanpa data paket aktif.
+var BLAST_PAKET_ORDER=['STARTER BASIC','STARTER','ADVANCE','ENTERPRISE','PRIME','PRIME PLUS'];
+function blastPaketKey(r){return String(r&&r.packageTier||'').trim().toUpperCase();}
+function blastPaketOpts(){
+  var set={};
+  Store.get().records.forEach(function(r){var t=String(r.packageTier||'').trim();if(t){var k=t.toUpperCase();if(!set[k])set[k]=t;}});
+  return Object.keys(set).sort(function(a,b){var ia=BLAST_PAKET_ORDER.indexOf(a),ib=BLAST_PAKET_ORDER.indexOf(b);if(ia<0)ia=99;if(ib<0)ib=99;return ia-ib||a.localeCompare(b);})
+    .map(function(k){return{value:k,label:set[k]};}).concat([{value:'__none__',label:'(Tanpa data paket)'}]);
+}
 
 // CLM-05 #25: sync-down BROADCASTLOG CLARA (bukti kirim WABA aktual) -> derivasi checkpoint H-3/H+2/H+8.
 // Kontrak GAS (?action=broadcastlog): {data:[{phone, sends:[{broadcast_name, sent_at, terminal_status}]}]}.
@@ -12600,7 +12615,7 @@ tabContent.addEventListener('click',function(e){
     var selRows=blastFilteredRows().filter(function(row){return!row.isGC&&!row.isDummy;});
     selRows.forEach(function(row){csvSelectedIds.add(row.key);});
     renderBlast();
-    toast(selRows.length+' nomor bersih dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||blastHwczFilter.length||blastRespFilter.length||blastLastBlastFilter.length||(tarikCp&&tarikCp!=='all')||blastSearch||blastHidePaid||blastExpHistFrom||blastExpHistTo)?' (sesuai filter aktif)':''));
+    toast(selRows.length+' nomor bersih dipilih'+((blastAgentFilter.length||blastTerminFilter.length||blastExpMonthFilter.length||blastHwczFilter.length||blastPaketFilter.length||blastRespFilter.length||blastLastBlastFilter.length||(tarikCp&&tarikCp!=='all')||blastSearch||blastHidePaid||blastExpHistFrom||blastExpHistTo)?' (sesuai filter aktif)':''));
   }
   else if(tgt.id==='desel-all-blast-btn'){csvSelectedIds.clear();renderBlast();}
   else if(tgt.id==='blast-exphist-clear'){blastExpHistFrom='';blastExpHistTo='';blastPage=0;renderBlast();}
@@ -12711,6 +12726,7 @@ var MSEL_REFRESH={
   blastTerminFilter:function(){blastPage=0;refreshBlastBody();},
   blastExpMonthFilter:function(){blastPage=0;refreshBlastBody();},
   blastHwczFilter:function(){blastPage=0;refreshBlastBody();},
+  blastPaketFilter:function(){blastPage=0;refreshBlastBody();},
   blastRespFilter:function(){blastPage=0;refreshBlastBody();},
   blastLastBlastFilter:function(){blastPage=0;refreshBlastBody();},
   invsumCat:function(){renderTab('invsummary');},invsumAgent:function(){renderTab('invsummary');},invsumStatusSel:function(){renderTab('invsummary');}
