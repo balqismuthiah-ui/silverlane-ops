@@ -2963,6 +2963,62 @@ var Store={
   }
 };
 
+// ── JAN27 (26 Okt 2026): kohort tahun 2027 disimpan TERPISAH di d.records27 ──────────────────────────────────────────────────────────────────────────
+// Semua konsumen d.records (Overview, Target, Rapor, Blast, Master, Invoice, Churn Trend, dst) TIDAK berubah dan tidak melihat 2027 = angka identik sebelum/sesudah.
+// Hanya My Worksheet dan Response Update yang punya pemilih tahun (2026/2027). Auto-Paid/Auto-TC TIDAK dijalankan untuk record 2027 (fase 1). Jan27 hanya terlihat
+// leader sampai JAN27_AGENT_ENABLED = true (canary; dibalik setelah QA lolos, Rabu sore bila lima gerbang lolos).
+var JAN27_AGENT_ENABLED=false;
+var wsYear='26',respYear='26',_y27Syncing=false;
+function y27Visible_(){return Auth.isSuperior()||JAN27_AGENT_ENABLED;}
+function findRec_(d,id){return d.records.find(function(x){return x.id===id;})||(d.records27||[]).find(function(x){return x.id===id;});}
+function wsSrcRecs_(d){return(wsYear==='27'&&y27Visible_())?(d.records27||[]):d.records;}
+function y27Hm_(ts){if(!ts)return'—';var x=new Date(ts);return String(x.getHours()).padStart(2,'0')+':'+String(x.getMinutes()).padStart(2,'0');}
+function isY27Rec_(r){return /27$/.test(String((r&&r.bulan)||''));}
+// 26 Okt (review Ubay, gerbang 6): respons Jan27 di browser ini BELUM digabung dengan respons server (belum ada sync respons penuh sejak data Jan27 ditarik) -> menyimpan
+// bisa menimpa respons agen lain (last-write-wins). Blok penyimpanan sampai d.y27RespMergedAt terisi (diisi hanya sesudah syncResponsesOnly penuh berhasil).
+function y27WriteBlocked_(d,r){
+  if(!isY27Rec_(r))return false;
+  if(d.y27RespMergedAt&&!_y27Syncing)return false; // diblok selama sync berjalan WALAUPUN penanda lama masih terisi (cacat 1)
+  toast('⏳ Respons Jan27 dari server belum digabung di browser ini — klik 📥 Sync Jan27 dan tunggu selesai sebelum menyimpan, supaya respons agen lain tidak tertimpa.',8000);
+  return true;
+}
+function y27ToolbarHtml_(sel,id){
+  if(!y27Visible_())return'';
+  var d0=Store.get(),n=(d0.records27||[]).length;
+  var h='<select id="'+id+'" title="Tahun kohort (2027 = kasus Jan27)" style="padding:6px 8px;font-size:12px;border:1px solid var(--bd);border-radius:6px;background:var(--bg2);color:var(--tx)">'
+    +'<option value="26"'+(sel==='26'?' selected':'')+'>2026</option><option value="27"'+(sel==='27'?' selected':'')+'>2027 (Jan27)</option></select>';
+  if(sel==='27'){
+    var info=!n?'belum ada data Jan27 — klik Sync Jan27'
+      :(n+' kasus Jan27 · data disinkron '+y27Hm_(d0.y27SyncedAt)+(d0.y27RespMergedAt?' · respons digabung '+y27Hm_(d0.y27RespMergedAt):' · ⚠ respons BELUM digabung (simpan diblokir)'));
+    h+='<button class="btn btn-blu" id="sync-y27-btn" style="padding:5px 12px;font-size:12px" title="Tarik data kasus + penugasan + respons Jan27 (tab [Raw] Jan27 dan Assign Jan27). Tekan saat mulai kerja dan sebelum sesi telepon: status bayar hanya segar saat disinkron.">📥 Sync Jan27</button>'
+      +'<span style="font-size:11px;color:var(--tx3);align-self:center">'+info+'</span>';
+  }
+  return h;
+}
+function syncY27(){
+  if(!y27Visible_()||_y27Syncing)return;
+  _y27Syncing=true;
+  var _rel=function(){_y27Syncing=false;};
+  setTimeout(_rel,600000); // pelepas darurat bila sync menggantung
+  // 26 Okt (keputusan Ubay, cacat 1): penanda merge DIKOSONGKAN di awal TIAP sync; baru terisi lagi bila merge respons penuh sesudahnya sukses. Gagal di tengah = tetap diblok.
+  var _d0=Store.get();_d0.y27RespMergedAt=null;Store.set(_d0);
+  var _o={btnId:'sync-y27-btn',btnIdleLabel:'📥 Sync Jan27',noLastSync:true,assignMon:'Jan27',
+    doneMsg:'✅ Jan27: data kasus selesai. Mengambil penugasan dan respons agen…',
+    failMsg:'⚠ Data Jan27 GAGAL dimuat — status bayar belum diperbarui. Klik Sync Jan27 lagi.',
+    assignDone:function(ok){
+      var d=Store.get();
+      // 26 Okt (review Ubay, celah 2): penanda 'disinkron' hanya maju bila penugasan DAN data bulan sukses.
+      if(ok&&!_o.failedMonths){d.y27SyncedAt=Date.now();Store.set(d);}
+      // Gerbang 6 (Ubay): respons server WAJIB digabung penuh sesudah data Jan27 ditarik; penyimpanan respons Jan27 diblok sampai ini sukses.
+      syncResponsesOnly({silent:true,onDone:function(ok2){
+        if(ok2){var d2=Store.get();d2.y27RespMergedAt=Date.now();Store.set(d2);}
+        else toast('⚠ Sinkron respons Jan27 gagal — penyimpanan respons Jan27 tetap diblok. Klik Sync Jan27 lagi.',7000);
+        _rel();renderTab(currentTab);
+      }});
+    }};
+  syncMonthList(['Jan27'],_o);
+}
+
 // ── AGENTS CONFIG STORE (CLM-06: sumber tunggal identitas — login, assignment, Overview, target, template) ──
 // 10 Sep: domain email allowed client-side -- SAMA PERSIS ALLOWED_EMAIL_DOMAINS di Code.gs (leader
 // tetap @majoo.id, 9 agen migrasi ke @majoo.com). JANGAN biarin nyimpang dari daftar server, atau
@@ -6929,9 +6985,10 @@ function renderMaster(){
 function wsBasePool(d,me,isSup){
   // CLM-08 (e): wsAgentFilter multi-select -- cuma relevan buat leader (agen biasa selalu ke-scope
   // ke case-nya sendiri doang, nggak dikasih UI filter ini -- lihat renderWorksheet).
-  if(!isSup)return d.records.filter(function(r){return r.assignedAgent===me;});
-  if(!wsAgentFilter.length)return d.records;
-  return d.records.filter(function(r){return wsAgentFilter.indexOf(r.assignedAgent)>=0;});
+  var _src=wsSrcRecs_(d); // 26 Okt: tahun 2026 (default, = d.records persis) atau 2027 (d.records27, hanya bila y27Visible_)
+  if(!isSup)return _src.filter(function(r){return r.assignedAgent===me;});
+  if(!wsAgentFilter.length)return _src;
+  return _src.filter(function(r){return wsAgentFilter.indexOf(r.assignedAgent)>=0;});
 }
 // 19 Agu: bulan (MONTH_KEYS abbr) dari Expired Date Historical -- 'YYYY-MM-DD' -> 'Jan'..'Dec'.
 // Ini yg jadi acuan "Periode" workorder agen, BUKAN cohortMonths (tag internal sync).
@@ -7088,7 +7145,7 @@ function renderWorksheet(){
   var _wsBasePool=wsBasePool(d,me,isSup);
   var _wsBulanSet=new Set();
   _wsBasePool.forEach(function(r){var m=wsHistMonth(r);if(m)_wsBulanSet.add(m);});
-  var wsBulanOptsArr=[..._wsBulanSet].sort(function(a,b){return MONTH_KEYS.indexOf(a)-MONTH_KEYS.indexOf(b);}).map(function(b){return{value:b,label:b+' 26'};});
+  var wsBulanOptsArr=[..._wsBulanSet].sort(function(a,b){return MONTH_KEYS.indexOf(a)-MONTH_KEYS.indexOf(b);}).map(function(b){return{value:b,label:b+' '+((wsYear==='27'&&y27Visible_())?'27':'26')};});
   var monthFilterHtml=renderMultiSelect('wsMonthFilter','Periode',wsBulanOptsArr,wsMonthFilter);
   var terminFilterHtml=renderMultiSelect('wsTerminFilter','Termin',[{value:'Bulanan',label:'Bulanan'},{value:'Tahunan',label:'Tahunan'}],wsTerminFilter);
   var hwczFilterHtml=renderMultiSelect('wsHwczFilter','Potensi (HWCZ)',blastHwczOpts(),wsHwczFilter);
@@ -7106,6 +7163,7 @@ function renderWorksheet(){
     '<div class="frow">'
     +'<input class="fsearch" type="search" id="ws-search" placeholder="🔍 Cari nama / ID outlet / email / HP..." value="'+wsSearch+'">'
     +(agentFilter||'')
+    +y27ToolbarHtml_(wsYear,'ws-year-sel')
     +payFilter
     +monthFilterHtml
     +terminFilterHtml
@@ -7747,11 +7805,11 @@ function rnToggleAll_(on){
 // NPS capitalized).
 function rnApplyReviewLocal_(d,type,key,decision,reason,email){
   if(type==='nps'){
-    var r=d.records.find(function(x){return x.id===key;});
+    var r=findRec_(d,key);
     if(r&&r.nps){r.nps.status=decision==='rejected'?'Rejected':'Approved';r.nps.rejectReason=decision==='rejected'?reason:'';r.nps.approvedBy=email;}
   }else{
     var sep=key.lastIndexOf('_'),recId=key.substring(0,sep),platform=key.substring(sep+1);
-    var r2=d.records.find(function(x){return x.id===recId;});
+    var r2=findRec_(d,recId);
     if(r2&&r2.upsell&&r2.upsell[platform]){r2.upsell[platform].status=decision;r2.upsell[platform].rejectReason=decision==='rejected'?reason:'';r2.upsell[platform].lastEditBy=email;}
   }
 }
@@ -7911,7 +7969,7 @@ function saveRnEdit(){
   _gasPost(payload,RN_WRITE_OPTS).then(function(res){
     var d=Store.get();
     if(type==='nps'){
-      var r=d.records.find(function(x){return x.id===key;});
+      var r=findRec_(d,key);
       if(r&&r.nps){
         r.nps.claimMonth=newMonth;
         if(res.statusReset)r.nps.status='Pending';
@@ -7919,7 +7977,7 @@ function saveRnEdit(){
       }
     }else{
       var sep=key.lastIndexOf('_'),recId=key.substring(0,sep),platform=key.substring(sep+1);
-      var r2=d.records.find(function(x){return x.id===recId;});
+      var r2=findRec_(d,recId);
       if(r2&&r2.upsell&&r2.upsell[platform]){
         r2.upsell[platform].claimMonth=newMonth;
         if(res.statusReset)r2.upsell[platform].status='pending';
@@ -8006,7 +8064,7 @@ function renderResponseResults(){
   var d=Store.get();
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
-  var pool=d.records;
+  var pool=(respYear==='27'&&y27Visible_())?(d.records27||[]):d.records; // 26 Okt: pemilih tahun (2027 = kasus Jan27)
   var s=respSearch.toLowerCase();
   var filtered=pool.filter(function(r){
     // 11 Agu (operator): search kelewat email -- sama fix kayak masterRows/wsFilteredRecs.
@@ -8088,6 +8146,7 @@ function renderResponse(){
   document.getElementById('tab-content').innerHTML=
     '<div class="frow">'
     +'<input class="fsearch" type="search" id="resp-search" placeholder="🔍 Cari nama / ID outlet / email / HP..." value="'+respSearch+'">'
+    +y27ToolbarHtml_(respYear,'resp-year-sel')
     +renderMultiSelect('respCatFilter','Status',catOptsArr,respCatFilter)
     +renderMultiSelect('respAgentFilter','Agen',agentOptsArr,respAgentFilter)
     +renderMultiSelect('respUpsellFilter','Klaim Upsell',upsellOptsArr,respUpsellFilter)
@@ -8796,8 +8855,10 @@ function updateWsBulkBar(){
 
 function applyWsBulk(cat,detail,note){
   var d=Store.get();
+  var _blk=false;wsSelectedIds.forEach(function(id){var rr0=findRec_(d,id);if(rr0&&!_blk&&y27WriteBlocked_(d,rr0))_blk=true;});
+  if(_blk)return; // 26 Okt: gerbang 6 (Jan27)
   wsSelectedIds.forEach(function(id){
-    var r=d.records.find(function(x){return x.id===id;});
+    var r=findRec_(d,id);
     if(r){
       r.response=r.response||{};
       if(cat!==undefined)r.response.category=cat||null;
@@ -9890,7 +9951,7 @@ function saveEngModal(){
 
 function openDetail(id){
   var d=Store.get();
-  var r=d.records.find(function(x){return x.id===id;});
+  var r=findRec_(d,id);
   if(!r)return;
   var me=Auth.getActive();
   var isSup=Auth.isSuperior();
@@ -10003,7 +10064,7 @@ function openDetail(id){
 
 function openResp(id){
   var d=Store.get();
-  var r=d.records.find(function(x){return x.id===id;});
+  var r=findRec_(d,id);
   if(!r)return;
   var isSup=Auth.isSuperior();
   // CLM-08 item (b): Response Update sekarang view-all (semua agen bisa buka case siapa aja) --
@@ -10243,7 +10304,7 @@ function loadRespTokenBox_(outletId){
 function reviewNpsEvidenceUI(decision){
   if(!respTargetId)return;
   var d=Store.get();
-  var r=d.records.find(function(x){return x.id===respTargetId;});
+  var r=findRec_(d,respTargetId);
   if(!r)return;
   var rejectReason='';
   if(decision==='rejected'){
@@ -10271,8 +10332,9 @@ function evidenceLooksLikeLink_(s){
 function saveResp(){
   if(!respTargetId)return;
   var d=Store.get();
-  var r=d.records.find(function(x){return x.id===respTargetId;});
+  var r=findRec_(d,respTargetId);
   if(!r)return;
+  if(y27WriteBlocked_(d,r))return; // 26 Okt: gerbang 6 (Jan27)
   var isSup=Auth.isSuperior();
   var me=Auth.getActive();
   var cat=document.getElementById('resp-cat').value;
@@ -10462,7 +10524,7 @@ function saveResp(){
 
 function openWA(id){
   var d=Store.get();
-  var r=d.records.find(function(x){return x.id===id;});
+  var r=findRec_(d,id);
   if(!r)return;
   waTargetId=id;
   var resp=r.response||{};
@@ -10485,7 +10547,7 @@ function openWA(id){
     var waStatus=document.getElementById('wa-status-sel').value;
     if(waStatus!=='unchecked'){
       var dd=Store.get();
-      var rr=dd.records.find(function(x){return x.id===waTargetId;});
+      var rr=findRec_(dd,waTargetId);
       if(rr){
         rr.response=rr.response||{};
         rr.response.waStatus=waStatus;
@@ -10510,7 +10572,7 @@ var GC_KATEGORI_OPTIONS=['Internal - CX','Internal - Sales','Internal - Akademi'
 
 function openGC(id){
   var d=Store.get();
-  var r=d.records.find(function(x){return x.id===id;});
+  var r=findRec_(d,id);
   if(!r)return;
   gcTargetId=id;
   var optsHtml=GC_KATEGORI_OPTIONS.map(function(k){return '<option value="'+k+'">'+k+'</option>';}).join('')
@@ -10529,7 +10591,7 @@ function openGC(id){
 function saveGC(){
   if(!gcTargetId)return;
   var d=Store.get();
-  var r=d.records.find(function(x){return x.id===gcTargetId;});
+  var r=findRec_(d,gcTargetId);
   if(!r)return;
   var kategori=document.getElementById('gc-kategori').value;
   var reason=document.getElementById('gc-reason').value.trim();
@@ -10888,7 +10950,7 @@ function handleAssignAll(){
 
 function handleAssignOne(id){
   var d=Store.get();
-  var r=d.records.find(function(x){return x.id===id;});
+  var r=findRec_(d,id);
   if(!r)return;
   var agentSel=prompt('Assign "'+r.outletName+'" ke agen:\n'+AGENTS.join(', ')+'\n\nTuliskan nama agen:');
   if(!agentSel)return;
@@ -10958,10 +11020,12 @@ function syncMonthList(months,opts){
   function doNext(idx){
     if(idx>=months.length){
       if(btn){btn.disabled=false;btn.textContent=opts.btnIdleLabel||'Sync';}
-      setLastSyncAt(Date.now());
-      toast(opts.doneMsg||('✅ Selesai sync '+months[0]+'–'+months[months.length-1]+'. Mengambil agen…'),5000);
+      if(!opts.noLastSync)setLastSyncAt(Date.now());
+      // 26 Okt (review Ubay, celah 2): bila ada bulan yang GAGAL dimuat dan pemanggil memberi failMsg, jangan tampilkan "✅ selesai" (dipakai Sync Jan27).
+      if(opts.failedMonths&&opts.failMsg)toast(opts.failMsg,8000);
+      else toast(opts.doneMsg||('✅ Selesai sync '+months[0]+'–'+months[months.length-1]+'. Mengambil agen…'),5000);
       renderTab(currentTab);
-      setTimeout(function(){syncAssignOnly('');},400);
+      setTimeout(function(){syncAssignOnly(opts.assignMon||'',opts.assignDone);},400);
       if(opts.onComplete)opts.onComplete();
       return;
     }
@@ -10983,7 +11047,7 @@ function syncMonthList(months,opts){
         rows.forEach(function(row){
           var outletId=String(row['ID Outlet']!=null?row['ID Outlet']:'').trim();if(!outletId)return;
           var bulanRaw=String(row['__bulan']||'').trim();
-          var bulan=bulanRaw.replace(/\d+$/,'');
+          var is27=/27$/.test(bulanRaw);var bulan=is27?bulanRaw:bulanRaw.replace(/\d+$/,'');
           var hs=toExcelSerial(row['Expired Date Historical']);
           var recId=outletId+(hs||bulanRaw);
           var rawPh=String(row['Nomor Owner']||row['Nomor Outlet']||row['Nomor Merchant']||'').trim();
@@ -11042,19 +11106,19 @@ function syncMonthList(months,opts){
             outletKategori:String(row['Outlet Kategori']||'').trim()||null,
             bulan:bulan||null},invoiceFieldsFromRow(row));
           Object.keys(nf).forEach(function(k){if(nf[k]===null||nf[k]==='')delete nf[k];});
-          var ex=d.records.find(function(r){return r.id===recId;});
+          var _pool=is27?(d.records27||(d.records27=[])):d.records;var ex=_pool.find(function(r){return r.id===recId;});
           if(ex){
             var _oc=(ex.cohortMonths||ex.bulan||'').split(',').filter(Boolean);
             if(bulan&&_oc.indexOf(bulan)<0)_oc.push(bulan);
             Object.keys(nf).forEach(function(k){ex[k]=nf[k];});
             ex.cohortMonths=_oc.join(',');
-            if(applyAutoPaidResponse(ex))autoPaidChanged.push(ex);
+            if(!is27&&applyAutoPaidResponse(ex))autoPaidChanged.push(ex);
           }else{
             var rec=mkRec(recId,nf.outletName,expiry,phone,'',null,nf.email,nf.productPackage);
             Object.keys(nf).forEach(function(k){rec[k]=nf[k];});
             if(bulan)rec.cohortMonths=bulan;
-            d.records.push(rec);
-            if(applyAutoPaidResponse(rec))autoPaidChanged.push(rec);
+            _pool.push(rec);
+            if(!is27&&applyAutoPaidResponse(rec))autoPaidChanged.push(rec);
           }
         });
         Store.set(d);
@@ -11067,6 +11131,7 @@ function syncMonthList(months,opts){
       })
       .catch(function(err){
         if(timer)clearTimeout(timer);
+        opts.failedMonths=(opts.failedMonths||0)+1; // 26 Okt: dicatat supaya penanda 'disinkron' tidak maju bila data gagal
         if(!opts.silent)toast('Gagal sync '+mon+': '+(err.name==='AbortError'?'Timeout 90s':err.message),4000);
         setTimeout(function(){doNext(idx+1);},1500);
       });
@@ -11411,7 +11476,7 @@ function _mapBlast(raw){
 // fix2 lain hari ini: timeout per-attempt diperpendek (20dtk, dari 90dtk) + retry sampai 3x
 // tambahan (backoff 1/2/3dtk) sebelum nyerah -- worst-case total ~86dtk (mirip requestOtp),
 // jauh lebih baik dari 90dtk SEKALI gagal tanpa ada usaha ulang.
-function syncAssignOnly(monthParam){
+function syncAssignOnly(monthParam,onDone){
   // monthParam: explicit month to pass; if undefined, falls back to global syncMonthFilter
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
   var btns=[document.getElementById('sync-assign-btn'),document.getElementById('sync-assign-self-btn')].filter(Boolean);
@@ -11448,17 +11513,20 @@ function syncAssignOnly(monthParam){
 
   function mergeRows(rows){
     var d=Store.get();
-    var idx={};var outletIdx={};
+    var idx={};var outletIdx={};var idx27={};var outletIdx27={};
     d.records.forEach(function(r){
       idx[r.id]=r;
       if(r.outletId)outletIdx[String(r.outletId)]=r;
     });
+    // 26 Okt (Jan27): baris penugasan tab 'Assign ...27' dicocokkan HANYA ke d.records27 (dan baris 2026 hanya ke d.records), supaya fallback per-outlet tidak lintas tahun.
+    (d.records27||[]).forEach(function(r){idx27[r.id]=r;if(r.outletId)outletIdx27[String(r.outletId)]=r;});
     var n2=0,nf=0;
     rows.forEach(function(row){
       var jc=String(row['Join code']||'').trim();if(!jc)return;
       // Match by: 1) compound key, 2) plain outletId, 3) extract outletId from Join code (jc = outletId + 5-digit serial)
       var outletPart=jc.length>5?jc.slice(0,-5):'';
-      var rec=idx[jc]||outletIdx[jc]||(outletPart?outletIdx[outletPart]:null);
+      var t27=/27$/.test(String(row['__tab']||''));var _i=t27?idx27:idx,_o=t27?outletIdx27:outletIdx;
+      var rec=_i[jc]||_o[jc]||(outletPart?_o[outletPart]:null);
       if(!rec){nf++;return;}
       // Kolom sheet sempat di-rename "Assign Manual"->"Assigned to" mulai tab bulan berjalan (Jul26+)
       // -- tab bulan lama masih pakai nama lama. Terima dua-duanya biar nggak putus lagi kalau diganti lagi.
@@ -11472,14 +11540,17 @@ function syncAssignOnly(monthParam){
   if(mon){
     // scoped ke 1 bulan spesifik -- request tunggal, udah ringan by design.
     toast('Mengambil data assignment agen ('+mon+')… harap tunggu',4000);
+    var _fin=false;function finish(ok){if(_fin)return;_fin=true;try{if(typeof onDone==='function')onDone(ok);}catch(e0){console.log('[assign] onDone gagal: '+e0.message);}}
     fetchOneMonth(mon).then(function(json){
       var res=mergeRows(json.data||[]);
       renderTab(currentTab);
       toast(res.n2+' agen diupdate dari '+res.total+' baris ['+mon+'] ('+res.nf+' tdk match)',6000);
       restoreButtons();
+      finish(true);
     }).catch(function(err){
       toast('Gagal sync agen ['+mon+']: '+(err&&err.message||'')+' — coba lagi sebentar',5000);
       restoreButtons();
+      finish(false);
     });
     return;
   }
@@ -12282,7 +12353,7 @@ function pollResponsesDelta(){
       var rows=json.data||[];
       if(rows.length){
         var d=Store.get();
-        var idx={};d.records.forEach(function(r){idx[r.id]=r;});
+        var idx={};d.records.concat(d.records27||[]).forEach(function(r){idx[r.id]=r;}); // 26 Okt: ikut record 2027 (respons Jan27 dari server)
         var n=0;
         rows.forEach(function(row){
           var jc=String(row['Join id outlet&exp date']||'').trim();if(!jc)return;
@@ -12314,7 +12385,7 @@ function syncResponsesOnly(opts){
   _gasGet('responses',150000).then(function(json){
     var rows=json.data||[];
     var d=Store.get();
-    var idx={};d.records.forEach(function(r){idx[r.id]=r;});
+    var idx={};d.records.concat(d.records27||[]).forEach(function(r){idx[r.id]=r;}); // 26 Okt: ikut record 2027 (respons Jan27 dari server)
     var n=0,unmatched=0;
     rows.forEach(function(row){
       var jc=String(row['Join id outlet&exp date']||'').trim();if(!jc)return;
@@ -12408,6 +12479,7 @@ function syncResponsesOnly(opts){
       if(b){b.disabled=false;b.textContent='📥 Sync Respons';}
     }
     if(ok&&typeof opts.onComplete==='function')opts.onComplete();
+    if(typeof opts.onDone==='function')opts.onDone(ok);
   });
 }
 
@@ -12517,11 +12589,11 @@ tabContent.addEventListener('click',function(e){
           var rnW=engWoData.find(function(w){return w['Kode']===rnKey;});
           if(rnW&&rnRes&&rnRes.row)Object.keys(rnRes.row).forEach(function(k){rnW[k]=rnRes.row[k];});
         }else if(rnType==='nps'){
-          var rnR=rnD.records.find(function(x){return x.id===rnKey;});
+          var rnR=findRec_(rnD,rnKey);
           if(rnR&&rnR.nps){rnR.nps.status=rnDecision==='rejected'?'Rejected':'Approved';rnR.nps.rejectReason=rnDecision==='rejected'?rnRejectReason:'';rnR.nps.approvedBy=(Auth.getSession()||{}).email||'';}
         }else{
           var rnSep=rnKey.lastIndexOf('_'),rnRecId=rnKey.substring(0,rnSep),rnPlatform=rnKey.substring(rnSep+1);
-          var rnR2=rnD.records.find(function(x){return x.id===rnRecId;});
+          var rnR2=findRec_(rnD,rnRecId);
           // ⚠️ UPSELL_CLAIM Status LOWERCASE ('approved'/'rejected') -- konvensi beda dari NPS
           // (capitalized). Optimistic update HARUS ikut lowercase juga, atau achievement counter
           // (upsellApprovedCount dkk) undercount sementara sampai resync berikutnya.
@@ -12564,7 +12636,8 @@ tabContent.addEventListener('click',function(e){
   if(tgt.id==='assign-all-btn')handleAssignAll();
   else if(tgt.id==='sync-gas-btn')syncFromGAS();
   else if(tgt.id==='sync-assign-btn')syncAssignOnly();
-  else if(tgt.id==='sync-data-self-btn')syncDataSelfMultiMonth(); // 18 Agu: gantiin tombol 'sync-assign-self-btn' lama (dihapus, redundan)
+  else if(tgt.id==='sync-data-self-btn')syncDataSelfMultiMonth();
+  else if(tgt.id==='sync-y27-btn')syncY27(); // 26 Okt: Sync Jan27 (data + penugasan) // 18 Agu: gantiin tombol 'sync-assign-self-btn' lama (dihapus, redundan)
   else if(tgt.classList&&tgt.classList.contains('ws-th-sort'))wsSortHeaderClick(tgt.dataset.sort); // 7 Okt: ganti dari tombol khusus Exp(Historical) ke klik-header generik
   else if(tgt.id==='sync-resp-btn')syncResponsesOnly();
   else if(tgt.id==='sync-upsell-btn')syncUpsellOnly();
@@ -12579,7 +12652,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='reset-records-btn'){
     if(!confirm('Hapus SEMUA records? Tindakan ini tidak bisa dibatalkan.\n(Response & blast history tidak akan terhapus)'))return;
     var d=Store.get();
-    d.records=[];
+    d.records=[];d.records27=[];d.y27SyncedAt=null;d.y27RespMergedAt=null;
     Store.set(d);
     resetRespMergeState_();
     renderMaster();
@@ -12811,6 +12884,8 @@ tabContent.addEventListener('change',function(e){
   }
   if(tgt.classList&&tgt.classList.contains('rn-chk')){rnToggleChk_(tgt);return;}
   if(tgt.id==='rn-chk-all'){rnToggleAll_(tgt.checked);return;}
+  if(tgt.id==='ws-year-sel'){wsYear=tgt.value==='27'?'27':'26';wsMonthFilter=[];wsPage=0;renderTab('worksheet');return;} // 26 Okt: pemilih tahun Worksheet
+  if(tgt.id==='resp-year-sel'){respYear=tgt.value==='27'?'27':'26';respPage=0;renderTab('response');return;}
   if(tgt.id==='ws-exp-start'){wsExpStart=tgt.value;refreshWsBody();return;}
   if(tgt.id==='ws-exp-end'){wsExpEnd=tgt.value;refreshWsBody();return;}
   if(tgt.id==='mj-gran-sel'){myJourneyGranularity=tgt.value;renderTab('myjourney');return;}
