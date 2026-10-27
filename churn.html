@@ -2982,6 +2982,8 @@ function y27WriteBlocked_(d,r){
   toast('⏳ Respons Jan27 dari server belum digabung di browser ini — klik 📥 Sync Jan27 dan tunggu selesai sebelum menyimpan, supaya respons agen lain tidak tertimpa.',8000);
   return true;
 }
+// 27 Okt (paket Jan27, temuan 5): ganti tahun = seleksi dan filter Worksheet dikosongkan (aksi massal tidak boleh bekerja pada kasus tahun lain yang tersembunyi).
+function wsResetOnYearSwitch_(){wsSelectedIds.clear();if(typeof updateWsBulkBar==='function')updateWsBulkBar();wsSearch='';wsAgentFilter=[];wsPayment=[];wsMonthFilter=[];wsTerminFilter=[];wsHwczFilter=[];wsExpStart='';wsExpEnd='';wsPage=0;}
 function y27ToolbarHtml_(sel,id){
   if(!y27Visible_())return'';
   var d0=Store.get(),n=(d0.records27||[]).length;
@@ -2995,25 +2997,36 @@ function y27ToolbarHtml_(sel,id){
   }
   return h;
 }
+var _y27Gen=0;
 function syncY27(){
-  if(!y27Visible_()||_y27Syncing)return;
+  if(!y27Visible_())return;
+  if(_y27Syncing){toast('⏳ Sync Jan27 sedang berjalan — tunggu sampai selesai.',3000);return;} // 27 Okt (paket, temuan 4): klik saat berjalan tidak lagi diam
   _y27Syncing=true;
-  var _rel=function(){_y27Syncing=false;};
-  setTimeout(_rel,600000); // pelepas darurat bila sync menggantung
+  // 27 Okt (paket, temuan 4): pelepas darurat terikat ke run-nya (token generasi) dan dibatalkan saat run selesai; timer run lama tidak bisa melepas flag run baru.
+  var gen=++_y27Gen,_tm=setTimeout(function(){if(gen===_y27Gen)_y27Syncing=false;},600000);
+  var _rel=function(){if(gen!==_y27Gen)return;clearTimeout(_tm);_y27Syncing=false;};
   // 26 Okt (keputusan Ubay, cacat 1): penanda merge DIKOSONGKAN di awal TIAP sync; baru terisi lagi bila merge respons penuh sesudahnya sukses. Gagal di tengah = tetap diblok.
   var _d0=Store.get();_d0.y27RespMergedAt=null;Store.set(_d0);
-  var _o={btnId:'sync-y27-btn',btnIdleLabel:'📥 Sync Jan27',noLastSync:true,assignMon:'Jan27',
-    doneMsg:'✅ Jan27: data kasus selesai. Mengambil penugasan dan respons agen…',
+  var _o={btnId:'sync-y27-btn',btnIdleLabel:'📥 Sync Jan27',noLastSync:true,assignMon:'Jan27',strict:true,
+    doneMsg:'Jan27: data kasus selesai. Mengambil penugasan dan respons agen…', // 27 Okt: tanpa ✅ di tahap perantara (penyimpangan a, diterima Ubay)
     failMsg:'⚠ Data Jan27 GAGAL dimuat — status bayar belum diperbarui. Klik Sync Jan27 lagi.',
     assignDone:function(ok){
+      if(gen!==_y27Gen)return; // 27 Okt (review independen): run lama yang selesai sesudah dilepas darurat tidak boleh menulis penanda/toast
+      try{
       var d=Store.get();
       // 26 Okt (review Ubay, celah 2): penanda 'disinkron' hanya maju bila penugasan DAN data bulan sukses.
       if(ok&&!_o.failedMonths){d.y27SyncedAt=Date.now();Store.set(d);}
+      }catch(eA){console.log('[sync Jan27] penanda gagal: '+eA.message);}
       // Gerbang 6 (Ubay): respons server WAJIB digabung penuh sesudah data Jan27 ditarik; penyimpanan respons Jan27 diblok sampai ini sukses.
-      syncResponsesOnly({silent:true,onDone:function(ok2){
+      syncResponsesOnly({silent:true,strict:true,onDone:function(ok2){
+        if(gen!==_y27Gen)return;
+        try{
         if(ok2){var d2=Store.get();d2.y27RespMergedAt=Date.now();Store.set(d2);}
         else toast('⚠ Sinkron respons Jan27 gagal — penyimpanan respons Jan27 tetap diblok. Klik Sync Jan27 lagi.',7000);
-        _rel();renderTab(currentTab);
+        if(ok2&&ok&&!_o.failedMonths)toast('✅ Jan27 selesai: data kasus, penugasan, dan respons sudah digabung.',5000);
+        else if(ok2&&(!ok||_o.failedMonths))toast('⚠ Jan27 belum lengkap: '+((_o.failedMonths&&!ok)?'data kasus dan penugasan':(_o.failedMonths?'data kasus':'penugasan'))+' gagal dimuat. Respons sudah digabung; klik Sync Jan27 lagi.',8000);
+        }finally{_rel();} // 27 Okt (review independen): kunci selalu dilepas walau toast/Store melempar galat
+        renderTab(currentTab);
       }});
     }};
   syncMonthList(['Jan27'],_o);
@@ -8855,6 +8868,10 @@ function updateWsBulkBar(){
 
 function applyWsBulk(cat,detail,note){
   var d=Store.get();
+  // 27 Okt (paket Jan27, temuan 5): hanya kasus yang TERLIHAT di tahun aktif. Ada yang tidak terlihat = seleksi basi, kosongkan dan minta pilih ulang.
+  var _vis={};wsSrcRecs_(d).forEach(function(x){_vis[x.id]=1;});
+  var _hid=0;wsSelectedIds.forEach(function(id){if(!_vis[id]&&findRec_(d,id))_hid++;}); // id yang tidak ada di mana pun dilewati diam-diam seperti sebelumnya
+  if(_hid){toast('⚠ '+_hid+' kasus terpilih bukan dari tahun yang sedang ditampilkan — seleksi dikosongkan, pilih ulang.',6000);wsSelectedIds.clear();updateWsBulkBar();renderWorksheet();return;}
   var _blk=false;wsSelectedIds.forEach(function(id){var rr0=findRec_(d,id);if(rr0&&!_blk&&y27WriteBlocked_(d,rr0))_blk=true;});
   if(_blk)return; // 26 Okt: gerbang 6 (Jan27)
   wsSelectedIds.forEach(function(id){
@@ -10156,7 +10173,9 @@ function openResp(id){
     +'<textarea id="resp-note" rows="2">'+(resp.note||'')+'</textarea>'
     +'<div class="sep"></div>'
     +'<div style="font-weight:700;font-size:13px;color:var(--tx);margin-bottom:8px">⭐ Klaim Upselling (Maps / PlayStore)</div>'
-    +UPSELL_PLATFORMS.map(function(p){return buildUpsellFieldset(p,r.upsell&&r.upsell[p.key],isSup);}).join('')
+    +(isY27Rec_(r)
+      ?'<div style="font-size:12px;color:var(--tx3);margin:0 0 10px">Klaim upsell belum tersedia untuk kasus 2027 (fase 1). Catat klaim upsell setelah dibuka resmi.</div>' // 27 Okt (paket Jan27, temuan 2): tidak ada bidang upsell -> saveResp melewatinya (guard countEl)
+      :UPSELL_PLATFORMS.map(function(p){return buildUpsellFieldset(p,r.upsell&&r.upsell[p.key],isSup);}).join(''))
     +'<label>Evidence ajakan isi NPS <span style="color:var(--tx3);font-weight:400">— tersimpan bareng tombol Simpan</span></label>'
     +'<input type="text" id="resp-nps-evidence" value="'+(nps.evidence||'')+'" placeholder="https://...">'
     +'<div id="resp-token-box" style="font-size:12px;margin:6px 0 2px;color:var(--tx3)">🔑 Token NPS: memuat…</div>'
@@ -10423,10 +10442,11 @@ function saveResp(){
   if(detailFinal&&PAID_DETAILS.indexOf(detailFinal)>=0)r.paymentStatus='paid';
 
   // CLM-03: upsell per-platform — PASS 1 validasi semua platform dulu, jangan mutasi apa pun kalau ada yg gagal
+  // 27 Okt (paket Jan27, temuan 2): kasus 2027 tidak punya bidang upsell di modal (lihat openResp) -> kedua PASS di bawah melewati semua platform (countEl null). Tidak ada penulisan klaim 2027.
   r.upsell=r.upsell||{maps:null,playstore:null,hardware:null}; // CLM-08 (4b): +hardware
   var upsellError=null;
   UPSELL_PLATFORMS.forEach(function(p){
-    if(upsellError)return;
+    if(upsellError||isY27Rec_(r))return; // 27 Okt (review independen): guard eksplisit, tidak bergantung pada ada/tidaknya elemen DOM
     var countEl=document.getElementById('upsell-'+p.key+'-count');
     if(!countEl)return;
     var existing=r.upsell[p.key];
@@ -10450,6 +10470,7 @@ function saveResp(){
 
   // PASS 2 — semua valid, apply mutasi + audit
   UPSELL_PLATFORMS.forEach(function(p){
+    if(isY27Rec_(r))return;
     var countEl=document.getElementById('upsell-'+p.key+'-count');
     if(!countEl)return;
     var existing=r.upsell[p.key];
@@ -11024,8 +11045,9 @@ function syncMonthList(months,opts){
       // 26 Okt (review Ubay, celah 2): bila ada bulan yang GAGAL dimuat dan pemanggil memberi failMsg, jangan tampilkan "✅ selesai" (dipakai Sync Jan27).
       if(opts.failedMonths&&opts.failMsg)toast(opts.failMsg,8000);
       else toast(opts.doneMsg||('✅ Selesai sync '+months[0]+'–'+months[months.length-1]+'. Mengambil agen…'),5000);
-      renderTab(currentTab);
-      setTimeout(function(){syncAssignOnly(opts.assignMon||'',opts.assignDone);},400);
+      if(opts.strict){try{renderTab(currentTab);}catch(eR){console.log('[sync Jan27] renderTab gagal: '+eR.message);}} // 27 Okt (paket, review independen): galat render tidak boleh menggantung run Jan27; jalur 2026 tidak berubah
+      else renderTab(currentTab);
+      setTimeout(function(){syncAssignOnly(opts.assignMon||'',opts.assignDone,opts.strict);},400);
       if(opts.onComplete)opts.onComplete();
       return;
     }
@@ -11034,10 +11056,13 @@ function syncMonthList(months,opts){
     if(!opts.silent)toast('Mengambil data '+mon+'… ('+(idx+1)+'/'+months.length+')',3000);
     var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
     var timer=ctrl?setTimeout(function(){ctrl.abort();},90000):null;
-    fetch(GAS_URL+'?action=data&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||''),ctrl?{signal:ctrl.signal}:{})
+    fetch(GAS_URL+'?action=data&month='+encodeURIComponent(mon)+'&token='+encodeURIComponent(Auth.getToken()||'')+(opts.strict?'&_cb='+Date.now():''),ctrl?{signal:ctrl.signal}:{}) // 27 Okt (paket Jan27): cache-bust hanya utk pemanggil ketat (Jan27); 2026 tidak berubah
       .then(function(r){if(timer)clearTimeout(timer);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
       .then(function(json){
         if(json&&json.error==='unauthorized'){confirmUnauthorizedThenLogout();throw new Error('unauthorized');}
+        // 27 Okt (paket Jan27, temuan 1 HIGH): doGet membalas HTTP 200 + {error:...} saat server gagal. Untuk pemanggil ketat (Jan27) HANYA array non-kosong tanpa error yang dianggap sukses;
+        // selain itu dilempar -> .catch menaikkan failedMonths (tidak ada toast ✅, penanda 'disinkron' tidak maju).
+        if(opts.strict&&(!json||json.error||!Array.isArray(json.data)||!json.data.length||!json.data.some(function(x){return /27$/.test(String((x&&x.__bulan)||''));})))throw new Error('server membalas tidak valid'+(json&&json.error?' ('+String(json.error).slice(0,60)+')':' (data kosong / bukan baris 2027)'));
         var rows=json.data||[];
         var d=Store.get();
         // 4 Agu (operator): auto-mark RESPON POSITIF/PAID CRM/SELF ONBOARD begitu paymentStatus jadi
@@ -11476,7 +11501,7 @@ function _mapBlast(raw){
 // fix2 lain hari ini: timeout per-attempt diperpendek (20dtk, dari 90dtk) + retry sampai 3x
 // tambahan (backoff 1/2/3dtk) sebelum nyerah -- worst-case total ~86dtk (mirip requestOtp),
 // jauh lebih baik dari 90dtk SEKALI gagal tanpa ada usaha ulang.
-function syncAssignOnly(monthParam,onDone){
+function syncAssignOnly(monthParam,onDone,strict){ // 27 Okt (paket Jan27): strict = hanya pemanggil Jan27; sukses = array non-kosong tanpa {error}
   // monthParam: explicit month to pass; if undefined, falls back to global syncMonthFilter
   var mon=(monthParam!==undefined)?monthParam:syncMonthFilter;
   var btns=[document.getElementById('sync-assign-btn'),document.getElementById('sync-assign-self-btn')].filter(Boolean);
@@ -11542,6 +11567,7 @@ function syncAssignOnly(monthParam,onDone){
     toast('Mengambil data assignment agen ('+mon+')… harap tunggu',4000);
     var _fin=false;function finish(ok){if(_fin)return;_fin=true;try{if(typeof onDone==='function')onDone(ok);}catch(e0){console.log('[assign] onDone gagal: '+e0.message);}}
     fetchOneMonth(mon).then(function(json){
+      if(strict&&(!json||json.error||!Array.isArray(json.data)||!json.data.length||!json.data.some(function(x){return /27$/.test(String((x&&x.__tab)||''));})))throw new Error('server membalas tidak valid'+(json&&json.error?' ('+String(json.error).slice(0,60)+')':' (penugasan kosong / bukan tab 2027)'));
       var res=mergeRows(json.data||[]);
       renderTab(currentTab);
       toast(res.n2+' agen diupdate dari '+res.total+' baris ['+mon+'] ('+res.nf+' tdk match)',6000);
@@ -12383,6 +12409,8 @@ function syncResponsesOnly(opts){
   }
   var ok=false;
   _gasGet('responses',150000).then(function(json){
+    // 27 Okt (paket Jan27, temuan 1 HIGH): opts.strict (hanya Sync Jan27) menolak {error}/bukan-array/kosong SEBELUM menggabung atau menyetel penanda apa pun.
+    if(opts.strict&&(!json||json.error||!Array.isArray(json.data)||!json.data.length))throw new Error('server membalas tidak valid'+(json&&json.error?' ('+String(json.error).slice(0,60)+')':' (respons kosong)'));
     var rows=json.data||[];
     var d=Store.get();
     var idx={};d.records.concat(d.records27||[]).forEach(function(r){idx[r.id]=r;}); // 26 Okt: ikut record 2027 (respons Jan27 dari server)
@@ -12650,7 +12678,7 @@ tabContent.addEventListener('click',function(e){
   else if(tgt.id==='dv-compare-sync-btn')syncDailyViewCompareFromServer(tgt.dataset.month).then(function(){renderTab('overview');}).catch(function(){});
   else if(tgt.id==='sync-3m-btn')syncThreeMonths();
   else if(tgt.id==='reset-records-btn'){
-    if(!confirm('Hapus SEMUA records? Tindakan ini tidak bisa dibatalkan.\n(Response & blast history tidak akan terhapus)'))return;
+    if(!confirm('Hapus SEMUA records? Tindakan ini tidak bisa dibatalkan.\n(Response & blast history tidak akan terhapus)\nTermasuk data kasus 2027 (Jan27) di browser ini; sesudahnya klik Sync Jan27 lagi.'))return;
     var d=Store.get();
     d.records=[];d.records27=[];d.y27SyncedAt=null;d.y27RespMergedAt=null;
     Store.set(d);
@@ -12884,8 +12912,8 @@ tabContent.addEventListener('change',function(e){
   }
   if(tgt.classList&&tgt.classList.contains('rn-chk')){rnToggleChk_(tgt);return;}
   if(tgt.id==='rn-chk-all'){rnToggleAll_(tgt.checked);return;}
-  if(tgt.id==='ws-year-sel'){wsYear=tgt.value==='27'?'27':'26';wsMonthFilter=[];wsPage=0;renderTab('worksheet');return;} // 26 Okt: pemilih tahun Worksheet
-  if(tgt.id==='resp-year-sel'){respYear=tgt.value==='27'?'27':'26';respPage=0;renderTab('response');return;}
+  if(tgt.id==='ws-year-sel'){wsYear=tgt.value==='27'?'27':'26';wsResetOnYearSwitch_();renderTab('worksheet');return;} // 26 Okt: pemilih tahun Worksheet
+  if(tgt.id==='resp-year-sel'){respYear=tgt.value==='27'?'27':'26';respSearch='';respCatFilter=[];respAgentFilter=[];respUpsellFilter=[];respPage=0;renderTab('response');return;}
   if(tgt.id==='ws-exp-start'){wsExpStart=tgt.value;refreshWsBody();return;}
   if(tgt.id==='ws-exp-end'){wsExpEnd=tgt.value;refreshWsBody();return;}
   if(tgt.id==='mj-gran-sel'){myJourneyGranularity=tgt.value;renderTab('myjourney');return;}
