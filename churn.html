@@ -8187,7 +8187,9 @@ function blastFilteredRows(){
   recs.forEach(function(r){
     if(!r.outletId)return;
     var prev=_blastLatestByOutlet[r.outletId];
-    if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))_blastLatestByOutlet[r.outletId]=r;
+    // 26 Okt (fix): TIE pada expiryDate (outlet bulanan: semua siklus lama punya Expired Date Latest yang sama dengan siklus saat ini) -> siklus dengan Expired Date HISTORICAL terbaru menang;
+    // dulu pemenang = yang kebetulan pertama di Store (siklus lama), lalu dibuang filter 'extended' => outlet hilang dari Blast.
+    if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||'')||(String(r.expiryDate||'')===String(prev.expiryDate||'')&&String(r.expiredDateHistorical||'')>String(prev.expiredDateHistorical||'')))_blastLatestByOutlet[r.outletId]=r;
   });
   recs=recs.filter(function(r){return !r.outletId||_blastLatestByOutlet[r.outletId]===r;});
   // 29 Agu (operator): exclude outlet yang UDAH renewal sejak siklus historis ini dibuka -- Expired
@@ -10735,7 +10737,9 @@ function openCsvModal(){
   recs.forEach(function(r){
     if(!r.outletId)return;
     var prev=_blastLatestByOutlet[r.outletId];
-    if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||''))_blastLatestByOutlet[r.outletId]=r;
+    // 26 Okt (fix): TIE pada expiryDate (outlet bulanan: semua siklus lama punya Expired Date Latest yang sama dengan siklus saat ini) -> siklus dengan Expired Date HISTORICAL terbaru menang;
+    // dulu pemenang = yang kebetulan pertama di Store (siklus lama), lalu dibuang filter 'extended' => outlet hilang dari Blast.
+    if(!prev||String(r.expiryDate||'')>String(prev.expiryDate||'')||(String(r.expiryDate||'')===String(prev.expiryDate||'')&&String(r.expiredDateHistorical||'')>String(prev.expiredDateHistorical||'')))_blastLatestByOutlet[r.outletId]=r;
   });
   recs=recs.filter(function(r){return !r.outletId||_blastLatestByOutlet[r.outletId]===r;});
   // 29 Agu (operator): exclude outlet yang UDAH renewal sejak siklus historis ini dibuka -- Expired
