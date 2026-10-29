@@ -2967,7 +2967,7 @@ var Store={
 // Semua konsumen d.records (Overview, Target, Rapor, Blast, Master, Invoice, Churn Trend, dst) TIDAK berubah dan tidak melihat 2027 = angka identik sebelum/sesudah.
 // Hanya My Worksheet dan Response Update yang punya pemilih tahun (2026/2027). Auto-Paid/Auto-TC TIDAK dijalankan untuk record 2027 (fase 1). Jan27 hanya terlihat
 // leader sampai JAN27_AGENT_ENABLED = true (canary; dibalik setelah QA lolos, Rabu sore bila lima gerbang lolos).
-var JAN27_AGENT_ENABLED=false;
+var JAN27_AGENT_ENABLED=true;
 var wsYear='26',respYear='26',_y27Syncing=false;
 function y27Visible_(){return Auth.isSuperior()||JAN27_AGENT_ENABLED;}
 function findRec_(d,id){return d.records.find(function(x){return x.id===id;})||(d.records27||[]).find(function(x){return x.id===id;});}
